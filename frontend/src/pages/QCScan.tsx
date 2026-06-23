@@ -1,0 +1,128 @@
+import { useState, useEffect, useRef } from 'react';
+import { BrowserMultiFormatReader } from '@zxing/library';
+import { api } from '../services/api';
+
+const reader = new BrowserMultiFormatReader();
+
+export default function QCScan() {
+  const [scanning, setScanning] = useState(false);
+  const [batch, setBatch] = useState<any>(null);
+  const [result, setResult] = useState<'PASS' | 'FAIL' | ''>('');
+  const [remarks, setRemarks] = useState('');
+  const [message, setMessage] = useState('');
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cleanup = () => {
+    reader.reset();
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+  };
+
+  useEffect(() => {
+    return () => cleanup();
+  }, []);
+
+  const startScan = async () => {
+    cleanup();
+    setScanning(true);
+    setMessage(''); setBatch(null); setResult(''); setRemarks('');
+    try {
+      timerRef.current = setTimeout(() => {
+        cleanup();
+        setScanning(false);
+        setMessage('No QR code detected. Try again.');
+      }, 120000);
+
+      await reader.decodeFromVideoDevice(null, videoRef.current!, (result) => {
+        if (result) {
+          cleanup();
+          const text = result.getText();
+          api.batches.getByBarcode(text)
+            .then(b => { setBatch(b); setResult(''); setRemarks(''); setMessage(''); })
+            .catch(() => setMessage(`No batch found for QR: "${text}"`));
+          setScanning(false);
+        }
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (msg.includes('NotAllowedError') || msg.includes('Permission')) {
+        setMessage('Camera permission denied.');
+      } else {
+        setMessage(`Camera error: ${msg}`);
+      }
+      cleanup();
+      setScanning(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!result || !batch) { setMessage('Please select PASS or FAIL'); return; }
+    try {
+      const res = await api.qc.submit({ barcode_value: batch.barcode_value, result: result as 'PASS' | 'FAIL', remarks: remarks || undefined });
+      setMessage(`QC ${result}! Status: ${res.status}`);
+      setBatch(null); setResult(''); setRemarks('');
+    } catch (err: any) { setMessage(`Error: ${err.message}`); }
+  };
+
+  return (
+    <div className="p-4 max-w-lg mx-auto">
+      <h1 className="text-2xl font-bold mb-4">QC Testing</h1>
+      <div className="bg-white p-4 rounded shadow mb-4">
+        {!scanning && !batch && (
+          <>
+            <label className="block text-sm mb-2">Enter QR code manually or scan with camera:</label>
+            <input className="w-full border p-2 rounded mb-3" placeholder="QR code value" onChange={e => { const val = e.target.value; setBatch(null); setMessage(''); if (val) { api.batches.getByBarcode(val).then(b => { setBatch(b); setResult(''); setRemarks(''); }).catch(() => setMessage('No batch found for this QR code.')); } }} />
+            <button className="bg-green-700 text-white px-4 py-2 rounded hover:bg-green-800 w-full" onClick={startScan}>
+              Scan with Camera
+            </button>
+          </>
+        )}
+        {scanning && !batch && (
+          <div className="space-y-2">
+            <video ref={videoRef} style={{ width: '100%', height: '300px', background: '#000', objectFit: 'cover' }} playsInline />
+            <p className="text-center text-sm text-blue-600 animate-pulse">Scanning for QR code...</p>
+            <button className="bg-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-400 w-full" onClick={() => { cleanup(); setScanning(false); }}>
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+      {batch && (
+        <div className="bg-white p-4 rounded shadow space-y-3">
+          <h2 className="font-bold text-lg">Batch: {batch.batch_number}</h2>
+          <div className="bg-gray-50 p-3 rounded text-xs grid grid-cols-2 gap-x-3 gap-y-1">
+            <span className="text-gray-500">Product:</span><span className="font-medium">{batch.product_name}</span>
+            <span className="text-gray-500">SKU:</span><span className="font-mono">{batch.product_sku}</span>
+            <span className="text-gray-500">Qty:</span><span>{batch.quantity}</span>
+            <span className="text-gray-500">Price:</span><span>{batch.unit_price ? `₹${Number(batch.unit_price).toLocaleString()}` : '-'}</span>
+            <span className="text-gray-500">Mfg:</span><span>{batch.manufacturing_date ? new Date(batch.manufacturing_date).toLocaleDateString() : '-'}</span>
+            <span className="text-gray-500">Exp:</span><span>{batch.expiry_date ? new Date(batch.expiry_date).toLocaleDateString() : '-'}</span>
+            <span className="text-gray-500">Notes:</span><span>{batch.notes || '-'}</span>
+            <span className="text-gray-500">Status:</span><span className={`font-semibold ${batch.status === 'QC_PASSED' ? 'text-green-600' : batch.status === 'QC_FAILED' ? 'text-red-600' : batch.status === 'DISPATCHED' ? 'text-blue-600' : ''}`}>{batch.status}</span>
+          </div>
+          <div className="text-[10px] text-gray-400 text-center">QR: <code className="font-mono">{batch.barcode_value}</code></div>
+          {batch.status === 'DISPATCHED' && <p className="text-red-600 text-sm">Already dispatched! Cannot QC.</p>}
+          {(batch.status === 'QC_PASSED' || batch.status === 'QC_FAILED') && <p className="text-amber-600 text-sm">QC already {batch.status === 'QC_PASSED' ? 'PASSED' : 'FAILED'}.</p>}
+          <div className="flex gap-4 pt-2">
+            <label className="flex items-center gap-2 cursor-pointer bg-green-100 border border-green-400 rounded p-3 flex-1">
+              <input type="radio" name="qc-result" value="PASS" checked={result === 'PASS'} onChange={() => setResult('PASS')} disabled={batch.status !== 'CREATED'} />
+              <span className="font-semibold">PASS</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer bg-red-100 border border-red-400 rounded p-3 flex-1">
+              <input type="radio" name="qc-result" value="FAIL" checked={result === 'FAIL'} onChange={() => setResult('FAIL')} disabled={batch.status !== 'CREATED'} />
+              <span className="font-semibold">FAIL</span>
+            </label>
+          </div>
+          <textarea className="w-full border p-2 rounded" placeholder="Remarks (optional)" value={remarks} onChange={e => setRemarks(e.target.value)} />
+          <button className="w-full bg-blue-800 text-white p-2 rounded hover:bg-blue-900 disabled:opacity-50" onClick={handleSubmit} disabled={batch.status !== 'CREATED' || !result}>Submit QC Result</button>
+          <button className="w-full bg-gray-300 text-gray-700 p-2 rounded hover:bg-gray-400" onClick={() => { setBatch(null); }}>Scan Another</button>
+        </div>
+      )}
+      {message && (
+        <div className={`mt-4 text-sm text-center p-2 rounded ${message.includes('Error') || message.includes('No batch') || message.includes('QC already') || message.includes('Cannot QC') || message.includes('No QR') ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+          {message}
+        </div>
+      )}
+    </div>
+  );
+}
