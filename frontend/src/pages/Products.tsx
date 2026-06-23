@@ -70,6 +70,10 @@ export default function Products() {
         </button>
       </div>
       {showForm && (
+        <div className='w-dvw flex items-center justify-center flex-col' >
+          <h1 className='text-2xl font-bold mb-2' >
+            Add Product
+          </h1>
         <form onSubmit={handleSubmit} className="bg-white p-4 rounded shadow mb-4 space-y-3 max-w-md">
           <h2 className="font-semibold">{editing ? `Edit: ${editing.name}` : 'New Product'}</h2>
           <input className="w-full border p-2 rounded" placeholder="Product Name" value={name} onChange={e => setName(e.target.value)} required />
@@ -84,6 +88,7 @@ export default function Products() {
             <button className="px-4 bg-gray-300 text-gray-700 rounded hover:bg-gray-400" type="button" onClick={() => { setShowForm(false); resetForm(); }}>Cancel</button>
           </div>
         </form>
+        </div>
       )}
       <div className="bg-white rounded shadow overflow-x-auto">
         <table className="w-full text-sm">
