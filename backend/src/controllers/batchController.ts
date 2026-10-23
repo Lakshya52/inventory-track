@@ -3,9 +3,13 @@ import { query, execute } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const { product_id, batch_number, quantity, unit_price, manufacturing_date, expiry_date, notes } = req.body;
+  const { product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date, storage_location, notes } = req.body;
   if (!product_id || !batch_number) {
     res.status(400).json({ error: 'Product ID and batch number are required' });
+    return;
+  }
+  if (!manufacturing_date || !expiry_date) {
+    res.status(400).json({ error: 'Manufacturing date and expiry date are required' });
     return;
   }
   const products = await query<RowDataPacket[]>('SELECT name, sku FROM products WHERE id = ?', [product_id]);
@@ -17,8 +21,8 @@ export async function create(req: Request, res: Response): Promise<void> {
 
   const tempId = `_TEMP_${Date.now()}`;
   const result = await execute(
-    'INSERT INTO batches (product_id, batch_number, quantity, unit_price, manufacturing_date, expiry_date, notes, barcode_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [product_id, batch_number, quantity || 1, unit_price || 0, manufacturing_date || null, expiry_date || null, notes || null, tempId]
+    'INSERT INTO batches (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date, storage_location, notes, barcode_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [product_id, batch_number, quantity || 1, uom || 'kg', unit_price || 0, manufacturing_date || null, expiry_date || null, storage_location || null, notes || null, tempId]
   );
   const batchId = result.insertId;
   const barcode_value = `QR:${product.sku}:${batchId}`;
@@ -41,7 +45,11 @@ export async function list(req: Request, res: Response): Promise<void> {
 export async function getByBarcode(req: Request, res: Response): Promise<void> {
   const { barcode } = req.params;
   const batches = await query<RowDataPacket[]>(
-    `SELECT b.*, p.name as product_name, p.sku as product_sku, p.description as product_description
+    `SELECT b.*,
+            p.name as product_name, p.sku as product_sku, p.description as product_description,
+            p.cas_number, p.molecular_formula, p.purity as product_purity, p.grade as product_grade,
+            p.storage_conditions as product_storage_conditions, p.hazard_classification,
+            p.physical_state as product_physical_state, p.hsn_code, p.manufacturer
      FROM batches b JOIN products p ON b.product_id = p.id
      WHERE b.barcode_value = ?`, [barcode]
   );
@@ -59,4 +67,25 @@ export async function search(req: Request, res: Response): Promise<void> {
     [`%${q}%`, `%${q}%`, `%${q}%`]
   );
   res.json(batches);
+}
+
+export async function update(req: Request, res: Response): Promise<void> {
+  const { id } = req.params;
+  const { storage_location, notes, quantity, uom, unit_price, manufacturing_date, expiry_date } = req.body;
+  await execute(
+    'UPDATE batches SET storage_location = ?, notes = ?, quantity = ?, uom = ?, unit_price = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ?',
+    [storage_location || null, notes || null, quantity, uom || 'kg', unit_price || 0, manufacturing_date || null, expiry_date || null, id]
+  );
+  await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'BATCH_UPDATED', `Batch #${id} updated`]);
+  res.json({ message: 'Batch updated' });
+}
+
+export async function getById(req: Request, res: Response): Promise<void> {
+  const batches = await query<RowDataPacket[]>(
+    `SELECT b.*, p.name as product_name, p.sku as product_sku
+     FROM batches b JOIN products p ON b.product_id = p.id WHERE b.id = ?`, [req.params.id]
+  );
+  if (batches.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
+  res.json(batches[0]);
 }

@@ -12,6 +12,7 @@ async function seed() {
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
   await execute(`CREATE TABLE IF NOT EXISTS qc_users (
@@ -19,6 +20,7 @@ async function seed() {
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
   await execute(`CREATE TABLE IF NOT EXISTS dispatch_users (
@@ -26,6 +28,30 @@ async function seed() {
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await execute(`CREATE TABLE IF NOT EXISTS production_users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await execute(`CREATE TABLE IF NOT EXISTS vendors (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    vendor_code VARCHAR(50) NOT NULL UNIQUE,
+    name VARCHAR(200) NOT NULL,
+    contact_person VARCHAR(100),
+    email VARCHAR(100),
+    phone VARCHAR(50),
+    address TEXT,
+    gst_number VARCHAR(50),
+    category VARCHAR(100),
+    payment_terms VARCHAR(100),
+    notes TEXT,
+    is_active TINYINT(1) DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
   await execute(`CREATE TABLE IF NOT EXISTS products (
@@ -34,16 +60,28 @@ async function seed() {
     description TEXT,
     sku VARCHAR(100) UNIQUE NOT NULL,
     price DECIMAL(12,2) DEFAULT 0,
+    quantity DECIMAL(12,3) DEFAULT 0,
+    cas_number VARCHAR(50),
+    molecular_formula VARCHAR(100),
+    purity VARCHAR(50),
+    grade VARCHAR(100),
+    storage_conditions TEXT,
+    physical_state VARCHAR(50),
+    hazard_classification VARCHAR(200),
+    hsn_code VARCHAR(20),
+    manufacturer VARCHAR(200),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
   await execute(`CREATE TABLE IF NOT EXISTS batches (
     id INT AUTO_INCREMENT PRIMARY KEY,
     product_id INT NOT NULL,
     batch_number VARCHAR(100) NOT NULL,
-    quantity INT NOT NULL DEFAULT 1,
+    quantity DECIMAL(12,3) NOT NULL DEFAULT 1,
+    uom VARCHAR(20) DEFAULT 'kg',
     unit_price DECIMAL(12,2) DEFAULT 0,
     manufacturing_date DATE,
     expiry_date DATE,
+    storage_location VARCHAR(200),
     notes TEXT,
     status ENUM('CREATED','QC_PASSED','QC_FAILED','DISPATCHED') DEFAULT 'CREATED',
     barcode_value VARCHAR(255) UNIQUE NOT NULL,
@@ -56,6 +94,7 @@ async function seed() {
     tester_id INT NOT NULL,
     result ENUM('PASS','FAIL') NOT NULL,
     remarks TEXT,
+    images JSON DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
   )`);
@@ -64,9 +103,13 @@ async function seed() {
     batch_id INT NOT NULL,
     dispatcher_id INT NOT NULL,
     remarks TEXT,
+    images JSON DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
   )`);
+  // Add images column to existing tables if missing
+  try { await execute('ALTER TABLE qc_records ADD COLUMN images JSON DEFAULT NULL AFTER remarks'); } catch {}
+  try { await execute('ALTER TABLE dispatch_records ADD COLUMN images JSON DEFAULT NULL AFTER remarks'); } catch {}
   await execute(`CREATE TABLE IF NOT EXISTS activity_logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT,
@@ -80,6 +123,29 @@ async function seed() {
   // Add columns if they're missing (for existing activity_logs from old schema)
   try { await execute('ALTER TABLE activity_logs ADD COLUMN user_name VARCHAR(100) AFTER user_id'); } catch {}
   try { await execute('ALTER TABLE activity_logs ADD COLUMN user_role VARCHAR(20) AFTER user_name'); } catch {}
+
+  // Account activation support for existing installations
+  try { await execute('ALTER TABLE admins ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
+  try { await execute('ALTER TABLE qc_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
+  try { await execute('ALTER TABLE dispatch_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
+  try { await execute('ALTER TABLE production_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
+
+  // Migrate products table — add chemical industry columns if missing
+  try { await execute('ALTER TABLE products ADD COLUMN quantity DECIMAL(12,3) DEFAULT 0 AFTER price'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN cas_number VARCHAR(50) AFTER quantity'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN molecular_formula VARCHAR(100) AFTER cas_number'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN purity VARCHAR(50) AFTER molecular_formula'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN grade VARCHAR(100) AFTER purity'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN storage_conditions TEXT AFTER grade'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN hazard_classification VARCHAR(200) AFTER storage_conditions'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN hsn_code VARCHAR(20) AFTER hazard_classification'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN manufacturer VARCHAR(200) AFTER hsn_code'); } catch {}
+  try { await execute('ALTER TABLE products ADD COLUMN physical_state VARCHAR(50) AFTER hazard_classification'); } catch {}
+
+  // Migrate batches table — add uom and storage_location if missing
+  try { await execute("ALTER TABLE batches ADD COLUMN uom VARCHAR(20) DEFAULT 'kg' AFTER quantity"); } catch {}
+  try { await execute('ALTER TABLE batches ADD COLUMN storage_location VARCHAR(200) AFTER expiry_date'); } catch {}
+  try { await execute('ALTER TABLE batches MODIFY COLUMN quantity DECIMAL(12,3) NOT NULL DEFAULT 1'); } catch {}
 
   // Drop FK constraints if old users table exists
   try {
@@ -109,6 +175,7 @@ async function seed() {
   await execute('DELETE FROM admins');
   await execute('DELETE FROM qc_users');
   await execute('DELETE FROM dispatch_users');
+  await execute('DELETE FROM vendors');
 
   await execute('INSERT INTO admins (name, email, password_hash) VALUES (?, ?, ?)', ['Admin', 'admin@gmail.com', adminHash]);
   await execute('INSERT INTO qc_users (name, email, password_hash) VALUES (?, ?, ?)', ['QC Tester', 'qc@gmail.com', qcHash]);

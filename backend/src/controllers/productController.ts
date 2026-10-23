@@ -3,16 +3,19 @@ import { query, execute } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const { name, description, sku, price } = req.body;
+  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
   }
   try {
-    const result = await execute('INSERT INTO products (name, description, sku, price) VALUES (?, ?, ?, ?)', [name, description || null, sku, price || 0]);
+    const result = await execute(
+      'INSERT INTO products (name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, description || null, sku, price || 0, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null]
+    );
     await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
       [req.user?.name || 'System', req.user?.role || 'ADMIN', 'PRODUCT_CREATED', `Product "${name}" (${sku}) created`]);
-    res.status(201).json({ id: result.insertId, name, description, sku, price });
+    res.status(201).json({ id: result.insertId, name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
   } catch (err: any) {
     if (err.code === 'ER_DUP_ENTRY') {
       res.status(400).json({ error: 'SKU already exists' });
@@ -56,12 +59,15 @@ export async function remove(req: Request, res: Response): Promise<void> {
 
 export async function update(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const { name, description, sku, price } = req.body;
+  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
   }
-  const result = await execute('UPDATE products SET name = ?, description = ?, sku = ?, price = ? WHERE id = ?', [name, description || null, sku, price || 0, id]);
+  const result = await execute(
+    'UPDATE products SET name = ?, description = ?, sku = ?, price = ?, quantity = ?, cas_number = ?, molecular_formula = ?, purity = ?, grade = ?, storage_conditions = ?, hazard_classification = ?, physical_state = ?, hsn_code = ?, manufacturer = ? WHERE id = ?',
+    [name, description || null, sku, price || 0, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null, id]
+  );
   if (result.affectedRows === 0) {
     res.status(404).json({ error: 'Product not found' });
     return;

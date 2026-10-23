@@ -1,0 +1,94 @@
+flowchart LR
+    %% ==================== Admin Lane ====================
+    subgraph Admin["Admin Lane"]
+        direction TB
+        A_Start((Start))
+        A_Masters["Masters Section\n• Add Products / Bags\n• Define Shelf Locations\n• Manage Clients\n• Manage Users on Platform"]
+        A_Approve{"Approve\nDispatch Orders"}
+        A_Dashboard[("Dashboard Reports")]
+
+        A_Start --> A_Masters
+        A_Masters --> A_Approve
+    end
+
+    %% ==================== Production Interface Lane ====================
+    subgraph Production["Production Interface Lane"]
+        direction TB
+        P_Start((Start))
+        P_CreateBatch["Create New Batch"]
+        P_GenQR["Generate / Print\nQR Codes of Batches"]
+        P_PasteQR["Paste QR Codes\non Products / Bags"]
+        P_ManageBatches["Manage Batches"]
+        P_FixProblems["Fix Problems\nin Batches"]
+
+        P_Start --> P_CreateBatch
+        P_CreateBatch --> P_GenQR
+        P_GenQR --> P_PasteQR
+        P_ManageBatches <--> P_FixProblems
+    end
+
+    %% ==================== QC Lane ====================
+    subgraph QC_Lane["QC Lane"]
+        direction TB
+        Q_Start((Start))
+        Q_PerformQC["Perform QC\nVerifications"]
+        Q_Decision{"QC Pass?"}
+
+        Q_Start --> Q_PerformQC
+        Q_PerformQC --> Q_Decision
+    end
+
+    %% ==================== Dispatcher Lane ====================
+    subgraph Dispatcher["Dispatcher Lane"]
+        direction TB
+        D_Start((Start))
+        D_ViewBatches["View Batches"]
+        D_RaiseOrder["Raise Dispatch Order"]
+        D_Wait["(Waits for Admin Approval)"]
+        D_PackingList["Get Packing List\n(Auto Generated)"]
+        D_ScanQR["Scan QR Codes\nPasted on Products"]
+        D_Load["Load and Dispatch"]
+        D_Stop((Stop))
+
+        D_Start --> D_ViewBatches
+        D_ViewBatches --> D_RaiseOrder
+        D_RaiseOrder --> D_Wait
+        D_Wait --> D_PackingList
+        D_PackingList --> D_ScanQR
+        D_ScanQR --> D_Load
+        D_Load --> D_Stop
+    end
+
+    %% ==================== Cross-Lane Connections ====================
+
+    %% Dispatcher → Admin (dispatch order raised, goes for approval)
+    D_Wait -.->|"Submits for\nApproval"| A_Approve
+
+    %% Admin Approve: Yes → Production's Manage Batches
+    A_Approve -- Yes --> P_ManageBatches
+
+    %% Admin Approve: No → Dispatcher's Get Packing List
+    A_Approve -- No --> D_PackingList
+
+    %% Production's Manage Batches connects up to Admin's Approve (yes path)
+    P_ManageBatches --> A_Approve
+
+    %% Production's Manage Batches connects to Dispatcher's Raise Dispatch Order (dashed)
+    P_ManageBatches -.->|"Status / Trigger"| D_RaiseOrder
+
+    %% Production: Paste QR feeds into QC's Perform QC
+    P_PasteQR -.->|"Feeds into"| Q_PerformQC
+
+    %% QC: No → loops back to Production's Manage Batches
+    Q_Decision -- No --> P_ManageBatches
+
+    %% QC: Yes → flows to Dispatcher's View Batches
+    Q_Decision -- Yes --> D_ViewBatches
+
+    %% ==================== Dashed-line Dashboard Feeds ====================
+    A_Masters -.->|"Status"| A_Dashboard
+    P_PasteQR -.->|"Status"| A_Dashboard
+    P_ManageBatches -.->|"Status"| A_Dashboard
+    Q_Decision -.->|"Status"| A_Dashboard
+    D_RaiseOrder -.->|"Status"| A_Dashboard
+    D_Load -.->|"Status"| A_Dashboard

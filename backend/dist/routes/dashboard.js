@@ -6,5 +6,6 @@ const auth_1 = require("../middleware/auth");
 const router = (0, express_1.Router)();
 router.use(auth_1.authenticate);
 router.get('/', dashboardController_1.stats);
+router.get('/admin', (0, auth_1.authorize)('ADMIN'), dashboardController_1.adminStats);
 exports.default = router;
 //# sourceMappingURL=dashboard.js.map

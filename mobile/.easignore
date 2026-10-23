@@ -1,0 +1,35 @@
+# Dependencies and generated folders (same as .gitignore)
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.kotlin/
+/ios
+/android
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.pem
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+*.tsbuildinfo
+.env*.local
+
+# Include the app source even if it has not been committed to git yet.
+# EAS otherwise only guarantees that committed files are uploaded.
+!app.json
+!eas.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!metro.config.js
+!eslint.config.js
+!src/**
+!assets/**

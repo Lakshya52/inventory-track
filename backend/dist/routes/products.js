@@ -9,5 +9,7 @@ router.post('/', (0, auth_1.authorize)('ADMIN'), productController_1.create);
 router.get('/', productController_1.list);
 router.get('/search', productController_1.search);
 router.get('/:id', productController_1.getById);
+router.delete('/:id', (0, auth_1.authorize)('ADMIN'), productController_1.remove);
+router.put('/:id', (0, auth_1.authorize)('ADMIN'), productController_1.update);
 exports.default = router;
 //# sourceMappingURL=products.js.map

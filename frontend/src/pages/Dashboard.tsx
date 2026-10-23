@@ -1,135 +1,262 @@
-import { useEffect, useState, useRef } from 'react';
-import QRCode from 'qrcode';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../services/api';
-import { DashboardStats } from '../types';
+import { AdminStats } from '../types';
+import {
+  Package, Layers, Microscope, Truck, Users, MapPin, Handshake,
+  CheckCircle, XCircle, Clock, TrendingUp, ArrowRight, ClipboardList,
+  FileBarChart, IndianRupee, Boxes,
+} from 'lucide-react';
 
-function QRCodeImage({ value, size = 60 }: { value: string; size?: number }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    if (canvasRef.current) {
-      QRCode.toCanvas(canvasRef.current, value, { width: size, margin: 1 });
-    }
-  }, [value, size]);
-  return <canvas ref={canvasRef} className="cursor-pointer inline-block" />;
-}
-
-function QRCodeModal({ value, onClose }: { value: string; onClose: () => void }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    if (canvasRef.current) {
-      QRCode.toCanvas(canvasRef.current, value, { width: 200, margin: 2 });
-    }
-  }, [value]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm mx-4" onClick={e => e.stopPropagation()}>
-        <canvas ref={canvasRef} className="mx-auto" />
-        <div className="text-center mt-3 font-mono text-sm break-all">{value}</div>
-        <div className="flex gap-3 mt-4 justify-center">
-          <button className="bg-blue-800 text-white px-4 py-2 rounded hover:bg-blue-900" onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const statusColors: Record<string, string> = {
-  CREATED: 'bg-gray-100 text-gray-700',
-  QC_PASSED: 'bg-green-100 text-green-700',
-  QC_FAILED: 'bg-red-100 text-red-700',
-  DISPATCHED: 'bg-blue-100 text-blue-700',
+const statusBadge: Record<string, string> = {
+  PASS: 'badge-success',
+  FAIL: 'badge-danger',
+  PENDING: 'badge-warning',
+  APPROVED: 'badge-success',
+  REJECTED: 'badge-danger',
 };
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [data, setData] = useState<{
+    stats: AdminStats;
+    recentQc: any[];
+    recentDispatches: any[];
+    pendingRequests: any[];
+    recentActivity: any[];
+  } | null>(null);
   const [error, setError] = useState('');
-  const [modalQR, setModalQR] = useState<string | null>(null);
 
   useEffect(() => {
-    api.dashboard.stats().then(setStats).catch(e => setError(e.message));
+    api.dashboard.admin().then(setData).catch(err => setError(err.message));
   }, []);
 
-  if (error) return <div className="p-4 text-red-600">{error}</div>;
-  if (!stats) return <div className="p-4">Loading...</div>;
+  if (error) return <div className="page-container"><div className="card p-6 text-rose-600">{error}</div></div>;
+  if (!data) return (
+    <div className="page-container flex items-center justify-center h-64">
+      <div className="flex flex-col items-center gap-2">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 animate-pulse" />
+        <span className="text-sm text-surface-400">Loading admin dashboard...</span>
+      </div>
+    </div>
+  );
 
-  const cards = [
-    { label: 'Total Products', value: stats.totalProducts },
-    { label: 'Total Batches', value: stats.totalBatches },
-    { label: 'Pending QC', value: stats.pendingQc },
-    { label: 'QC Passed', value: stats.qcPassed },
-    { label: 'QC Failed', value: stats.qcFailed },
-    { label: 'Dispatched Today', value: stats.dispatchedToday },
-    { label: 'Current Inventory', value: `${stats.currentInventory} units` },
-    { label: 'Inventory Value', value: `₹${stats.inventoryValue.toLocaleString()}` },
+  const s = data.stats;
+
+  const stats = [
+    { label: 'Products', value: s.totalProducts, icon: <Package size={20} />, light: 'bg-brand-50 text-brand-600' },
+    { label: 'Inventory Value', value: `₹${Number(s.inventoryValue).toLocaleString('en-IN')}`, icon: <IndianRupee size={20} />, light: 'bg-emerald-50 text-emerald-600' },
+    { label: 'Vendors', value: `${s.activeVendors}/${s.totalVendors}`, icon: <Handshake size={20} />, light: 'bg-teal-50 text-teal-600' },
+    { label: 'Active Users', value: `${s.activeUsers}/${s.totalUsers}`, icon: <Users size={20} />, light: 'bg-violet-50 text-violet-600' },
+    { label: 'QC Passed', value: s.qcPassed, icon: <CheckCircle size={20} />, light: 'bg-emerald-50 text-emerald-600' },
+    { label: 'QC Failed', value: s.qcFailed, icon: <XCircle size={20} />, light: 'bg-rose-50 text-rose-600' },
+    { label: 'Pending Dispatch Requests', value: s.pendingRequests, icon: <Clock size={20} />, light: 'bg-amber-50 text-amber-600' },
+    { label: 'Shelf Locations', value: `${s.activeLocations}/${s.totalLocations}`, icon: <MapPin size={20} />, light: 'bg-slate-50 text-slate-600' },
+  ];
+
+  const quickActions = [
+    { label: 'Vendors', desc: 'Add and manage vendors', path: '/vendors', icon: <Handshake size={18} />, color: 'bg-teal-50 text-teal-600' },
+    { label: 'Users', desc: 'Accounts, roles and access', path: '/users', icon: <Users size={18} />, color: 'bg-violet-50 text-violet-600' },
+    { label: 'Products', desc: 'Product catalogue and stock', path: '/products', icon: <Package size={18} />, color: 'bg-brand-50 text-brand-600' },
+    { label: 'Shelf Locations', desc: 'Warehouse storage master', path: '/shelf-locations', icon: <MapPin size={18} />, color: 'bg-slate-50 text-slate-600' },
+    { label: 'QC Reports', desc: 'Every quality check result', path: '/reports?tab=qc', icon: <Microscope size={18} />, color: 'bg-emerald-50 text-emerald-600' },
+    { label: 'Dispatch Reports', desc: 'Completed dispatches', path: '/reports?tab=dispatch', icon: <Truck size={18} />, color: 'bg-sky-50 text-sky-600' },
+    { label: 'Dispatch Requests', desc: 'Review and approve requests', path: '/reports?tab=requests', icon: <ClipboardList size={18} />, color: 'bg-amber-50 text-amber-600' },
+    { label: 'Inventory Reports', desc: 'Product and batch inventory', path: '/reports?tab=inventory', icon: <Boxes size={18} />, color: 'bg-rose-50 text-rose-600' },
   ];
 
   return (
-    <div className="p-4">
-      <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
+    <div className="page-container">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Admin Dashboard</h1>
+          <p className="page-subtitle">Manage vendors, users, products and review every operation in one place</p>
+        </div>
+        <Link to="/reports" className="btn-primary">
+          <FileBarChart size={16} /> Open Reports
+        </Link>
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        {cards.map(c => (
-          <div key={c.label} className="bg-white p-4 rounded shadow">
-            <div className="text-gray-500 text-sm">{c.label}</div>
-            <div className="text-xl font-bold">{c.value}</div>
+        {stats.map(c => (
+          <div key={c.label} className="card p-5 relative overflow-hidden group">
+            <div className={`absolute top-3 right-3 w-9 h-9 rounded-xl ${c.light} flex items-center justify-center transition-transform group-hover:scale-110`}>
+              {c.icon}
+            </div>
+            <div className="text-xs font-medium text-surface-500 uppercase tracking-wider mb-1.5">{c.label}</div>
+            <div className="text-2xl font-bold text-surface-900">{c.value}</div>
           </div>
         ))}
       </div>
-      <h2 className="text-lg font-semibold mb-2">Recent Batches</h2>
-      <div className="bg-white rounded shadow overflow-x-auto mb-6">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-2 text-left">Product</th>
-              <th className="p-2 text-left">Batch</th>
-              <th className="p-2 text-left">Qty</th>
-              <th className="p-2 text-left">Status</th>
-              <th className="p-2 text-left">QR</th>
-              <th className="p-2 text-left">Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(stats.recentBatches || []).map(b => (
-              <tr key={b.id} className="border-t">
-                <td className="p-2">{b.product_name} ({b.product_sku})</td>
-                <td className="p-2 font-mono text-xs">{b.batch_number}</td>
-                <td className="p-2">{b.quantity}</td>
-                <td className="p-2">
-                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${statusColors[b.status] || ''}`}>{b.status}</span>
-                </td>
-                <td className="p-2">
-                  <QRCodeImage value={b.barcode_value} size={36} />
-                  <button onClick={() => setModalQR(b.barcode_value)} className="ml-1 text-blue-600 hover:underline text-[10px]">view</button>
-                </td>
-                <td className="p-2 text-xs">{new Date(b.created_at).toLocaleDateString()}</td>
-              </tr>
-            ))}
-            {(stats.recentBatches || []).length === 0 && <tr><td colSpan={6} className="p-2 text-gray-500">No batches yet</td></tr>}
-          </tbody>
-        </table>
+
+      <div className="card mb-6">
+        <div className="card-header">
+          <h3 className="text-sm font-semibold text-surface-800">Quick Actions</h3>
+        </div>
+        <div className="card-body grid grid-cols-2 md:grid-cols-4 gap-3">
+          {quickActions.map(action => (
+            <Link key={action.label} to={action.path} className="group flex items-start gap-3 p-3 rounded-xl border border-surface-100 hover:border-brand-200 hover:bg-brand-50/40 transition-all">
+              <div className={`w-9 h-9 rounded-xl ${action.color} flex items-center justify-center shrink-0`}>{action.icon}</div>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-surface-800 group-hover:text-brand-700">{action.label}</div>
+                <div className="text-xs text-surface-400 mt-0.5">{action.desc}</div>
+              </div>
+            </Link>
+          ))}
+        </div>
       </div>
-      <h2 className="text-lg font-semibold mb-2">Recent Activity</h2>
-      <div className="bg-white rounded shadow overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-2 text-left">Time</th>
-              <th className="p-2 text-left">Action</th>
-              <th className="p-2 text-left">Description</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stats.recentActivity.map((log: any) => (
-              <tr key={log.id} className="border-t">
-                <td className="p-2">{new Date(log.created_at).toLocaleString()}</td>
-                <td className="p-2">{log.action}</td>
-                <td className="p-2">{log.description || '-'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-surface-800 flex items-center gap-2">
+              <ClipboardList size={16} className="text-surface-400" />
+              Pending Dispatch Requests
+            </h3>
+            <Link to="/reports?tab=requests" className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
+              View all <ArrowRight size={12} />
+            </Link>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Product</th><th>Batch</th><th>Raised By</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {data.pendingRequests.map((r: any) => (
+                  <tr key={r.id}>
+                    <td>
+                      <div className="font-medium text-surface-800">{r.product_name}</div>
+                      <div className="text-xs text-surface-400">{r.product_sku}</div>
+                    </td>
+                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                    <td className="text-sm">{r.raised_by_name || '-'}</td>
+                    <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{r.status}</span></td>
+                  </tr>
+                ))}
+                {data.pendingRequests.length === 0 && (
+                  <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title">No pending requests</div><div className="empty-desc">Dispatch requests will appear here for approval</div></div></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-surface-800 flex items-center gap-2">
+              <Microscope size={16} className="text-surface-400" />
+              Recent QC Results
+            </h3>
+            <Link to="/reports?tab=qc" className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
+              View all <ArrowRight size={12} />
+            </Link>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Product</th><th>Batch</th><th>Result</th><th>Date</th></tr>
+              </thead>
+              <tbody>
+                {data.recentQc.map((r: any) => (
+                  <tr key={r.id}>
+                    <td>
+                      <div className="font-medium text-surface-800">{r.product_name}</div>
+                      <div className="text-xs text-surface-400">{r.product_sku}</div>
+                    </td>
+                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                    <td><span className={`badge ${statusBadge[r.result] || 'badge-neutral'}`}>{r.result}</span></td>
+                    <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+                {data.recentQc.length === 0 && (
+                  <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title">No QC results yet</div></div></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      {modalQR && <QRCodeModal value={modalQR} onClose={() => setModalQR(null)} />}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-surface-800 flex items-center gap-2">
+              <Truck size={16} className="text-surface-400" />
+              Recent Dispatches
+            </h3>
+            <Link to="/reports?tab=dispatch" className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
+              View all <ArrowRight size={12} />
+            </Link>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Product</th><th>Batch</th><th>Date</th></tr>
+              </thead>
+              <tbody>
+                {data.recentDispatches.map((r: any) => (
+                  <tr key={r.id}>
+                    <td>
+                      <div className="font-medium text-surface-800">{r.product_name}</div>
+                      <div className="text-xs text-surface-400">{r.product_sku}</div>
+                    </td>
+                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                    <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+                {data.recentDispatches.length === 0 && (
+                  <tr><td colSpan={3}><div className="empty-state py-8"><div className="empty-title">No dispatches yet</div></div></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3 className="text-sm font-semibold text-surface-800 flex items-center gap-2">
+              <TrendingUp size={16} className="text-surface-400" />
+              Recent Activity
+            </h3>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Time</th><th>Action</th><th>Description</th></tr>
+              </thead>
+              <tbody>
+                {data.recentActivity.map((log: any) => (
+                  <tr key={log.id}>
+                    <td className="text-xs text-surface-400">{new Date(log.created_at).toLocaleString()}</td>
+                    <td><span className="badge badge-neutral">{log.action}</span></td>
+                    <td className="text-sm text-surface-600">{log.description || '-'}</td>
+                  </tr>
+                ))}
+                {data.recentActivity.length === 0 && (
+                  <tr><td colSpan={3}><div className="empty-state py-8"><div className="empty-title">No activity yet</div></div></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+        {[
+          { label: 'Total Batches', value: s.totalBatches, icon: <Layers size={16} /> },
+          { label: 'QC Pass Rate', value: `${s.qcPassRate}%`, icon: <CheckCircle size={16} /> },
+          { label: 'Dispatched Today', value: s.dispatchedToday, icon: <Truck size={16} /> },
+          { label: 'Pending QC', value: s.pendingQc, icon: <Clock size={16} /> },
+        ].map(item => (
+          <div key={item.label} className="card p-4 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-surface-100 text-surface-500 flex items-center justify-center">{item.icon}</div>
+            <div>
+              <div className="text-lg font-bold text-surface-900">{item.value}</div>
+              <div className="text-xs text-surface-400">{item.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
