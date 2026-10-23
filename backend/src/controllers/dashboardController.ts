@@ -81,16 +81,13 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
        (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'PENDING') AS request_pending,
        (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'APPROVED') AS request_approved,
        (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'REJECTED') AS request_rejected,
-       (SELECT COUNT(*) FROM vendors) AS total_vendors,
-       (SELECT COUNT(*) FROM vendors WHERE is_active = 1) AS active_vendors,
        (SELECT COUNT(*) FROM shelf_locations) AS total_locations,
        (SELECT COUNT(*) FROM shelf_locations WHERE is_active = 1) AS active_locations,
        (SELECT COUNT(*) FROM admins) + (SELECT COUNT(*) FROM qc_users) +
-         (SELECT COUNT(*) FROM dispatch_users) + (SELECT COUNT(*) FROM production_users) AS total_users,
+         (SELECT COUNT(*) FROM dispatch_users) AS total_users,
        (SELECT COUNT(*) FROM admins WHERE is_active = 1) +
          (SELECT COUNT(*) FROM qc_users WHERE is_active = 1) +
-         (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1) +
-         (SELECT COUNT(*) FROM production_users WHERE is_active = 1) AS active_users`
+         (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1) AS active_users`
   );
 
   const recentQc = await query<RowDataPacket[]>(
@@ -145,8 +142,6 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
       pendingRequests: Number(s.request_pending) || 0,
       approvedRequests: Number(s.request_approved) || 0,
       rejectedRequests: Number(s.request_rejected) || 0,
-      totalVendors: Number(s.total_vendors) || 0,
-      activeVendors: Number(s.active_vendors) || 0,
       totalLocations: Number(s.total_locations) || 0,
       activeLocations: Number(s.active_locations) || 0,
       totalUsers: Number(s.total_users) || 0,

@@ -15,13 +15,27 @@ import type { Batch } from '../types';
 
 type Result = 'PASS' | 'FAIL';
 type MessageKind = 'success' | 'error' | 'info';
+type ScannedQr = { batch: Batch; qrValue: string };
+
+function expectedQrCount(batch: Batch): number {
+  if (Array.isArray(batch.unit_qr_codes)) return batch.unit_qr_codes.length;
+  if (typeof batch.unit_qr_codes === 'string') {
+    try {
+      const codes = JSON.parse(batch.unit_qr_codes);
+      if (Array.isArray(codes)) return codes.length;
+    } catch {
+      return Math.max(1, Math.floor(Number(batch.quantity) || 1));
+    }
+  }
+  return Math.max(1, Math.floor(Number(batch.qr_count ?? batch.quantity) || 1));
+}
 
 export default function QCScanScreen() {
   const { session } = useAuth();
   const { online, pendingCount, syncing, sync } = useSync();
   const [permission, requestPermission] = useCameraPermissions();
   const [pending, setPending] = useState<Batch[]>([]);
-  const [group, setGroup] = useState<Batch[]>([]);
+  const [group, setGroup] = useState<ScannedQr[]>([]);
   const [result, setResult] = useState<Result | null>(null);
   const [remarks, setRemarks] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
@@ -32,7 +46,7 @@ export default function QCScanScreen() {
   const [messageKind, setMessageKind] = useState<MessageKind>('info');
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const groupRef = useRef<Batch[]>([]);
+  const groupRef = useRef<ScannedQr[]>([]);
   const lastScanRef = useRef<{ value: string; at: number } | null>(null);
 
   const loadPending = useCallback(async () => {
@@ -51,13 +65,13 @@ export default function QCScanScreen() {
     setMessageKind(kind);
   };
 
-  const addBatch = useCallback((batch: Batch): boolean => {
-    if (groupRef.current.some((item) => item.id === batch.id)) return false;
-    if (groupRef.current.length >= 500) {
-      showMessage('A QC group can contain at most 500 QR codes.', 'error');
+  const addBatch = useCallback((batch: Batch, qrValue: string): boolean => {
+    if (groupRef.current.some((item) => item.qrValue === qrValue)) return false;
+    if (groupRef.current.length >= 1000) {
+      showMessage('A QC group can contain at most 1,000 QR codes.', 'error');
       return false;
     }
-    const next = [...groupRef.current, batch];
+    const next = [...groupRef.current, { batch, qrValue }];
     groupRef.current = next;
     setGroup(next);
     return true;
@@ -78,7 +92,7 @@ export default function QCScanScreen() {
       );
       return;
     }
-    if (!addBatch(batch)) {
+    if (!addBatch(batch, barcode)) {
       showMessage('That QR code is already in this group.', 'info');
       return;
     }
@@ -110,20 +124,10 @@ export default function QCScanScreen() {
     setScanning(true);
   };
 
-  const removeBatch = (batchId: number) => {
-    const next = groupRef.current.filter((batch) => batch.id !== batchId);
+  const removeBatch = (qrValue: string) => {
+    const next = groupRef.current.filter((item) => item.qrValue !== qrValue);
     groupRef.current = next;
     setGroup(next);
-  };
-
-  const toggleBatch = (batch: Batch) => {
-    if (groupRef.current.some((item) => item.id === batch.id)) {
-      removeBatch(batch.id);
-      return;
-    }
-    if (batch.status === 'CREATED' && addBatch(batch)) {
-      showMessage(`${batch.batch_number} added to the QC group.`, 'success');
-    }
   };
 
   const refresh = async () => {
@@ -142,14 +146,28 @@ export default function QCScanScreen() {
       return;
     }
     const selected = groupRef.current;
-    const batchIds = selected.map((batch) => batch.id);
+    const batchIds = [...new Set(selected.map((item) => item.batch.id))];
+    const scannedCounts = new Map<number, number>();
+    selected.forEach(({ batch }) => scannedCounts.set(batch.id, (scannedCounts.get(batch.id) || 0) + 1));
+    const incomplete = [...scannedCounts].find(([batchId, count]) => {
+      const batch = selected.find((item) => item.batch.id === batchId)?.batch;
+      return !batch || count !== expectedQrCount(batch);
+    });
+    if (incomplete) {
+      const batch = selected.find((item) => item.batch.id === incomplete[0])?.batch;
+      showMessage(
+        `Scan every QR for ${batch?.batch_number || 'the batch'} (${incomplete[1]}/${batch ? expectedQrCount(batch) : '?'} scanned) before submitting QC.`,
+        'error'
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       await queueBulkOperation({
         operation_id: newOperationId(),
         type: 'QC_SUBMIT_BULK',
         payload: {
-          barcodes: selected.map((batch) => batch.barcode_value),
+          barcodes: selected.map((item) => item.qrValue),
           batch_ids: batchIds,
           result,
           remarks: remarks.trim() || null,
@@ -160,7 +178,7 @@ export default function QCScanScreen() {
         entity_type: 'qc_group',
       });
       showMessage(
-        `QC ${result} queued for ${selected.length} QR code${selected.length === 1 ? '' : 's'}. It will sync automatically.`,
+        `QC ${result} queued for ${selected.length} QR code${selected.length === 1 ? '' : 's'} across ${batchIds.length} batch${batchIds.length === 1 ? '' : 'es'}. It will sync automatically.`,
         'success'
       );
       groupRef.current = [];
@@ -182,7 +200,7 @@ export default function QCScanScreen() {
   const filteredPending = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return pending.filter((batch) => {
-      if (group.some((item) => item.id === batch.id)) return false;
+      if (group.some((item) => item.batch.id === batch.id)) return false;
       if (!needle) return true;
       return [batch.batch_number, batch.product_name, batch.product_sku, batch.barcode_value]
         .filter(Boolean)
@@ -196,28 +214,6 @@ export default function QCScanScreen() {
     setGroup([]);
     showMessage('QC group cleared. The result and remarks are still available for the next group.', 'info');
   };
-
-  const addVisiblePending = () => {
-    const visible = filteredPending.slice(0, 20);
-    let added = 0;
-    for (const batch of visible) {
-      if (addBatch(batch)) added += 1;
-    }
-    if (added > 0) {
-      showMessage(
-        `${added} pending batch${added === 1 ? '' : 'es'} added in one tap. ${groupRef.current.length} QR code${groupRef.current.length === 1 ? '' : 's'} ready.`,
-        'success'
-      );
-    } else {
-      showMessage('There are no more pending batches to add.', 'info');
-    }
-  };
-
-  const visibleAddLabel = filteredPending.length === 0
-    ? 'Nothing to add'
-    : filteredPending.length > 20
-      ? 'Add first 20'
-      : `Add all shown (${filteredPending.length})`;
 
   return (
     <Screen>
@@ -325,7 +321,7 @@ export default function QCScanScreen() {
         <Card style={{ gap: spacing.md }}>
           <SectionHeader
             title="QC group"
-            subtitle="One result, remark, and photo set applies to every code below."
+            subtitle="Scan every unit QR in each batch before applying one result."
             right={<Badge status="APPLIED" label={`${group.length} codes`} />}
           />
 
@@ -336,18 +332,18 @@ export default function QCScanScreen() {
             />
           ) : (
             <View style={{ gap: spacing.sm }}>
-              {group.map((batch) => (
-                <View key={batch.id} style={styles.batchRow}>
+              {group.map(({ batch, qrValue }) => (
+                <View key={qrValue} style={styles.batchRow}>
                   <View style={styles.batchIcon}>
                     <Ionicons name="qr-code-outline" size={18} color={colors.info} />
                   </View>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={styles.batchTitle} numberOfLines={1}>{batch.product_name}</Text>
                     <Text style={styles.batchMeta} numberOfLines={1}>
-                      {batch.batch_number} · {batch.product_sku} · {batch.quantity} {batch.uom || ''}
+                      {batch.batch_number} · {qrValue}
                     </Text>
                   </View>
-                  <Pressable onPress={() => removeBatch(batch.id)} hitSlop={8} style={styles.removeButton}>
+                  <Pressable onPress={() => removeBatch(qrValue)} hitSlop={8} style={styles.removeButton}>
                     <Ionicons name="close-outline" size={18} color={colors.danger} />
                   </Pressable>
                 </View>
@@ -408,7 +404,7 @@ export default function QCScanScreen() {
         <Card style={{ gap: spacing.md }}>
           <SectionHeader
             title="Pending QC"
-            subtitle={`${pending.length} batch${pending.length === 1 ? '' : 'es'} waiting on this device`}
+            subtitle={`${pending.length} batch${pending.length === 1 ? '' : 'es'} waiting on this device · scan each product QR`}
             right={<Badge status="CREATED" label="Created" />}
           />
           <Field
@@ -418,14 +414,6 @@ export default function QCScanScreen() {
             autoCapitalize="none"
           />
           <View style={styles.quickRow}>
-            <Button
-              title={visibleAddLabel}
-              small
-              variant="secondary"
-              disabled={filteredPending.length === 0}
-              onPress={addVisiblePending}
-              style={{ flex: 1 }}
-            />
             <Button
               title="Clear group"
               small
@@ -449,12 +437,7 @@ export default function QCScanScreen() {
                   </Text>
                   <Text style={styles.pendingAge}>waiting {formatAge(batch.age_minutes)}</Text>
                 </View>
-                <Button
-                  title="Add"
-                  small
-                  variant="secondary"
-                  onPress={() => toggleBatch(batch)}
-                />
+                <Text style={styles.pendingAge}>Scan its {expectedQrCount(batch)} QR label{expectedQrCount(batch) === 1 ? '' : 's'} to add this batch.</Text>
               </View>
             ))
           )}

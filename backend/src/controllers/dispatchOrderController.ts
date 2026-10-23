@@ -30,6 +30,9 @@ export async function raise(req: Request, res: Response): Promise<void> {
       batch_id: batchId ? Number(batchId) : undefined,
       barcode_value: barcodeValue ? String(barcodeValue) : undefined,
       expected_status: req.body.expected_status || undefined,
+      client_id: Number(req.body.client_id),
+      driver_name: String(req.body.driver_name || ''),
+      vehicle_number: String(req.body.vehicle_number || ''),
     },
   };
 
@@ -65,11 +68,12 @@ export async function listPending(req: Request, res: Response): Promise<void> {
   const search = searchClause(q);
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, p.name AS product_name,
-            p.sku AS product_sku, u.name AS raised_by_name
+            p.sku AS product_sku, u.name AS raised_by_name, c.name AS client_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
+     LEFT JOIN clients c ON c.id = d.client_id
      WHERE d.status = 'PENDING' ${search.sql}
      ORDER BY d.created_at ASC LIMIT 100`,
     search.params
@@ -89,12 +93,15 @@ export async function listAll(req: Request, res: Response): Promise<void> {
   }
   params.push(...search.params);
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, p.name AS product_name,
-            p.sku AS product_sku, u.name AS raised_by_name, a.name AS admin_name
+    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.status AS batch_status,
+            p.name AS product_name,
+            p.sku AS product_sku, u.name AS raised_by_name, a.name AS admin_name,
+            c.name AS client_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
+     LEFT JOIN clients c ON c.id = d.client_id
      LEFT JOIN admins a ON d.admin_id = a.id
      WHERE ${where.join(' AND ')} ${search.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
@@ -115,12 +122,14 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   }
   params.push(...search.params);
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, p.name AS product_name,
-            p.sku AS product_sku, a.name AS admin_name
+    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.status AS batch_status,
+            p.name AS product_name,
+            p.sku AS product_sku, a.name AS admin_name, c.name AS client_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN admins a ON d.admin_id = a.id
+     LEFT JOIN clients c ON c.id = d.client_id
      WHERE ${where.join(' AND ')} ${search.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
     params
@@ -228,15 +237,22 @@ export async function reject(req: Request, res: Response): Promise<void> {
 export async function getPackingList(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
-            p.name AS product_name, p.sku, u.name AS raised_by_name, a.name AS admin_name
+    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom,
+            COALESCE(s.location_code, b.storage_location) AS storage_location,
+            p.name AS product_name, p.sku, u.name AS raised_by_name, a.name AS admin_name,
+            c.name AS client_name,
+            (SELECT du.name FROM dispatch_records dr
+             LEFT JOIN dispatch_users du ON du.id = dr.dispatcher_id
+             WHERE dr.dispatch_order_id = d.id ORDER BY dr.created_at DESC LIMIT 1) AS dispatched_by
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
      LEFT JOIN admins a ON d.admin_id = a.id
-     WHERE d.id = ?`,
-    [id]
+     LEFT JOIN clients c ON c.id = d.client_id
+     WHERE d.id = ? AND d.raised_by = ? AND d.status = 'APPROVED'`,
+    [id, req.user!.userId]
   );
   if (orders.length === 0) {
     res.status(404).json({ error: 'Dispatch order not found' });
@@ -267,8 +283,22 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
     raised_by_name: order.raised_by_name || null,
     admin_name: order.admin_name || null,
     admin_remarks: order.admin_remarks || null,
+    client: order.client_id ? await getClient(order.client_id) : null,
+    client_name: order.client_name || null,
+    driver_name: order.driver_name,
+    vehicle_number: order.vehicle_number,
+    dispatched_by: order.dispatched_by || null,
+    location: order.storage_location || null,
     dispatched_at: order.dispatched_at || null,
     items,
     generated_at: new Date().toISOString(),
   });
+}
+
+async function getClient(id: number): Promise<Record<string, unknown> | null> {
+  const clients = await query<RowDataPacket[]>(
+    'SELECT id, name, contact_person, email, phone, address, gst_number FROM clients WHERE id = ?',
+    [id]
+  );
+  return clients[0] || null;
 }

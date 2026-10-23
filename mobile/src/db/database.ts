@@ -50,6 +50,18 @@ export async function initDatabase(): Promise<void> {
       updated_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS clients (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      contact_person TEXT,
+      email TEXT,
+      phone TEXT,
+      address TEXT,
+      gst_number TEXT,
+      is_active INTEGER DEFAULT 1,
+      updated_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS batches (
       id INTEGER PRIMARY KEY,
       product_id INTEGER,
@@ -57,6 +69,9 @@ export async function initDatabase(): Promise<void> {
       quantity REAL DEFAULT 0,
       uom TEXT,
       storage_location TEXT,
+      shelf_location_id INTEGER,
+      location_code TEXT,
+      unit_qr_codes TEXT,
       status TEXT,
       barcode_value TEXT UNIQUE,
       created_at TEXT,
@@ -74,6 +89,12 @@ export async function initDatabase(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_mobile_batches_status ON batches(status);
     CREATE INDEX IF NOT EXISTS idx_mobile_batches_barcode ON batches(barcode_value);
+
+    CREATE TABLE IF NOT EXISTS qr_labels (
+      qr_value TEXT PRIMARY KEY,
+      batch_id INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mobile_qr_labels_batch ON qr_labels(batch_id);
 
     CREATE TABLE IF NOT EXISTS qc_records (
       id INTEGER PRIMARY KEY,
@@ -99,6 +120,10 @@ export async function initDatabase(): Promise<void> {
       status TEXT,
       admin_id INTEGER,
       admin_remarks TEXT,
+      client_id INTEGER,
+      driver_name TEXT,
+      vehicle_number TEXT,
+      client_name TEXT,
       created_at TEXT,
       updated_at TEXT,
       dispatched_at TEXT,
@@ -149,6 +174,25 @@ export async function initDatabase(): Promise<void> {
 
     PRAGMA user_version = 1;
   `);
+  await addColumnIfMissing(db, 'batches', 'shelf_location_id', 'INTEGER');
+  await addColumnIfMissing(db, 'batches', 'location_code', 'TEXT');
+  await addColumnIfMissing(db, 'batches', 'unit_qr_codes', 'TEXT');
+  await addColumnIfMissing(db, 'dispatch_orders', 'client_id', 'INTEGER');
+  await addColumnIfMissing(db, 'dispatch_orders', 'driver_name', 'TEXT');
+  await addColumnIfMissing(db, 'dispatch_orders', 'vehicle_number', 'TEXT');
+  await addColumnIfMissing(db, 'dispatch_orders', 'client_name', 'TEXT');
+}
+
+async function addColumnIfMissing(
+  db: SQLite.SQLiteDatabase,
+  table: string,
+  column: string,
+  definition: string
+): Promise<void> {
+  const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (!columns.some((item) => item.name === column)) {
+    await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 function nowIso(): string {
@@ -193,9 +237,11 @@ export async function clearAllData(): Promise<void> {
       DELETE FROM qc_records;
       DELETE FROM dispatch_records;
       DELETE FROM dispatch_orders;
+      DELETE FROM qr_labels;
       DELETE FROM batches;
       DELETE FROM products;
       DELETE FROM shelf_locations;
+      DELETE FROM clients;
       DELETE FROM sync_meta;
     `);
   });
@@ -239,13 +285,34 @@ async function upsertLocation(db: SQLite.SQLiteDatabase, location: any): Promise
   );
 }
 
+async function upsertClient(db: SQLite.SQLiteDatabase, client: any): Promise<void> {
+  await db.runAsync(
+    `INSERT INTO clients (id, name, contact_person, email, phone, address, gst_number, is_active, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, contact_person = excluded.contact_person, email = excluded.email,
+       phone = excluded.phone, address = excluded.address, gst_number = excluded.gst_number,
+       is_active = excluded.is_active, updated_at = excluded.updated_at`,
+    [
+      client.id, client.name, client.contact_person || null, client.email || null,
+      client.phone || null, client.address || null, client.gst_number || null,
+      Number(client.is_active ?? 1), toIso(client.updated_at || client.created_at),
+    ]
+  );
+}
+
 async function upsertBatch(db: SQLite.SQLiteDatabase, batch: any): Promise<void> {
+  const unitCodes = Array.isArray(batch.unit_qr_codes)
+    ? batch.unit_qr_codes
+    : typeof batch.unit_qr_codes === 'string'
+      ? JSON.parse(batch.unit_qr_codes || '[]')
+      : [];
   await db.runAsync(
     `INSERT INTO batches (id, product_id, batch_number, quantity, uom, storage_location, status,
        barcode_value, created_at, updated_at, product_name, product_sku, cas_number,
        molecular_formula, product_grade, product_purity, hazard_classification,
-       storage_conditions, age_minutes, local_pending)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       storage_conditions, age_minutes, shelf_location_id, location_code, unit_qr_codes, local_pending)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
      ON CONFLICT(id) DO UPDATE SET
        product_id = excluded.product_id, batch_number = excluded.batch_number,
        quantity = excluded.quantity, uom = excluded.uom,
@@ -259,7 +326,8 @@ async function upsertBatch(db: SQLite.SQLiteDatabase, batch: any): Promise<void>
        product_grade = excluded.product_grade, product_purity = excluded.product_purity,
        hazard_classification = excluded.hazard_classification,
        storage_conditions = excluded.storage_conditions,
-       age_minutes = excluded.age_minutes`,
+       age_minutes = excluded.age_minutes, shelf_location_id = excluded.shelf_location_id,
+       location_code = excluded.location_code, unit_qr_codes = excluded.unit_qr_codes`,
     [
       batch.id, batch.product_id, batch.batch_number, Number(batch.quantity || 0),
       batch.uom || null, batch.storage_location || null, batch.status,
@@ -268,8 +336,17 @@ async function upsertBatch(db: SQLite.SQLiteDatabase, batch: any): Promise<void>
       batch.molecular_formula || null, batch.product_grade || null,
       batch.product_purity || null, batch.hazard_classification || null,
       batch.storage_conditions || null, Number(batch.age_minutes || 0),
+      batch.shelf_location_id ?? null, batch.location_code || batch.storage_location || null,
+      JSON.stringify(unitCodes),
     ]
   );
+  await db.runAsync('DELETE FROM qr_labels WHERE batch_id = ?', [batch.id]);
+  for (const code of unitCodes) {
+    await db.runAsync(
+      'INSERT INTO qr_labels (qr_value, batch_id) VALUES (?, ?) ON CONFLICT(qr_value) DO UPDATE SET batch_id = excluded.batch_id',
+      [code, batch.id]
+    );
+  }
 }
 
 async function upsertQcRecord(db: SQLite.SQLiteDatabase, record: any): Promise<void> {
@@ -294,19 +371,24 @@ async function upsertQcRecord(db: SQLite.SQLiteDatabase, record: any): Promise<v
 async function upsertDispatchOrder(db: SQLite.SQLiteDatabase, order: any): Promise<void> {
   await db.runAsync(
     `INSERT INTO dispatch_orders (id, batch_id, raised_by, status, admin_id, admin_remarks,
+       client_id, driver_name, vehicle_number, client_name,
        created_at, updated_at, dispatched_at, batch_number, barcode_value, product_name,
        product_sku, quantity, uom, local_pending, client_operation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
      ON CONFLICT(id) DO UPDATE SET
        status = CASE WHEN dispatch_orders.local_pending = 1 THEN dispatch_orders.status ELSE excluded.status END,
        admin_id = excluded.admin_id, admin_remarks = excluded.admin_remarks,
+       client_id = excluded.client_id, driver_name = excluded.driver_name,
+       vehicle_number = excluded.vehicle_number, client_name = excluded.client_name,
        updated_at = CASE WHEN dispatch_orders.local_pending = 1 THEN dispatch_orders.updated_at ELSE excluded.updated_at END,
        dispatched_at = excluded.dispatched_at, batch_number = excluded.batch_number,
        barcode_value = excluded.barcode_value, product_name = excluded.product_name,
        product_sku = excluded.product_sku, quantity = excluded.quantity, uom = excluded.uom`,
     [
       order.id, order.batch_id, order.raised_by, order.status, order.admin_id ?? null,
-      order.admin_remarks || null, toIso(order.created_at), toIso(order.updated_at),
+      order.admin_remarks || null, order.client_id ?? null, order.driver_name || null,
+      order.vehicle_number || null, order.client_name || null,
+      toIso(order.created_at), toIso(order.updated_at),
       order.dispatched_at ? toIso(order.dispatched_at) : null,
       order.batch_number || '', order.barcode_value || '', order.product_name || '',
       order.product_sku || '', Number(order.quantity || 0), order.uom || null,
@@ -338,6 +420,7 @@ export async function applyPull(data: SyncPullResponse): Promise<void> {
   await db.withTransactionAsync(async () => {
     for (const product of data.products || []) await upsertProduct(db, product);
     for (const location of data.shelf_locations || []) await upsertLocation(db, location);
+    for (const client of data.clients || []) await upsertClient(db, client);
     for (const batch of data.batches || []) await upsertBatch(db, batch);
     for (const batch of data.work_queue || []) await upsertBatch(db, batch);
     for (const record of data.qc_records || []) await upsertQcRecord(db, record);
@@ -347,9 +430,26 @@ export async function applyPull(data: SyncPullResponse): Promise<void> {
   });
 }
 
+export async function getActiveClients(): Promise<Array<{
+  id: number;
+  name: string;
+  contact_person: string | null;
+}>> {
+  const db = await getDb();
+  return db.getAllAsync(
+    'SELECT id, name, contact_person FROM clients WHERE is_active = 1 ORDER BY name ASC'
+  );
+}
+
 export async function getBatchByBarcode(barcode: string): Promise<Batch | null> {
   const db = await getDb();
-  return db.getFirstAsync<Batch>('SELECT * FROM batches WHERE barcode_value = ?', [barcode]);
+  const batch = await db.getFirstAsync<Batch>(
+    `SELECT b.* FROM batches b
+     LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ?
+     WHERE b.barcode_value = ? OR l.qr_value = ?`,
+    [barcode, barcode, barcode]
+  );
+  return batch ? { ...batch, barcode_value: barcode } : null;
 }
 
 export async function getBatchById(id: number): Promise<Batch | null> {
@@ -480,7 +580,9 @@ export async function getDispatchLocalStats(userId: number): Promise<DispatchLoc
   const db = await getDb();
   const today = startOfToday();
   const [ready, pendingOrders, approvedOrders, dispatchedToday, total] = await Promise.all([
-    db.getFirstAsync<{ count: number }>("SELECT COUNT(*) AS count FROM batches WHERE status = 'QC_PASSED'"),
+    db.getFirstAsync<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM batches WHERE status IN ('QC_PASSED', 'DISPATCH_REJECTED')"
+    ),
     db.getFirstAsync<{ count: number }>(
       "SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING' AND (raised_by = ? OR raised_by IS NULL)",
       [userId]
@@ -747,10 +849,6 @@ export async function discardOutboxOperation(operationId: string): Promise<void>
         break;
       }
 
-      case 'PRODUCTION_FIX':
-        await revertGroup('QC_FAILED');
-        break;
-
       default:
         break;
     }
@@ -771,31 +869,54 @@ export async function setBatchLocalStatus(
   );
 }
 
-export async function insertLocalDispatchOrder(order: {
-  id: number;
-  batch_id: number;
+export async function queueDispatchOrderRequests(orders: Array<{
+  operation_id: string;
+  local_id: number;
+  batch: Batch;
   raised_by: number;
-  status: string;
-  batch_number: string;
-  barcode_value: string;
-  product_name: string;
-  product_sku: string;
-  quantity: number;
-  uom: string | null;
-  client_operation_id: string;
-}): Promise<void> {
+  client_id: number;
+  client_name: string;
+  driver_name: string;
+  vehicle_number: string;
+}>): Promise<void> {
   const db = await getDb();
-  await db.runAsync(
-    `INSERT OR REPLACE INTO dispatch_orders (id, batch_id, raised_by, status, admin_id,
-       admin_remarks, created_at, updated_at, dispatched_at, batch_number, barcode_value,
-       product_name, product_sku, quantity, uom, local_pending, client_operation_id)
-     VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    [
-      order.id, order.batch_id, order.raised_by, order.status, nowIso(), nowIso(),
-      order.batch_number, order.barcode_value, order.product_name, order.product_sku,
-      order.quantity, order.uom, order.client_operation_id,
-    ]
-  );
+  const timestamp = nowIso();
+  await db.withTransactionAsync(async () => {
+    for (const order of orders) {
+      const payload = {
+        batch_id: order.batch.id,
+        barcode_value: order.batch.barcode_value,
+        expected_status: order.batch.status,
+        client_id: order.client_id,
+        driver_name: order.driver_name,
+        vehicle_number: order.vehicle_number,
+      };
+      await db.runAsync(
+        `INSERT INTO outbox (operation_id, type, payload, client_timestamp, status, attempts,
+           last_error, created_at, next_attempt_at, entity_type, entity_id)
+         VALUES (?, 'DISPATCH_ORDER_RAISE', ?, ?, 'PENDING', 0, NULL, ?, NULL, 'dispatch_order', ?)`,
+        [order.operation_id, JSON.stringify(payload), timestamp, timestamp, order.batch.id]
+      );
+      await db.runAsync(
+        `INSERT INTO dispatch_orders (id, batch_id, raised_by, status, admin_id, admin_remarks,
+           client_id, driver_name, vehicle_number, client_name, created_at, updated_at,
+           dispatched_at, batch_number, barcode_value, product_name, product_sku, quantity,
+           uom, local_pending, client_operation_id)
+         VALUES (?, ?, ?, 'PENDING', NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        [
+          order.local_id, order.batch.id, order.raised_by, order.client_id,
+          order.driver_name, order.vehicle_number, order.client_name, timestamp, timestamp,
+          order.batch.batch_number, order.batch.barcode_value, order.batch.product_name,
+          order.batch.product_sku, Number(order.batch.quantity || 0), order.batch.uom,
+          order.operation_id,
+        ]
+      );
+      await db.runAsync(
+        "UPDATE batches SET status = 'DISPATCH_ORDER_RAISED', local_pending = 1, updated_at = ? WHERE id = ?",
+        [timestamp, order.batch.id]
+      );
+    }
+  });
 }
 
 export async function deleteLocalOrderByOperation(operationId: string): Promise<void> {

@@ -1,4 +1,4 @@
-export type Role = 'ADMIN' | 'QC' | 'DISPATCH' | 'PRODUCTION';
+export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 
 export interface User {
   id: number;
@@ -21,6 +21,10 @@ export interface Batch {
   quantity: number;
   uom: string | null;
   storage_location: string | null;
+  shelf_location_id?: number | null;
+  location_code?: string | null;
+  unit_qr_codes?: string | string[] | null;
+  qr_count?: number;
   status: string;
   barcode_value: string;
   created_at: string;
@@ -58,6 +62,10 @@ export interface DispatchOrder {
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   admin_id: number | null;
   admin_remarks: string | null;
+  client_id?: number | null;
+  driver_name?: string | null;
+  vehicle_number?: string | null;
+  client_name?: string | null;
   created_at: string;
   updated_at: string;
   dispatched_at: string | null;
@@ -89,8 +97,7 @@ export type OperationType =
   | 'QC_SUBMIT_BULK'
   | 'DISPATCH_ORDER_RAISE'
   | 'DISPATCH_CONFIRM'
-  | 'DISPATCH_CONFIRM_BULK'
-  | 'PRODUCTION_FIX';
+  | 'DISPATCH_CONFIRM_BULK';
 
 export interface OutboxOperation {
   operation_id: string;
@@ -133,6 +140,7 @@ export interface SyncPullResponse {
   role: Role;
   products: any[];
   shelf_locations: any[];
+  clients: any[];
   batches: Batch[];
   qc_records: QcRecord[];
   dispatch_orders: DispatchOrder[];

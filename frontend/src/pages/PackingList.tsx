@@ -12,6 +12,16 @@ function itemBarcode(item: any, packingData: any): string {
   return item.barcode || packingData.barcode || '-';
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character] || character);
+}
+
 export default function PackingList() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
@@ -62,27 +72,36 @@ export default function PackingList() {
         button:hover { background: #4f46e5; }
         @media print { button { display: none; } }
       </style></head><body>
-      <button onclick="window.print()">Print Packing List</button>
+      <button onclick="window.print()">Print / Save PDF</button>
       <h1>Packing List</h1>
       <div class="meta">
-        <span><strong>Order ID:</strong> #${packingData.order_id}</span>
-        <span><strong>Status:</strong> ${packingData.status}</span>
-        <span><strong>Batch:</strong> ${packingData.batch_number || 'N/A'}</span>
-        <span><strong>Generated:</strong> ${new Date(packingData.generated_at).toLocaleString()}</span>
+        <span><strong>Order ID:</strong> #${escapeHtml(packingData.order_id)}</span>
+        <span><strong>Status:</strong> ${escapeHtml(packingData.status)}</span>
+        <span><strong>Client:</strong> ${escapeHtml(packingData.client?.name || '-')}</span>
+        <span><strong>Contact:</strong> ${escapeHtml(packingData.client?.contact_person || '-')}</span>
+        <span><strong>Email:</strong> ${escapeHtml(packingData.client?.email || '-')}</span>
+        <span><strong>Phone:</strong> ${escapeHtml(packingData.client?.phone || '-')}</span>
+        <span><strong>Address:</strong> ${escapeHtml(packingData.client?.address || '-')}</span>
+        <span><strong>GST:</strong> ${escapeHtml(packingData.client?.gst_number || '-')}</span>
+        <span><strong>Driver:</strong> ${escapeHtml(packingData.driver_name || '-')}</span>
+        <span><strong>Vehicle:</strong> ${escapeHtml(packingData.vehicle_number || '-')}</span>
+        <span><strong>Batch:</strong> ${escapeHtml(packingData.batch_number || 'N/A')}</span>
+        <span><strong>Generated:</strong> ${escapeHtml(new Date(packingData.generated_at).toLocaleString())}</span>
       </div>
       <table>
-        <thead><tr><th>#</th><th>Product</th><th>SKU</th><th>Batch</th><th>Qty</th><th>UOM</th><th>Location</th><th>Barcode</th></tr></thead>
+        <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>SKU</th><th>Batch</th><th>Qty</th><th>UOM</th><th>Location</th><th>Barcode</th></tr></thead>
         <tbody>
           ${packingData.items.map((item: any, i: number) => `
             <tr>
+              <td>☐</td>
               <td>${i + 1}</td>
-              <td>${item.product_name || '-'}</td>
-              <td>${item.sku || '-'}</td>
-              <td style="font-family:monospace;font-size:11px;">${item.batch_number || packingData.batch_number || '-'}</td>
-              <td>${item.quantity}</td>
-              <td>${item.uom || '-'}</td>
-              <td>${itemLocation(item)}</td>
-              <td style="font-size:10px;font-family:monospace;">${itemBarcode(item, packingData)}</td>
+              <td>${escapeHtml(item.product_name || '-')}</td>
+              <td>${escapeHtml(item.sku || '-')}</td>
+              <td style="font-family:monospace;font-size:11px;">${escapeHtml(item.batch_number || packingData.batch_number || '-')}</td>
+              <td>${escapeHtml(item.quantity)}</td>
+              <td>${escapeHtml(item.uom || '-')}</td>
+              <td>${escapeHtml(itemLocation(item))}</td>
+              <td style="font-size:10px;font-family:monospace;">${escapeHtml(itemBarcode(item, packingData))}</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -93,14 +112,14 @@ export default function PackingList() {
     win.document.close();
   };
 
-  const processedOrders = orders.filter((order) => order.status === 'APPROVED' || order.status === 'REJECTED');
+  const processedOrders = orders.filter((order) => order.status === 'APPROVED');
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <h1 className="page-title">Packing List</h1>
-          <p className="page-subtitle">View and print packing lists for approved and rejected dispatch orders</p>
+          <p className="page-subtitle">View and print packing lists after admin approval. Use the checkbox during loading.</p>
         </div>
       </div>
 
@@ -114,13 +133,15 @@ export default function PackingList() {
         <div className="card-header"><h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Processed Orders</h3></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Client</th><th>Driver / Vehicle</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
             <tbody>
               {processedOrders.map((order) => (
                 <tr key={order.id}>
                   <td className="text-xs text-surface-400">{new Date(order.created_at).toLocaleDateString()}</td>
                   <td><span className="font-medium text-surface-800">{order.product_name}</span></td>
                   <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span></td>
+                  <td>{order.client_name || '-'}</td>
+                  <td className="text-xs">{order.driver_name || '-'} / {order.vehicle_number || '-'}</td>
                   <td><span className={`badge ${order.status === 'APPROVED' ? 'badge-success' : 'badge-danger'}`}>{order.status}</span></td>
                   <td className="text-right">
                     <button onClick={() => handleViewPacking(order.id)} disabled={loading} className="btn-primary btn-sm">
@@ -129,7 +150,7 @@ export default function PackingList() {
                   </td>
                 </tr>
               ))}
-              {processedOrders.length === 0 && <tr><td colSpan={5}><div className="empty-state"><div className="empty-title">No processed dispatch orders</div></div></td></tr>}
+              {processedOrders.length === 0 && <tr><td colSpan={7}><div className="empty-state"><div className="empty-title">No approved dispatch orders</div></div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -140,11 +161,19 @@ export default function PackingList() {
           <div className="card-header">
             <div className="flex items-center justify-between w-full flex-wrap gap-2">
               <h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Packing List — Order #{packingData.order_id}</h3>
-              <button onClick={handlePrint} className="btn-primary btn-sm"><Printer size={14} /> Print</button>
+              <button onClick={handlePrint} className="btn-primary btn-sm"><Printer size={14} /> Print / Save PDF</button>
             </div>
           </div>
           <div className="p-4 border-b border-surface-200 flex flex-wrap gap-4 text-xs text-surface-500">
             <span><strong>Batch:</strong> {packingData.batch_number || 'N/A'}</span>
+            <span><strong>Client:</strong> {packingData.client?.name || '-'}</span>
+            <span><strong>Contact:</strong> {packingData.client?.contact_person || '-'}</span>
+            <span><strong>Email:</strong> {packingData.client?.email || '-'}</span>
+            <span><strong>Phone:</strong> {packingData.client?.phone || '-'}</span>
+            <span><strong>Address:</strong> {packingData.client?.address || '-'}</span>
+            <span><strong>GST:</strong> {packingData.client?.gst_number || '-'}</span>
+            <span><strong>Driver:</strong> {packingData.driver_name || '-'}</span>
+            <span><strong>Vehicle:</strong> {packingData.vehicle_number || '-'}</span>
             <span><strong>Status:</strong> {packingData.status}</span>
             <span><strong>Generated:</strong> {new Date(packingData.generated_at).toLocaleString()}</span>
             {packingData.raised_by_name && <span><strong>Raised by:</strong> {packingData.raised_by_name}</span>}
@@ -152,10 +181,11 @@ export default function PackingList() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>#</th><th>Product</th><th>SKU</th><th>Batch</th><th>Qty</th><th>UOM</th><th>Location</th></tr></thead>
+              <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>SKU</th><th>Batch</th><th>Qty</th><th>UOM</th><th>Location</th></tr></thead>
               <tbody>
                 {packingData.items.map((item: any, i: number) => (
                   <tr key={i}>
+                    <td><input type="checkbox" aria-label={`Batch ${item.batch_number || packingData.batch_number} loaded`} /></td>
                     <td className="text-sm text-surface-400">{i + 1}</td>
                     <td><span className="font-medium text-surface-800">{item.product_name || '-'}</span></td>
                     <td className="text-sm">{item.sku || '-'}</td>

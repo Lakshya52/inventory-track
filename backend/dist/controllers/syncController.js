@@ -48,6 +48,12 @@ async function register(req, res) {
         return;
     }
     const device = await (0, syncService_1.registerDevice)(req.user, req.body || {});
+    console.info('[sync] device registered', JSON.stringify({
+        request_id: req.requestId || null,
+        user_role: req.user.role,
+        user_id: req.user.userId,
+        device_uuid: device.device_uuid,
+    }));
     res.json({ ...device, server_time: new Date().toISOString() });
 }
 async function push(req, res) {
@@ -84,6 +90,26 @@ async function push(req, res) {
     const failed = results.filter((result) => result.status === 'FAILED').length;
     const conflicts = results.filter((result) => result.status === 'CONFLICT').length;
     await (0, syncService_1.touchDeviceSync)(deviceUuid, 'push', failed || conflicts ? `${failed} failed, ${conflicts} conflicts` : null);
+    const operationIssues = results
+        .filter((result) => result.status === 'FAILED' || result.status === 'CONFLICT')
+        .map((result) => ({
+        operation_id: result.operation_id,
+        status: result.status,
+        error_code: result.error_code,
+        error: result.error,
+    }));
+    console.info('[sync] push completed', JSON.stringify({
+        request_id: req.requestId || null,
+        user_role: req.user.role,
+        user_id: req.user.userId,
+        device_uuid: deviceUuid,
+        received: operations.length,
+        applied: results.filter((result) => result.status === 'APPLIED').length,
+        duplicates: results.filter((result) => result.status === 'DUPLICATE').length,
+        conflicts,
+        failed,
+        operation_issues: operationIssues,
+    }));
     res.json({
         results,
         applied: results.filter((result) => result.status === 'APPLIED').length,
@@ -113,12 +139,19 @@ async function pull(req, res) {
      FROM shelf_locations s
      WHERE UNIX_TIMESTAMP(s.updated_at) * 1000 > ?
      ORDER BY s.updated_at ASC LIMIT ?`, [querySince], limit);
+    const clients = await rowsForPull(`SELECT c.*, UNIX_TIMESTAMP(c.updated_at) * 1000 AS _updated_ms
+     FROM clients c
+     WHERE UNIX_TIMESTAMP(c.updated_at) * 1000 > ?
+     ORDER BY c.updated_at ASC LIMIT ?`, [querySince], limit);
     const batches = await rowsForPull(`SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
             p.hazard_classification, p.storage_conditions, p.manufacturer,
             p.physical_state, p.hsn_code, p.price AS product_price,
+            s.location_code,
+            (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
             UNIX_TIMESTAMP(b.updated_at) * 1000 AS _updated_ms
      FROM batches b JOIN products p ON b.product_id = p.id
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
      WHERE UNIX_TIMESTAMP(b.updated_at) * 1000 > ?
      ORDER BY b.updated_at ASC LIMIT ?`, [querySince], limit);
     let qcRecords = {
@@ -142,12 +175,13 @@ async function pull(req, res) {
         const mine = user.role === 'DISPATCH' ? 'AND d.raised_by = ?' : '';
         const params = user.role === 'DISPATCH' ? [querySince, user.userId] : [querySince];
         dispatchOrders = await rowsForPull(`SELECT d.*, b.batch_number, b.barcode_value, p.name AS product_name,
-              p.sku AS product_sku, u.name AS raised_by_name,
+              p.sku AS product_sku, u.name AS raised_by_name, c.name AS client_name,
               UNIX_TIMESTAMP(d.updated_at) * 1000 AS _updated_ms
        FROM dispatch_orders d
        JOIN batches b ON d.batch_id = b.id
        JOIN products p ON b.product_id = p.id
        LEFT JOIN dispatch_users u ON d.raised_by = u.id
+       LEFT JOIN clients c ON c.id = d.client_id
        WHERE UNIX_TIMESTAMP(d.updated_at) * 1000 > ? ${mine}
        ORDER BY d.updated_at ASC LIMIT ?`, params, limit);
     }
@@ -179,14 +213,7 @@ async function pull(req, res) {
         workQueue = await (0, database_1.query)(`SELECT b.*, p.name AS product_name, p.sku AS product_sku,
               TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.status IN ('QC_PASSED', 'DISPATCH_APPROVED')
-       ORDER BY b.updated_at ASC LIMIT 200`);
-    }
-    else if (user.role === 'PRODUCTION') {
-        workQueue = await (0, database_1.query)(`SELECT b.*, p.name AS product_name, p.sku AS product_sku,
-              TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
-       FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.status IN ('CREATED', 'QC_FAILED', 'DISPATCH_APPROVED')
+       WHERE b.status IN ('QC_PASSED', 'DISPATCH_REJECTED', 'DISPATCH_APPROVED')
        ORDER BY b.updated_at ASC LIMIT 200`);
     }
     else {
@@ -200,23 +227,26 @@ async function pull(req, res) {
     if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
         const mine = user.role === 'DISPATCH' ? 'AND d.raised_by = ?' : '';
         const params = user.role === 'DISPATCH' ? [user.userId] : [];
-        myOrders = await (0, database_1.query)(`SELECT d.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku
+        myOrders = await (0, database_1.query)(`SELECT d.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku,
+              c.name AS client_name
        FROM dispatch_orders d
        JOIN batches b ON d.batch_id = b.id
        JOIN products p ON b.product_id = p.id
-       WHERE d.status IN ('PENDING', 'APPROVED') ${mine}
+       LEFT JOIN clients c ON c.id = d.client_id
+       WHERE d.status IN ('PENDING', 'APPROVED')
+         AND d.dispatched_at IS NULL ${mine}
        ORDER BY d.created_at DESC LIMIT 100`, params);
     }
     const [pendingQcCount] = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM batches WHERE status = 'CREATED'`);
-    const [readyCount] = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM batches WHERE status = 'QC_PASSED'`);
+    const [readyCount] = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM batches WHERE status IN ('QC_PASSED', 'DISPATCH_REJECTED')`);
     const [pendingOrderCount] = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING'`);
     const [myTestsToday] = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM qc_records
      WHERE tester_id = ? AND created_at >= CURDATE()`, [user.userId]);
     const [myDispatchesToday] = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM dispatch_records
      WHERE dispatcher_id = ? AND created_at >= CURDATE()`, [user.userId]);
-    const pages = [products, locations, batches, qcRecords, dispatchOrders, dispatchRecords];
+    const pages = [products, locations, clients, batches, qcRecords, dispatchOrders, dispatchRecords];
     const hasMore = pages.some((page) => page.hasMore);
-    const maxLast = Math.max(since, products.lastMs, locations.lastMs, batches.lastMs, qcRecords.lastMs, dispatchOrders.lastMs, dispatchRecords.lastMs);
+    const maxLast = Math.max(since, products.lastMs, locations.lastMs, clients.lastMs, batches.lastMs, qcRecords.lastMs, dispatchOrders.lastMs, dispatchRecords.lastMs);
     const limitedLast = pages
         .filter((page) => page.hasMore && page.lastMs > 0)
         .map((page) => page.lastMs);
@@ -224,6 +254,22 @@ async function pull(req, res) {
         ? Math.max(since, Math.min(...limitedLast) - 1)
         : maxLast;
     await (0, syncService_1.touchDeviceSync)(deviceUuid, 'pull', null);
+    console.info('[sync] pull completed', JSON.stringify({
+        request_id: req.requestId || null,
+        user_role: user.role,
+        user_id: user.userId,
+        device_uuid: deviceUuid,
+        since,
+        cursor,
+        has_more: hasMore,
+        products: products.rows.length,
+        shelf_locations: locations.rows.length,
+        clients: clients.rows.length,
+        batches: batches.rows.length,
+        qc_records: qcRecords.rows.length,
+        dispatch_orders: dispatchOrders.rows.length,
+        dispatch_records: dispatchRecords.rows.length,
+    }));
     res.json({
         server_time: new Date().toISOString(),
         cursor,
@@ -232,6 +278,7 @@ async function pull(req, res) {
         role: user.role,
         products: products.rows,
         shelf_locations: locations.rows,
+        clients: clients.rows,
         batches: batches.rows,
         qc_records: qcRecords.rows,
         dispatch_orders: dispatchOrders.rows,

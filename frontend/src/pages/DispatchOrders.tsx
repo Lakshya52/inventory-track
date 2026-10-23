@@ -19,7 +19,11 @@ export default function DispatchOrders() {
   const [message, setMessage] = useState('');
   const [messageKind, setMessageKind] = useState<'success' | 'error'>('success');
   const [qcPassedBatches, setQcPassedBatches] = useState<any[]>([]);
-  const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [clients, setClients] = useState<any[]>([]);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
+  const [clientId, setClientId] = useState('');
+  const [driverName, setDriverName] = useState('');
+  const [vehicleNumber, setVehicleNumber] = useState('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -53,6 +57,15 @@ export default function DispatchOrders() {
     const timer = setTimeout(() => { void fetchData(); }, 250);
     return () => clearTimeout(timer);
   }, [fetchData]);
+
+  useEffect(() => {
+    if (isDispatch) {
+      api.clients.list().then(setClients).catch((err: Error) => {
+        setMessage(err.message || 'Could not load clients');
+        setMessageKind('error');
+      });
+    }
+  }, [isDispatch]);
 
   const showMessage = (text: string, kind: 'success' | 'error' = 'success') => {
     setMessage(text);
@@ -90,12 +103,29 @@ export default function DispatchOrders() {
   };
 
   const handleRaiseOrder = async () => {
-    if (!selectedBatchId) { showMessage('Select a batch first', 'error'); return; }
+    if (selectedBatchIds.length === 0 || !clientId || !driverName.trim() || !vehicleNumber.trim()) {
+      showMessage('Select one or more batches, a client, and enter the driver and vehicle details', 'error');
+      return;
+    }
     setActionLoading(true);
     try {
-      await api.dispatchOrders.raise({ batch_id: Number(selectedBatchId) });
-      showMessage('Dispatch order raised. Waiting for admin approval.');
-      setSelectedBatchId('');
+      const results = await Promise.allSettled(selectedBatchIds.map((id) => api.dispatchOrders.raise({
+        batch_id: Number(id),
+        client_id: Number(clientId),
+        driver_name: driverName.trim(),
+        vehicle_number: vehicleNumber.trim(),
+      })));
+      const succeeded = results.filter((result) => result.status === 'fulfilled').length;
+      const failed = results.length - succeeded;
+      if (failed) {
+        showMessage(`${succeeded} order${succeeded === 1 ? '' : 's'} raised; ${failed} failed. Review available batches and retry the failed ones.`, 'error');
+      } else {
+        showMessage(`${succeeded} dispatch order${succeeded === 1 ? '' : 's'} raised for ${clients.find(client => String(client.id) === clientId)?.name}. Waiting for admin approval.`);
+      }
+      setSelectedBatchIds([]);
+      setClientId('');
+      setDriverName('');
+      setVehicleNumber('');
       await fetchData();
     } catch (err: any) {
       showMessage(err.message || 'Could not raise order', 'error');
@@ -141,17 +171,26 @@ export default function DispatchOrders() {
       {isDispatch && (
         <div className="card p-6 mb-6 space-y-4">
           <h2 className="text-sm font-semibold text-surface-800 flex items-center gap-2"><Plus size={16} /> Raise Dispatch Order</h2>
-          <p className="text-xs text-surface-400">Select a QC-passed batch (or a previously rejected batch) to request admin approval:</p>
-          <select className="input" value={selectedBatchId} onChange={(event) => setSelectedBatchId(event.target.value)}>
-            <option value="">-- Select a batch --</option>
+          <p className="text-xs text-surface-400">Select one or more QC-passed batches. Pending requests reserve their batches until the admin approves or rejects them.</p>
+          <label className="input-label">Batches *</label>
+          <select multiple className="input min-h-32" value={selectedBatchIds} onChange={(event) => setSelectedBatchIds(Array.from(event.target.selectedOptions, option => option.value))}>
             {qcPassedBatches.map((batch: any) => (
               <option key={batch.id} value={batch.id}>
-                {batch.product_name} ({batch.product_sku}) - {batch.batch_number} [{batch.status}]
+                {batch.product_name} ({batch.product_sku}) - {batch.batch_number} · {batch.quantity} pcs · {batch.location_code || batch.storage_location || 'Location not set'} [{batch.status}]
               </option>
             ))}
           </select>
           {qcPassedBatches.length === 0 && <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-xl">No QC-passed batches are available right now.</p>}
-          <button className="btn-primary w-full" onClick={handleRaiseOrder} disabled={!selectedBatchId || actionLoading}>
+          <label className="input-label">Client *</label>
+          <select className="input" value={clientId} onChange={(event) => setClientId(event.target.value)}>
+            <option value="">-- Select a client --</option>
+            {clients.map(client => <option key={client.id} value={client.id}>{client.name}{client.gst_number ? ` · ${client.gst_number}` : ''}</option>)}
+          </select>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><label className="input-label">Driver Name *</label><input className="input" value={driverName} onChange={(event) => setDriverName(event.target.value)} maxLength={150} /></div>
+            <div><label className="input-label">Vehicle Number *</label><input className="input" value={vehicleNumber} onChange={(event) => setVehicleNumber(event.target.value)} maxLength={50} /></div>
+          </div>
+          <button className="btn-primary w-full" onClick={handleRaiseOrder} disabled={!selectedBatchIds.length || !clientId || !driverName.trim() || !vehicleNumber.trim() || actionLoading}>
             <ClipboardList size={16} /> {actionLoading ? 'Raising...' : 'Raise Dispatch Order'}
           </button>
         </div>
@@ -164,6 +203,7 @@ export default function DispatchOrders() {
             <span className="badge badge-warning">PENDING</span>
           </div>
           <p className="text-xs text-surface-500">Batch: {selectedOrder.batch_number} | Raised by: {selectedOrder.raised_by_name || '-'}</p>
+          <p className="text-xs text-surface-500">Client: {selectedOrder.client_name || '-'} | Driver: {selectedOrder.driver_name || '-'} | Vehicle: {selectedOrder.vehicle_number || '-'}</p>
           <textarea className="input" rows={2} placeholder="Admin remarks (optional)" value={remarks} onChange={(event) => setRemarks(event.target.value)} />
           <div className="flex flex-wrap gap-2">
             <button onClick={() => handleApprove(selectedOrder.id)} className="btn-primary flex-1" disabled={actionLoading}>
@@ -196,7 +236,7 @@ export default function DispatchOrders() {
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Date</th><th>Product</th><th>Batch</th><th>Raised By</th><th>Status</th><th>Admin</th><th>Actions</th></tr>
+              <tr><th>Date</th><th>Product</th><th>Batch</th><th>Client / Transport</th><th>Raised By</th><th>Status</th><th>Admin</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {list.map((order) => (
@@ -207,8 +247,25 @@ export default function DispatchOrders() {
                     <div className="text-xs text-surface-400">{order.product_sku}</div>
                   </td>
                   <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span></td>
+                  <td className="text-xs">{order.client_name || '-'}<div className="text-surface-400">{order.driver_name || '-'} / {order.vehicle_number || '-'}</div></td>
                   <td className="text-sm">{order.raised_by_name || (isDispatch ? user?.name : '-')}</td>
-                  <td><span className={`badge ${order.status === 'PENDING' ? 'badge-warning' : order.status === 'APPROVED' ? 'badge-success' : 'badge-danger'}`}>{order.status}</span></td>
+                  <td>
+                    {(() => {
+                      const dispatched = Boolean(order.dispatched_at) || order.batch_status === 'DISPATCHED';
+                      const displayStatus = dispatched ? 'DISPATCHED' : order.status;
+                      return (
+                        <span className={`badge ${
+                          displayStatus === 'PENDING'
+                            ? 'badge-warning'
+                            : displayStatus === 'APPROVED' || displayStatus === 'DISPATCHED'
+                              ? 'badge-success'
+                              : 'badge-danger'
+                        }`}>
+                          {displayStatus === 'DISPATCHED' ? 'Dispatched' : displayStatus}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="text-sm text-surface-500">{order.admin_name || order.admin_remarks || '-'}</td>
                   <td>
                     <div className="flex flex-wrap items-center gap-1">
@@ -217,9 +274,13 @@ export default function DispatchOrders() {
                           Review
                         </button>
                       )}
-                      {order.status === 'APPROVED' && order.barcode_value && (
-                        <button onClick={() => navigate(`/dispatch?barcode=${encodeURIComponent(order.barcode_value)}`)} className="btn-primary btn-xs">
-                          <Truck size={12} /> Dispatch
+                      {(order.status === 'APPROVED' || order.dispatched_at || order.batch_status === 'DISPATCHED') && order.barcode_value && (
+                        <button
+                          onClick={() => navigate(`/dispatch?barcode=${encodeURIComponent(order.barcode_value)}`)}
+                          className={`btn-primary btn-xs ${order.dispatched_at || order.batch_status === 'DISPATCHED' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          disabled={Boolean(order.dispatched_at) || order.batch_status === 'DISPATCHED'}
+                        >
+                          <Truck size={12} /> {order.dispatched_at || order.batch_status === 'DISPATCHED' ? 'Dispatched' : 'Dispatch'}
                         </button>
                       )}
                       {(order.status === 'APPROVED' || order.status === 'REJECTED') && (
@@ -231,8 +292,8 @@ export default function DispatchOrders() {
                   </td>
                 </tr>
               ))}
-              {!loading && list.length === 0 && <tr><td colSpan={7}><div className="empty-state"><div className="empty-title">No dispatch orders match this view</div></div></td></tr>}
-              {loading && <tr><td colSpan={7}><div className="empty-state"><div className="empty-title">Loading orders...</div></div></td></tr>}
+              {!loading && list.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No dispatch orders match this view</div></div></td></tr>}
+              {loading && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">Loading orders...</div></div></td></tr>}
             </tbody>
           </table>
         </div>

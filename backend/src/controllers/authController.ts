@@ -14,7 +14,6 @@ const USER_TABLES: { table: JwtPayload['table']; role: Role }[] = [
   { table: 'admins', role: 'ADMIN' },
   { table: 'qc_users', role: 'QC' },
   { table: 'dispatch_users', role: 'DISPATCH' },
-  { table: 'production_users', role: 'PRODUCTION' },
 ];
 
 function hashToken(token: string): string {
@@ -108,6 +107,12 @@ export async function refresh(req: Request, res: Response): Promise<void> {
       );
       if (rows.length === 0) return null;
       const record = rows[0];
+      const supportedTables: Record<string, Role> = {
+        admins: 'ADMIN',
+        qc_users: 'QC',
+        dispatch_users: 'DISPATCH',
+      };
+      if (supportedTables[record.user_table] !== record.user_role) return null;
 
       const user = await findActiveUser(record.user_role as Role, record.user_table as JwtPayload['table'], record.user_id);
       if (!user) return null;

@@ -11,6 +11,6 @@ router.get('/all', (0, auth_1.authorize)('ADMIN'), dispatchOrderController_1.lis
 router.get('/mine', (0, auth_1.authorize)('DISPATCH'), dispatchOrderController_1.listMine);
 router.post('/:id/approve', (0, auth_1.authorize)('ADMIN'), dispatchOrderController_1.approve);
 router.post('/:id/reject', (0, auth_1.authorize)('ADMIN'), dispatchOrderController_1.reject);
-router.get('/:id/packing-list', (0, auth_1.authorize)('ADMIN', 'DISPATCH'), dispatchOrderController_1.getPackingList);
+router.get('/:id/packing-list', (0, auth_1.authorize)('DISPATCH'), dispatchOrderController_1.getPackingList);
 exports.default = router;
 //# sourceMappingURL=dispatchOrders.js.map

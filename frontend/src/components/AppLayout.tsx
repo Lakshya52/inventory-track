@@ -2,7 +2,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNavigate, useLocation, Link, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
-  LayoutDashboard, Factory, Package, Tags, MapPin, Handshake, Users,
+  LayoutDashboard, Package, Tags, MapPin, Handshake, Users,
   Microscope, BarChart3, Camera, ClipboardList, FileText, FileBarChart,
   LogOut, ChevronLeft, ChevronRight, UserCircle, Menu, X, Wifi, WifiOff, QrCode,
 } from 'lucide-react';
@@ -20,17 +20,16 @@ const navSections: { title: string; items: NavItem[] }[] = [
     items: [
       { label: 'Admin Dashboard', path: '/', icon: <LayoutDashboard size={18} />, roles: ['ADMIN'] },
       { label: 'Reports & Logs', path: '/reports', icon: <FileBarChart size={18} />, roles: ['ADMIN'] },
-      { label: 'Production', path: '/production', icon: <Factory size={18} />, roles: ['PRODUCTION'] },
     ],
   },
   {
     title: 'Management',
     items: [
-      { label: 'Vendors', path: '/vendors', icon: <Handshake size={18} />, roles: ['ADMIN'] },
+      { label: 'Clients', path: '/clients', icon: <Handshake size={18} />, roles: ['ADMIN'] },
       { label: 'Users', path: '/users', icon: <Users size={18} />, roles: ['ADMIN'] },
-      { label: 'Products', path: '/products', icon: <Package size={18} />, roles: ['ADMIN'] },
+      { label: 'Products', path: '/products', icon: <Package size={18} />, roles: ['ADMIN', 'QC'] },
       { label: 'Shelf Locations', path: '/shelf-locations', icon: <MapPin size={18} />, roles: ['ADMIN'] },
-      { label: 'Batches', path: '/batches', icon: <Tags size={18} />, roles: ['PRODUCTION'] },
+      { label: 'Batches', path: '/batches', icon: <Tags size={18} />, roles: ['ADMIN'] },
     ],
   },
   {
@@ -38,7 +37,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
     items: [
       { label: 'QC Dashboard', path: '/qc-dashboard', icon: <BarChart3 size={18} />, roles: ['QC'] },
       { label: 'QC Group Scan', path: '/qc', icon: <Microscope size={18} />, roles: ['QC'] },
-      { label: 'Create Batches', path: '/qc/qr-codes', icon: <QrCode size={18} />, roles: ['ADMIN', 'QC'] },
+      { label: 'QR Labels', path: '/qc/qr-codes', icon: <QrCode size={18} />, roles: ['ADMIN'] },
     ],
   },
   {
@@ -48,12 +47,13 @@ const navSections: { title: string; items: NavItem[] }[] = [
       { label: 'Dispatch Group Scan', path: '/dispatch', icon: <Camera size={18} />, roles: ['DISPATCH'] },
       { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['DISPATCH'] },
       { label: 'Packing List', path: '/packing-list', icon: <FileText size={18} />, roles: ['DISPATCH'] },
+      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['ADMIN'] },
     ],
   },
   {
     title: 'Account',
     items: [
-      { label: 'My Profile', path: '/settings', icon: <UserCircle size={18} />, roles: ['ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'] },
+      { label: 'My Profile', path: '/settings', icon: <UserCircle size={18} />, roles: ['ADMIN', 'QC', 'DISPATCH'] },
     ],
   },
 ];

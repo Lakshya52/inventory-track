@@ -33,33 +33,6 @@ CREATE TABLE IF NOT EXISTS dispatch_users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS production_users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    is_active TINYINT(1) NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS vendors (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    vendor_code VARCHAR(50) UNIQUE NOT NULL,
-    name VARCHAR(200) NOT NULL,
-    contact_person VARCHAR(100),
-    email VARCHAR(100),
-    phone VARCHAR(50),
-    address TEXT,
-    gst_number VARCHAR(50),
-    category VARCHAR(100),
-    payment_terms VARCHAR(100),
-    notes TEXT,
-    is_active TINYINT(1) DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_vendors_updated (updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS products (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
@@ -94,8 +67,7 @@ CREATE TABLE IF NOT EXISTS shelf_locations (
     KEY idx_locations_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Retained for compatibility with older installations. The admin UI now
--- manages vendors instead of clients.
+-- Client records are selected for dispatch requests.
 CREATE TABLE IF NOT EXISTS clients (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
@@ -119,6 +91,7 @@ CREATE TABLE IF NOT EXISTS batches (
     unit_price DECIMAL(12,2) DEFAULT 0,
     manufacturing_date DATE,
     expiry_date DATE,
+    shelf_location_id INT NULL,
     storage_location VARCHAR(200),
     notes TEXT,
     status ENUM(
@@ -136,6 +109,7 @@ CREATE TABLE IF NOT EXISTS batches (
     KEY idx_batches_status_updated (status, updated_at),
     KEY idx_batches_updated (updated_at),
     KEY idx_batches_product_created (product_id, created_at),
+    KEY idx_batches_shelf_location (shelf_location_id),
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -163,7 +137,6 @@ CREATE TABLE IF NOT EXISTS qr_labels (
     last_printed_at DATETIME(3) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_qr_label_value (qr_value),
-    UNIQUE KEY uq_qr_label_batch (batch_id),
     UNIQUE KEY uq_qr_label_serial (print_job_id, serial_no),
     KEY idx_qr_labels_job (print_job_id),
     FOREIGN KEY (print_job_id) REFERENCES qr_print_jobs(id) ON DELETE CASCADE,
@@ -198,6 +171,9 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
     status ENUM('PENDING','APPROVED','REJECTED') DEFAULT 'PENDING',
     admin_id INT NULL COMMENT 'admins id who approved/rejected',
     admin_remarks TEXT,
+    client_id INT NULL,
+    driver_name VARCHAR(150) NULL,
+    vehicle_number VARCHAR(50) NULL,
     client_operation_id VARCHAR(64) NULL,
     client_created_at DATETIME(3) NULL,
     device_uuid VARCHAR(100) NULL,
@@ -236,7 +212,7 @@ CREATE TABLE IF NOT EXISTS dispatch_records (
 CREATE TABLE IF NOT EXISTS fix_records (
     id INT AUTO_INCREMENT PRIMARY KEY,
     batch_id INT NOT NULL,
-    fixed_by INT NOT NULL COMMENT 'production_users id',
+    fixed_by INT NOT NULL COMMENT 'Legacy reference for historical records',
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

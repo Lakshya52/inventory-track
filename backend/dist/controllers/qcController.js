@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.submit = submit;
+exports.submitBulk = submitBulk;
+exports.reopenFailedBatch = reopenFailedBatch;
 exports.stats = stats;
 exports.pending = pending;
 exports.records = records;
@@ -50,6 +52,86 @@ async function submit(req, res) {
         ...(applied.data || {}),
     });
 }
+async function submitBulk(req, res) {
+    let barcodes = [];
+    if (Array.isArray(req.body.barcodes)) {
+        barcodes = req.body.barcodes.map((value) => String(value || '').trim()).filter(Boolean);
+    }
+    else if (typeof req.body.barcodes === 'string') {
+        try {
+            const parsed = JSON.parse(req.body.barcodes);
+            if (Array.isArray(parsed)) {
+                barcodes = parsed.map((value) => String(value || '').trim()).filter(Boolean);
+            }
+        }
+        catch {
+            barcodes = [];
+        }
+    }
+    else if (typeof req.body.barcode_value === 'string') {
+        barcodes = [req.body.barcode_value.trim()];
+    }
+    barcodes = [...new Set(barcodes)];
+    const result = String(req.body.result || '').toUpperCase();
+    const remarks = req.body.remarks;
+    const files = req.files || [];
+    const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
+    const images = files.length > 0 ? files.map((file) => file.filename) : bodyImages;
+    if (barcodes.length === 0 || !result) {
+        res.status(400).json({ error: 'At least one QR code and a result are required' });
+        return;
+    }
+    if (!['PASS', 'FAIL'].includes(result)) {
+        res.status(400).json({ error: 'Result must be PASS or FAIL' });
+        return;
+    }
+    const operation = {
+        operation_id: req.body.client_operation_id || (0, crypto_1.randomUUID)(),
+        type: 'QC_SUBMIT_BULK',
+        client_timestamp: req.body.client_timestamp || new Date().toISOString(),
+        payload: {
+            barcodes,
+            result,
+            remarks: remarks || null,
+            images,
+        },
+    };
+    const applied = await (0, syncService_1.applyOperation)(req.user, null, operation);
+    if (applied.status === 'APPLIED' || applied.status === 'DUPLICATE') {
+        res.json({ ...(applied.data || {}), duplicate: applied.status === 'DUPLICATE' });
+        return;
+    }
+    res.status(applied.status === 'CONFLICT' ? 409 : 400).json({
+        error: applied.error || 'Group QC submission failed',
+        code: applied.error_code,
+        ...(applied.data || {}),
+    });
+}
+async function reopenFailedBatch(req, res) {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) {
+        res.status(400).json({ error: 'A reason is required to send a failed batch back for QC' });
+        return;
+    }
+    const result = await (0, database_1.withTransaction)(async (conn) => {
+        const [rows] = await conn.execute('SELECT id, batch_number, status FROM batches WHERE id = ? FOR UPDATE', [req.params.id]);
+        if (rows.length === 0)
+            return { error: 'Batch not found', statusCode: 404 };
+        if (rows[0].status !== 'QC_FAILED') {
+            return { error: 'Only QC-failed batches can be sent back for re-QC', statusCode: 409 };
+        }
+        await conn.execute(`UPDATE batches SET status = 'CREATED', updated_at = CURRENT_TIMESTAMP(3)
+       WHERE id = ? AND status = 'QC_FAILED'`, [req.params.id]);
+        await conn.execute(`INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
+       VALUES (?, ?, ?, 'BATCH_SENT_FOR_REQC', ?)`, [req.user.userId, req.user.name, req.user.role, `Batch ${rows[0].batch_number} sent back for QC: ${reason.slice(0, 1000)}`]);
+        return { batch_id: Number(rows[0].id), status: 'CREATED' };
+    });
+    if ('error' in result) {
+        res.status(result.statusCode ?? 500).json({ error: result.error });
+        return;
+    }
+    res.json(result);
+}
 async function stats(req, res) {
     const user = req.user;
     const personal = user.role === 'QC';
@@ -66,6 +148,7 @@ async function stats(req, res) {
     const passed = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE result = 'PASS' ${scope}`);
     const failed = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE result = 'FAIL' ${scope}`);
     const pendingRows = await (0, database_1.query)(`SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             b.created_at, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.grade AS product_grade, p.purity AS product_purity,
             TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes
@@ -133,6 +216,7 @@ async function pending(req, res) {
     const whereSql = `WHERE ${where.join(' AND ')}`;
     const totalRows = await (0, database_1.query)(`SELECT COUNT(*) AS count FROM batches b JOIN products p ON b.product_id = p.id ${whereSql}`, params);
     const items = await (0, database_1.query)(`SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             b.created_at, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.grade AS product_grade, p.purity AS product_purity,
             TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes

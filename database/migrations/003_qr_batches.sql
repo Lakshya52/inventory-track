@@ -2,9 +2,8 @@
 -- 003_qr_batches.sql
 -- QC QR-label generation, reprint tracking, and grouped QC/dispatch.
 --
--- A QR print job creates one batch per printed label. Every label is a
--- separately scannable unit, while a QC or dispatch submission can cover
--- many scanned labels in one atomic operation.
+-- A QR print job creates a quantity-bearing batch with one separately
+-- scannable label per physical unit. QC and dispatch operate on whole batches.
 --
 -- Safe to run more than once. The API also applies these changes at startup.
 -- ============================================================
@@ -40,8 +39,8 @@ CREATE TABLE IF NOT EXISTS qr_labels (
     last_printed_at DATETIME(3) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_qr_label_value (qr_value),
-    UNIQUE KEY uq_qr_label_batch (batch_id),
     UNIQUE KEY uq_qr_label_serial (print_job_id, serial_no),
+    KEY idx_qr_labels_batch (batch_id),
     KEY idx_qr_labels_job (print_job_id),
     FOREIGN KEY (print_job_id) REFERENCES qr_print_jobs(id) ON DELETE CASCADE,
     FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
@@ -73,5 +72,6 @@ DELIMITER ;
 CALL ensure_qr_index('qc_records', 'idx_qc_group_operation', 'group_operation_id');
 CALL ensure_qr_index('dispatch_records', 'idx_dispatch_group_operation', 'group_operation_id');
 CALL ensure_qr_index('qr_labels', 'idx_qr_labels_job', 'print_job_id');
+CALL ensure_qr_index('qr_labels', 'idx_qr_labels_batch', 'batch_id');
 
 DROP PROCEDURE IF EXISTS ensure_qr_index;

@@ -81,7 +81,8 @@ export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void
 
     doc.setFontSize(6);
     doc.setTextColor(100, 116, 139);
-    doc.text(label.qr_value, textX, qrY + qrSize + 14, { maxWidth });
+    doc.text(`Unit ${String(label.serial_no).padStart(4, '0')}`, textX, qrY + qrSize + 14, { maxWidth });
+    doc.text(label.qr_value, textX, qrY + qrSize + 18, { maxWidth });
   });
 
   doc.save(`QR-${safeFileName(job.job_code)}-${labels.length}-labels.pdf`);
@@ -97,7 +98,7 @@ export async function printQrLabels(labels: QrLabel[], job: QrJob): Promise<void
   const cards = labels.map((label, index) => `
     <div class="qr-card">
       <div class="product">${escapeHtml(job.product_name)}</div>
-      <div class="batch">${escapeHtml(label.batch_number)}</div>
+      <div class="batch">${escapeHtml(label.batch_number)} — Unit ${String(label.serial_no).padStart(4, '0')}</div>
       <img src="${images[index]}" width="150" height="150" />
       <div class="label">${escapeHtml(label.qr_value)}</div>
     </div>

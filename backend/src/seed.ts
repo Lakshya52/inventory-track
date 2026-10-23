@@ -31,29 +31,6 @@ async function seed() {
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
-  await execute(`CREATE TABLE IF NOT EXISTS production_users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    is_active TINYINT(1) NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
-  await execute(`CREATE TABLE IF NOT EXISTS vendors (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    vendor_code VARCHAR(50) NOT NULL UNIQUE,
-    name VARCHAR(200) NOT NULL,
-    contact_person VARCHAR(100),
-    email VARCHAR(100),
-    phone VARCHAR(50),
-    address TEXT,
-    gst_number VARCHAR(50),
-    category VARCHAR(100),
-    payment_terms VARCHAR(100),
-    notes TEXT,
-    is_active TINYINT(1) DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
   await execute(`CREATE TABLE IF NOT EXISTS products (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
@@ -128,7 +105,6 @@ async function seed() {
   try { await execute('ALTER TABLE admins ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
   try { await execute('ALTER TABLE qc_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
   try { await execute('ALTER TABLE dispatch_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
-  try { await execute('ALTER TABLE production_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1'); } catch {}
 
   // Migrate products table — add chemical industry columns if missing
   try { await execute('ALTER TABLE products ADD COLUMN quantity DECIMAL(12,3) DEFAULT 0 AFTER price'); } catch {}
@@ -175,7 +151,6 @@ async function seed() {
   await execute('DELETE FROM admins');
   await execute('DELETE FROM qc_users');
   await execute('DELETE FROM dispatch_users');
-  await execute('DELETE FROM vendors');
 
   await execute('INSERT INTO admins (name, email, password_hash) VALUES (?, ?, ?)', ['Admin', 'admin@gmail.com', adminHash]);
   await execute('INSERT INTO qc_users (name, email, password_hash) VALUES (?, ?, ?)', ['QC Tester', 'qc@gmail.com', qcHash]);

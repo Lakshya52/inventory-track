@@ -5,6 +5,21 @@ import { rateLimit } from '../middleware/rateLimit';
 import { upload } from '../config/upload';
 
 const router = Router();
+router.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    console.info('[sync] request', JSON.stringify({
+      request_id: (req as typeof req & { requestId?: string }).requestId || null,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration_ms: Date.now() - startedAt,
+      user_role: req.user?.role || null,
+      user_id: req.user?.userId || null,
+    }));
+  });
+  next();
+});
 router.use(authenticate);
 router.use(rateLimit({
   windowMs: 60_000,
@@ -12,13 +27,13 @@ router.use(rateLimit({
   message: 'Sync rate limit exceeded. The device will retry automatically.',
 }));
 
-router.post('/register', authorize('ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'), register);
-router.post('/push', authorize('ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'), push);
-router.get('/pull', authorize('ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'), pull);
-router.get('/status', authorize('ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'), status);
+router.post('/register', authorize('ADMIN', 'QC', 'DISPATCH'), register);
+router.post('/push', authorize('ADMIN', 'QC', 'DISPATCH'), push);
+router.get('/pull', authorize('ADMIN', 'QC', 'DISPATCH'), pull);
+router.get('/status', authorize('ADMIN', 'QC', 'DISPATCH'), status);
 router.post(
   '/attachments',
-  authorize('ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'),
+  authorize('ADMIN', 'QC', 'DISPATCH'),
   upload.array('images', 5),
   uploadAttachments
 );

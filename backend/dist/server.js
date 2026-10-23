@@ -55,8 +55,6 @@ const users_1 = __importStar(require("./routes/users"));
 const import_1 = __importDefault(require("./routes/import"));
 const shelfLocations_1 = __importDefault(require("./routes/shelfLocations"));
 const clients_1 = __importDefault(require("./routes/clients"));
-const production_1 = __importDefault(require("./routes/production"));
-const vendors_1 = __importDefault(require("./routes/vendors"));
 const reports_1 = __importDefault(require("./routes/reports"));
 const sync_1 = __importDefault(require("./routes/sync"));
 const errorHandler_1 = require("./middleware/errorHandler");
@@ -108,8 +106,6 @@ app.use('/api/activity', activity_1.default);
 app.use('/api/products/import', import_1.default);
 app.use('/api/shelf-locations', shelfLocations_1.default);
 app.use('/api/clients', clients_1.default);
-app.use('/api/production', production_1.default);
-app.use('/api/vendors', vendors_1.default);
 app.use('/api/reports', reports_1.default);
 app.use('/api/sync', sync_1.default);
 app.get('/api/health', async (_req, res) => {

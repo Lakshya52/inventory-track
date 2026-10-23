@@ -2,13 +2,20 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const qcController_1 = require("../controllers/qcController");
+const qrLabelController_1 = require("../controllers/qrLabelController");
 const auth_1 = require("../middleware/auth");
 const upload_1 = require("../config/upload");
 const router = (0, express_1.Router)();
 router.use(auth_1.authenticate);
 router.post('/', (0, auth_1.authorize)('ADMIN', 'QC'), upload_1.upload.array('images', 5), qcController_1.submit);
+router.post('/bulk', (0, auth_1.authorize)('ADMIN', 'QC'), upload_1.upload.array('images', 5), qcController_1.submitBulk);
+router.post('/batches/:id/reopen', (0, auth_1.authorize)('ADMIN'), qcController_1.reopenFailedBatch);
 router.get('/stats', qcController_1.stats);
 router.get('/pending', qcController_1.pending);
 router.get('/records', qcController_1.records);
+router.post('/qr-jobs', (0, auth_1.authorize)('ADMIN'), qrLabelController_1.create);
+router.get('/qr-jobs', (0, auth_1.authorize)('ADMIN'), qrLabelController_1.list);
+router.get('/qr-jobs/:id', (0, auth_1.authorize)('ADMIN'), qrLabelController_1.getById);
+router.post('/qr-jobs/:id/reprint', (0, auth_1.authorize)('ADMIN'), qrLabelController_1.reprint);
 exports.default = router;
 //# sourceMappingURL=qc.js.map

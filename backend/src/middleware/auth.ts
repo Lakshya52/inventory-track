@@ -5,7 +5,7 @@ import { query } from '../config/database';
 import { JwtPayload, Role } from '../types';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
-const USER_TABLES = new Set(['admins', 'qc_users', 'dispatch_users', 'production_users']);
+const USER_TABLES = new Set(['admins', 'qc_users', 'dispatch_users']);
 
 declare global {
   namespace Express {

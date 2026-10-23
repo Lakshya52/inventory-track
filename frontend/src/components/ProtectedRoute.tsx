@@ -5,7 +5,6 @@ import { Role } from '../types';
 
 const roleHome: Record<Role, string> = {
   ADMIN: '/',
-  PRODUCTION: '/production',
   QC: '/qc-dashboard',
   DISPATCH: '/dispatch-dashboard',
 };

@@ -9,7 +9,6 @@ const USER_TYPES: Record<string, UserTypeInfo> = {
   admin: { table: 'admins', role: 'ADMIN' },
   qc: { table: 'qc_users', role: 'QC' },
   dispatch: { table: 'dispatch_users', role: 'DISPATCH' },
-  production: { table: 'production_users', role: 'PRODUCTION' },
 };
 
 function normalizeType(value: string | undefined): UserTypeInfo | null {

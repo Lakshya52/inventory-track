@@ -1,7 +1,7 @@
 import { execute, query } from './database';
 import { RowDataPacket } from 'mysql2';
 
-const USER_TABLES = ['admins', 'qc_users', 'dispatch_users', 'production_users'];
+const USER_TABLES = ['admins', 'qc_users', 'dispatch_users'];
 
 async function columnExists(table: string, column: string): Promise<boolean> {
   const rows = await query<RowDataPacket[]>(
@@ -52,23 +52,6 @@ async function addUniqueIndexIfMissing(table: string, index: string, columns: st
  * without a destructive seed. Every statement must be safe to run repeatedly.
  */
 export async function ensureAdminSchema(): Promise<void> {
-  await execute(`CREATE TABLE IF NOT EXISTS vendors (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    vendor_code VARCHAR(50) UNIQUE NOT NULL,
-    name VARCHAR(200) NOT NULL,
-    contact_person VARCHAR(100),
-    email VARCHAR(100),
-    phone VARCHAR(50),
-    address TEXT,
-    gst_number VARCHAR(50),
-    category VARCHAR(100),
-    payment_terms VARCHAR(100),
-    notes TEXT,
-    is_active TINYINT(1) DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-
   for (const table of USER_TABLES) {
     await addColumnIfMissing(table, 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
   }
@@ -78,7 +61,10 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing('batches', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
   await addColumnIfMissing('shelf_locations', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
   await addColumnIfMissing('clients', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('vendors', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+  await addColumnIfMissing('batches', 'shelf_location_id', 'INT NULL');
+  await addColumnIfMissing('dispatch_orders', 'client_id', 'INT NULL');
+  await addColumnIfMissing('dispatch_orders', 'driver_name', 'VARCHAR(150) NULL');
+  await addColumnIfMissing('dispatch_orders', 'vehicle_number', 'VARCHAR(50) NULL');
 
   // Offline idempotency / provenance columns. The server timestamp stays in
   // created_at; client_created_at preserves the time the field user acted.
@@ -163,8 +149,7 @@ export async function ensureAdminSchema(): Promise<void> {
     KEY idx_refresh_expiry (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  // QR label generation. A QR print job creates one batch per printed label,
-  // so every label can be scanned and QC-tested independently or as a group.
+  // Each QR label identifies one unit within a single batch.
   await execute(`CREATE TABLE IF NOT EXISTS qr_print_jobs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     job_code VARCHAR(50) UNIQUE NOT NULL,
@@ -189,12 +174,18 @@ export async function ensureAdminSchema(): Promise<void> {
     last_printed_at DATETIME(3) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_qr_label_value (qr_value),
-    UNIQUE KEY uq_qr_label_batch (batch_id),
     UNIQUE KEY uq_qr_label_serial (print_job_id, serial_no),
+    KEY idx_qr_labels_batch (batch_id),
     KEY idx_qr_labels_job (print_job_id),
     FOREIGN KEY (print_job_id) REFERENCES qr_print_jobs(id) ON DELETE CASCADE,
     FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Preserve the foreign-key index before removing the legacy unique index.
+  await addIndexIfMissing('qr_labels', 'idx_qr_labels_batch', 'batch_id');
+  if (await indexExists('qr_labels', 'uq_qr_label_batch')) {
+    await execute('ALTER TABLE qr_labels DROP INDEX uq_qr_label_batch');
+  }
 
   // Query indexes for the operational screens and sync cursors.
   await addIndexIfMissing('products', 'idx_products_updated', 'updated_at');
@@ -217,5 +208,5 @@ export async function ensureAdminSchema(): Promise<void> {
   await addIndexIfMissing('activity_logs', 'idx_activity_user_created', 'user_role, user_id, created_at');
   await addIndexIfMissing('shelf_locations', 'idx_locations_updated', 'updated_at');
   await addIndexIfMissing('clients', 'idx_clients_updated', 'updated_at');
-  await addIndexIfMissing('vendors', 'idx_vendors_updated', 'updated_at');
+  await addIndexIfMissing('batches', 'idx_batches_shelf_location', 'shelf_location_id');
 }

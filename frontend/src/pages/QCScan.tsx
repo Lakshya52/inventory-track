@@ -3,11 +3,24 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { BrowserMultiFormatReader } from '@zxing/library';
 import { api } from '../services/api';
 import {
-  AlertTriangle, Camera, CheckCircle, ImagePlus, ListPlus, Loader2, Microscope,
+  AlertTriangle, Camera, CheckCircle, ImagePlus, Loader2, Microscope,
   QrCode, RefreshCw, Trash2, X, XCircle,
 } from 'lucide-react';
 
 const reader = new BrowserMultiFormatReader();
+
+function expectedQrCount(batch: any): number {
+  if (Array.isArray(batch.unit_qr_codes)) return batch.unit_qr_codes.length;
+  if (typeof batch.unit_qr_codes === 'string') {
+    try {
+      const codes = JSON.parse(batch.unit_qr_codes);
+      if (Array.isArray(codes)) return codes.length;
+    } catch {
+      return Math.max(1, Math.floor(Number(batch.quantity) || 1));
+    }
+  }
+  return Math.max(1, Math.floor(Number(batch.qr_count ?? batch.quantity) || 1));
+}
 
 export default function QCScan() {
   const [scanning, setScanning] = useState(false);
@@ -76,7 +89,7 @@ export default function QCScan() {
   }, [loadQueue]);
 
   const addFoundBatch = useCallback((found: any, silent = false): boolean => {
-    const barcode = String(found?.barcode_value || '').trim();
+    const barcode = String(found?.scanned_qr || found?.barcode_value || '').trim();
     if (!barcode) return false;
     if (scannedRef.current.some((batch) => batch.barcode_value === barcode)) {
       if (!silent) {
@@ -92,14 +105,21 @@ export default function QCScan() {
       }
       return false;
     }
-    if (scannedRef.current.length >= 500) {
+    if (Number(found.quantity) > 1 && !found.scanned_qr) {
       if (!silent) {
-        setMessageKind('error');
-        setMessage('A group can contain at most 500 QR codes.');
+        setMessageKind('info');
+        setMessage('Scan every individual QR label on this batch. The queue shortcut cannot replace a unit scan.');
       }
       return false;
     }
-    const next = [...scannedRef.current, found];
+    if (scannedRef.current.length >= 1000) {
+      if (!silent) {
+        setMessageKind('error');
+        setMessage('A group can contain at most 1,000 QR codes.');
+      }
+      return false;
+    }
+    const next = [...scannedRef.current, { ...found, barcode_value: barcode }];
     scannedRef.current = next;
     setScanned(next);
     if (!silent) {
@@ -203,8 +223,8 @@ export default function QCScan() {
     });
   };
 
-  const removeBatch = (id: number) => {
-    const next = scannedRef.current.filter((batch) => batch.id !== id);
+  const removeBatch = (barcode: string) => {
+    const next = scannedRef.current.filter((batch) => batch.barcode_value !== barcode);
     scannedRef.current = next;
     setScanned(next);
     setMessage('');
@@ -221,28 +241,23 @@ export default function QCScan() {
     });
   }, [queue, queueSearch, scanned]);
 
-  const addVisibleFromQueue = () => {
-    const visible = filteredQueue.slice(0, 12);
-    let added = 0;
-    for (const batch of visible) {
-      if (addFoundBatch(batch, true)) added += 1;
-    }
-    if (added > 0) {
-      setMessageKind('success');
-      setMessage(`${added} pending batch${added === 1 ? '' : 'es'} added in one tap. ${scannedRef.current.length} QR code${scannedRef.current.length === 1 ? '' : 's'} in this group.`);
-    } else if (filteredQueue.length === 0) {
-      setMessageKind('info');
-      setMessage('There are no more pending batches to add.');
-    } else {
-      setMessageKind('info');
-      setMessage('Those batches are no longer waiting for QC. Refresh the queue and try again.');
-    }
-  };
-
   const handleSubmit = async () => {
     if (!result || scannedRef.current.length === 0) {
       setMessageKind('error');
       setMessage('Scan at least one QR code and select PASS or FAIL.');
+      return;
+    }
+    const batchCounts = new Map<number, { batch: any; count: number }>();
+    for (const item of scannedRef.current) {
+      const current = batchCounts.get(Number(item.id));
+      batchCounts.set(Number(item.id), { batch: item, count: (current?.count || 0) + 1 });
+    }
+    const incomplete = [...batchCounts.values()].find(({ batch, count }) => count !== expectedQrCount(batch));
+    if (incomplete) {
+      setMessageKind('error');
+      setMessage(
+        `Scan every QR for ${incomplete.batch.batch_number} (${incomplete.count}/${expectedQrCount(incomplete.batch)} scanned) before submitting QC.`
+      );
       return;
     }
     setSubmitting(true);
@@ -341,25 +356,18 @@ export default function QCScan() {
         )}
 
         <p className="text-xs text-surface-400 mt-3">
-          Add as many QR codes as needed (up to 500). Each code is validated immediately; a group is rejected atomically if any code is invalid.
+          Scan every unique QR label on a batch. QC is blocked until all units in each scanned batch are present.
         </p>
 
         <div className="mt-4 pt-4 border-t border-surface-100">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div>
-              <div className="input-label mb-0">Quick add from QC queue</div>
-              <p className="text-[11px] text-surface-400 mt-1">Skip the scanner when the pending list is already on screen.</p>
+              <div className="input-label mb-0">Pending batches</div>
+              <p className="text-[11px] text-surface-400 mt-1">This list is for reference; scan every product label to submit QC.</p>
             </div>
             <div className="flex items-center gap-2">
               <button className="btn-secondary btn-xs" onClick={() => void loadQueue()} disabled={queueLoading}>
                 <RefreshCw size={12} className={queueLoading ? 'animate-spin' : ''} /> Refresh
-              </button>
-              <button
-                className="btn-primary btn-xs"
-                onClick={addVisibleFromQueue}
-                disabled={filteredQueue.length === 0}
-              >
-                <ListPlus size={12} /> {filteredQueue.length > 12 ? 'Add first 12' : `Add all shown (${filteredQueue.length})`}
               </button>
             </div>
           </div>
@@ -380,9 +388,7 @@ export default function QCScan() {
                     {batch.batch_number} · {batch.product_sku} · {batch.quantity} {batch.uom || ''}
                   </div>
                 </div>
-                <button className="btn-primary btn-xs" onClick={() => addFoundBatch(batch)}>
-                  Add
-                </button>
+                <span className="text-xs text-surface-400">Scan {expectedQrCount(batch)} labels</span>
               </div>
             ))}
             {filteredQueue.length === 0 && (
@@ -413,7 +419,7 @@ export default function QCScan() {
             </thead>
             <tbody>
               {scanned.map((batch) => (
-                <tr key={batch.id}>
+                <tr key={batch.barcode_value}>
                   <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{batch.batch_number}</span></td>
                   <td>
                     <div className="font-medium text-surface-800">{batch.product_name}</div>
@@ -423,7 +429,7 @@ export default function QCScan() {
                   <td className="text-sm text-surface-600">{batch.quantity} {batch.uom || ''}</td>
                   <td className="text-[10px] text-surface-400 font-mono break-all max-w-[220px]">{batch.barcode_value}</td>
                   <td>
-                    <button className="btn-ghost btn-xs text-rose-500" onClick={() => removeBatch(batch.id)}>
+                    <button className="btn-ghost btn-xs text-rose-500" onClick={() => removeBatch(batch.barcode_value)}>
                       <X size={13} /> Remove
                     </button>
                   </td>

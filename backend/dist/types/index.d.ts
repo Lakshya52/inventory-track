@@ -1,4 +1,4 @@
-export type Role = 'ADMIN' | 'QC' | 'DISPATCH' | 'PRODUCTION';
+export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 export type BatchStatus = 'CREATED' | 'QC_PASSED' | 'QC_FAILED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'DISPATCH_REJECTED' | 'DISPATCHED';
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 export interface Product {
@@ -29,6 +29,7 @@ export interface Batch {
     manufacturing_date: string | null;
     expiry_date: string | null;
     storage_location: string | null;
+    shelf_location_id?: number | null;
     notes: string | null;
     status: BatchStatus;
     barcode_value: string;
@@ -56,6 +57,9 @@ export interface DispatchOrder {
     status: DispatchOrderStatus;
     admin_id: number | null;
     admin_remarks: string | null;
+    client_id: number;
+    driver_name: string;
+    vehicle_number: string;
     created_at: string;
     updated_at: string;
 }
@@ -113,9 +117,9 @@ export interface JwtPayload {
     role: Role;
     name: string;
     email: string;
-    table: 'admins' | 'qc_users' | 'dispatch_users' | 'production_users';
+    table: 'admins' | 'qc_users' | 'dispatch_users';
 }
-export type SyncOperationType = 'QC_SUBMIT' | 'DISPATCH_ORDER_RAISE' | 'DISPATCH_CONFIRM' | 'PRODUCTION_FIX';
+export type SyncOperationType = 'QC_SUBMIT' | 'QC_SUBMIT_BULK' | 'DISPATCH_ORDER_RAISE' | 'DISPATCH_CONFIRM' | 'DISPATCH_CONFIRM_BULK';
 export type SyncOperationStatus = 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'FAILED';
 export interface SyncOperationInput {
     operation_id: string;

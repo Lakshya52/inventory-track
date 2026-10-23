@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { jsPDF } from 'jspdf';
 import { api } from '../services/api';
 import {
   FileBarChart, Microscope, Truck, ClipboardList, Boxes, Layers,
@@ -56,6 +57,55 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   URL.revokeObjectURL(url);
 }
 
+function downloadPdf(filename: string, title: string, headers: string[], rows: (string | number)[][]): void {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 10;
+  const tableWidth = pageWidth - margin * 2;
+  const columnWidth = tableWidth / headers.length;
+  let y = 12;
+
+  const drawHeader = () => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text(title, margin, y);
+    y += 8;
+    doc.setFontSize(7);
+    const cells = headers.map((header, index) => ({
+      text: doc.splitTextToSize(header, columnWidth - 2),
+      x: margin + index * columnWidth + 1,
+    }));
+    const height = Math.max(...cells.map((cell) => cell.text.length)) * 3.4 + 3;
+    doc.setFillColor(240, 244, 248);
+    doc.rect(margin, y - 3, tableWidth, height, 'F');
+    cells.forEach((cell) => doc.text(cell.text, cell.x, y));
+    y += height;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+  };
+
+  drawHeader();
+  rows.forEach((row) => {
+    const cells = headers.map((_, index) => ({
+      text: doc.splitTextToSize(String(row[index] ?? '').replace(/\s+/g, ' ').slice(0, 180), columnWidth - 2),
+      x: margin + index * columnWidth + 1,
+    }));
+    const height = Math.max(...cells.map((cell) => cell.text.length)) * 3 + 3;
+    if (y + height > pageHeight - margin) {
+      doc.addPage();
+      y = 12;
+      drawHeader();
+    }
+    cells.forEach((cell) => doc.text(cell.text, cell.x, y));
+    doc.setDrawColor(225, 231, 238);
+    doc.line(margin, y + height - 2, pageWidth - margin, y + height - 2);
+    y += height;
+  });
+
+  doc.save(filename);
+}
+
 function formatDate(value?: string | null): string {
   if (!value) return '-';
   return new Date(value).toLocaleDateString();
@@ -82,6 +132,7 @@ export default function Reports() {
   const [requestStatus, setRequestStatus] = useState('ALL');
   const [batchStatus, setBatchStatus] = useState('ALL');
   const [search, setSearch] = useState('');
+  const [exportFormat, setExportFormat] = useState<'CSV' | 'PDF'>('CSV');
 
   const [reviewRequest, setReviewRequest] = useState<any | null>(null);
   const [remarks, setRemarks] = useState('');
@@ -176,6 +227,7 @@ export default function Reports() {
 
   const filteredRequests = useMemo(() => requests.filter(r => matchesSearch([
     r.product_name, r.product_sku, r.batch_number, r.raised_by_name, r.status, r.admin_remarks,
+    r.client_name, r.driver_name, r.vehicle_number,
   ])), [requests, search]);
 
   const filteredInventory = useMemo(() => inventory.filter(r => matchesSearch([
@@ -191,31 +243,44 @@ export default function Reports() {
   ])), [logs, search]);
 
   const handleExport = () => {
+    let filename = `report_${new Date().toISOString().slice(0, 10)}`;
+    let title = 'Inventory report';
+    let headers: string[] = [];
+    let rows: (string | number)[][] = [];
     if (tab === 'qc') {
-      downloadCsv(`qc_report_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Date', 'Product', 'SKU', 'Batch', 'Tester', 'Result', 'Remarks'],
-        filteredQc.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.tester_name, r.result, r.remarks || '']));
+      filename = `qc_report_${new Date().toISOString().slice(0, 10)}`;
+      title = 'QC report';
+      headers = ['Date', 'Product', 'SKU', 'Batch', 'Tester', 'Result', 'Remarks'];
+      rows = filteredQc.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.tester_name, r.result, r.remarks || '']);
     } else if (tab === 'dispatch') {
-      downloadCsv(`dispatch_report_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Date', 'Product', 'SKU', 'Batch', 'Quantity', 'UOM', 'Dispatched By', 'Remarks'],
-        filteredDispatch.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.uom || '', r.dispatcher_name, r.remarks || '']));
+      filename = `dispatch_report_${new Date().toISOString().slice(0, 10)}`;
+      title = 'Dispatch report';
+      headers = ['Date', 'Product', 'SKU', 'Batch', 'Quantity', 'UOM', 'Dispatched By', 'Remarks'];
+      rows = filteredDispatch.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.uom || '', r.dispatcher_name, r.remarks || '']);
     } else if (tab === 'requests') {
-      downloadCsv(`dispatch_requests_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Date', 'Product', 'SKU', 'Batch', 'Quantity', 'Raised By', 'Status', 'Admin Remarks'],
-        filteredRequests.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.raised_by_name, r.status, r.admin_remarks || '']));
+      filename = `dispatch_requests_${new Date().toISOString().slice(0, 10)}`;
+      title = 'Dispatch requests';
+      headers = ['Date', 'Product', 'SKU', 'Batch', 'Quantity', 'Client', 'Driver', 'Vehicle', 'Raised By', 'Status', 'Admin Remarks'];
+      rows = filteredRequests.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.client_name || '', r.driver_name || '', r.vehicle_number || '', r.raised_by_name, r.status, r.admin_remarks || '']);
     } else if (tab === 'inventory') {
-      downloadCsv(`inventory_report_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Product', 'SKU', 'Grade', 'Purity', 'CAS', 'Price', 'Stock Qty', 'Batch Qty', 'QC Passed Qty', 'Stock Value', 'Batches'],
-        filteredInventory.map(r => [r.name, r.sku, r.grade || '', r.purity || '', r.cas_number || '', r.price, r.quantity, r.batch_quantity, r.qc_passed_quantity, r.stock_value, r.batch_count]));
+      filename = `inventory_report_${new Date().toISOString().slice(0, 10)}`;
+      title = 'Inventory report';
+      headers = ['Product', 'SKU', 'Grade', 'Purity', 'CAS', 'Price', 'Stock Qty', 'Batch Qty', 'QC Passed Qty', 'Stock Value', 'Batches'];
+      rows = filteredInventory.map(r => [r.name, r.sku, r.grade || '', r.purity || '', r.cas_number || '', r.price, r.quantity, r.batch_quantity, r.qc_passed_quantity, r.stock_value, r.batch_count]);
     } else if (tab === 'batches') {
-      downloadCsv(`batches_report_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Created', 'Product', 'SKU', 'Batch', 'Quantity', 'UOM', 'Status', 'Mfg Date', 'Expiry Date', 'Location'],
-        filteredBatches.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.uom || '', r.status, r.manufacturing_date || '', r.expiry_date || '', r.storage_location || '']));
+      filename = `batches_report_${new Date().toISOString().slice(0, 10)}`;
+      title = 'Batch report';
+      headers = ['Created', 'Product', 'SKU', 'Batch', 'Quantity', 'UOM', 'Status', 'Mfg Date', 'Expiry Date', 'Location'];
+      rows = filteredBatches.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.uom || '', r.status, r.manufacturing_date || '', r.expiry_date || '', r.storage_location || '']);
     } else if (tab === 'activity') {
-      downloadCsv(`activity_log_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['Time', 'User', 'Role', 'Action', 'Description'],
-        filteredLogs.map(r => [new Date(r.created_at).toLocaleString(), r.user_name || '', r.user_role || '', r.action, r.description || '']));
+      filename = `activity_log_${new Date().toISOString().slice(0, 10)}`;
+      title = 'Activity log';
+      headers = ['Time', 'User', 'Role', 'Action', 'Description'];
+      rows = filteredLogs.map(r => [new Date(r.created_at).toLocaleString(), r.user_name || '', r.user_role || '', r.action, r.description || '']);
     }
+    if (headers.length === 0) return;
+    if (exportFormat === 'PDF') downloadPdf(`${filename}.pdf`, title, headers, rows);
+    else downloadCsv(`${filename}.csv`, headers, rows);
   };
 
   const handleReview = (request: any) => {
@@ -268,7 +333,18 @@ export default function Reports() {
           <p className="page-subtitle">Every QC check, dispatch, dispatch request, product and inventory record</p>
         </div>
         {['qc', 'dispatch', 'requests', 'inventory', 'batches', 'activity'].includes(tab) && (
-          <button onClick={handleExport} className="btn-secondary"><Download size={16} /> Export CSV</button>
+          <div className="flex items-center gap-2">
+            <select
+              aria-label="Report export format"
+              className="input min-w-[150px]"
+              value={exportFormat}
+              onChange={(event) => setExportFormat(event.target.value as 'CSV' | 'PDF')}
+            >
+              <option value="CSV">CSV (Excel-compatible)</option>
+              <option value="PDF">PDF</option>
+            </select>
+            <button onClick={handleExport} className="btn-secondary"><Download size={16} /> Export {exportFormat}</button>
+          </div>
         )}
       </div>
 
@@ -543,7 +619,7 @@ export default function Reports() {
           )}
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Qty</th><th>Raised By</th><th>Status</th><th>Admin Remarks</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Qty</th><th>Client / Transport</th><th>Raised By</th><th>Status</th><th>Admin Remarks</th><th>Actions</th></tr></thead>
               <tbody>
                 {filteredRequests.map(r => (
                   <tr key={r.id}>
@@ -551,6 +627,10 @@ export default function Reports() {
                     <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku}</div></td>
                     <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
                     <td className="text-sm">{r.quantity} {r.uom || ''}</td>
+                    <td className="text-sm">
+                      <div>{r.client_name || '-'}</div>
+                      <div className="text-xs text-surface-400">{r.driver_name || '-'} / {r.vehicle_number || '-'}</div>
+                    </td>
                     <td className="text-sm">{r.raised_by_name || '-'}</td>
                     <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{r.status}</span></td>
                     <td className="text-sm text-surface-500 max-w-[220px]">{r.admin_remarks || '-'}</td>
@@ -561,7 +641,7 @@ export default function Reports() {
                     </td>
                   </tr>
                 ))}
-                {filteredRequests.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No dispatch requests found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
+                {filteredRequests.length === 0 && <tr><td colSpan={9}><div className="empty-state"><div className="empty-title">No dispatch requests found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
               </tbody>
             </table>
           </div>
@@ -671,6 +751,8 @@ export default function Reports() {
                 <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Batch</div><div className="font-mono text-xs text-surface-800">{reviewRequest.batch_number}</div></div>
                 <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Quantity</div><div className="font-medium text-surface-800">{reviewRequest.quantity} {reviewRequest.uom || ''}</div></div>
                 <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Raised By</div><div className="font-medium text-surface-800">{reviewRequest.raised_by_name || '-'}</div></div>
+                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Client</div><div className="font-medium text-surface-800">{reviewRequest.client_name || '-'}{reviewRequest.client_contact ? ` · ${reviewRequest.client_contact}` : ''}</div><div className="text-xs text-surface-500">{reviewRequest.client_phone || ''}</div></div>
+                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Driver / Vehicle</div><div className="font-medium text-surface-800">{reviewRequest.driver_name || '-'} / {reviewRequest.vehicle_number || '-'}</div></div>
               </div>
               <div className="space-y-1.5">
                 <label className="input-label">Admin Remarks</label>

@@ -45,7 +45,6 @@ export default function Dashboard() {
   const stats = [
     { label: 'Products', value: s.totalProducts, icon: <Package size={20} />, light: 'bg-brand-50 text-brand-600' },
     { label: 'Inventory Value', value: `₹${Number(s.inventoryValue).toLocaleString('en-IN')}`, icon: <IndianRupee size={20} />, light: 'bg-emerald-50 text-emerald-600' },
-    { label: 'Vendors', value: `${s.activeVendors}/${s.totalVendors}`, icon: <Handshake size={20} />, light: 'bg-teal-50 text-teal-600' },
     { label: 'Active Users', value: `${s.activeUsers}/${s.totalUsers}`, icon: <Users size={20} />, light: 'bg-violet-50 text-violet-600' },
     { label: 'QC Passed', value: s.qcPassed, icon: <CheckCircle size={20} />, light: 'bg-emerald-50 text-emerald-600' },
     { label: 'QC Failed', value: s.qcFailed, icon: <XCircle size={20} />, light: 'bg-rose-50 text-rose-600' },
@@ -54,7 +53,7 @@ export default function Dashboard() {
   ];
 
   const quickActions = [
-    { label: 'Vendors', desc: 'Add and manage vendors', path: '/vendors', icon: <Handshake size={18} />, color: 'bg-teal-50 text-teal-600' },
+    { label: 'Clients', desc: 'Manage dispatch destinations', path: '/clients', icon: <Handshake size={18} />, color: 'bg-teal-50 text-teal-600' },
     { label: 'Users', desc: 'Accounts, roles and access', path: '/users', icon: <Users size={18} />, color: 'bg-violet-50 text-violet-600' },
     { label: 'Products', desc: 'Product catalogue and stock', path: '/products', icon: <Package size={18} />, color: 'bg-brand-50 text-brand-600' },
     { label: 'Shelf Locations', desc: 'Warehouse storage master', path: '/shelf-locations', icon: <MapPin size={18} />, color: 'bg-slate-50 text-slate-600' },
@@ -69,7 +68,7 @@ export default function Dashboard() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Admin Dashboard</h1>
-          <p className="page-subtitle">Manage vendors, users, products and review every operation in one place</p>
+          <p className="page-subtitle">Manage clients, users, products and review every operation in one place</p>
         </div>
         <Link to="/reports" className="btn-primary">
           <FileBarChart size={16} /> Open Reports

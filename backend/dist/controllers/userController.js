@@ -17,7 +17,6 @@ const USER_TYPES = {
     admin: { table: 'admins', role: 'ADMIN' },
     qc: { table: 'qc_users', role: 'QC' },
     dispatch: { table: 'dispatch_users', role: 'DISPATCH' },
-    production: { table: 'production_users', role: 'PRODUCTION' },
 };
 function normalizeType(value) {
     if (!value)

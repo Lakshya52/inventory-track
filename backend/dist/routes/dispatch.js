@@ -7,6 +7,7 @@ const upload_1 = require("../config/upload");
 const router = (0, express_1.Router)();
 router.use(auth_1.authenticate);
 router.post('/', (0, auth_1.authorize)('ADMIN', 'DISPATCH'), upload_1.upload.array('images', 5), dispatchController_1.submit);
+router.post('/bulk', (0, auth_1.authorize)('ADMIN', 'DISPATCH'), upload_1.upload.array('images', 5), dispatchController_1.submitBulk);
 router.get('/today', dispatchController_1.today);
 router.get('/stats', dispatchController_1.stats);
 router.get('/ready', dispatchController_1.ready);

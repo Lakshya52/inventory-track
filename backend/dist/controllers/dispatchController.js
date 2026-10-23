@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.submit = submit;
+exports.submitBulk = submitBulk;
 exports.today = today;
 exports.ready = ready;
 exports.approvedOrders = approvedOrders;
@@ -52,6 +53,55 @@ async function submit(req, res) {
         ...(applied.data || {}),
     });
 }
+async function submitBulk(req, res) {
+    let barcodes = [];
+    if (Array.isArray(req.body.barcodes)) {
+        barcodes = req.body.barcodes.map((value) => String(value || '').trim()).filter(Boolean);
+    }
+    else if (typeof req.body.barcodes === 'string') {
+        try {
+            const parsed = JSON.parse(req.body.barcodes);
+            if (Array.isArray(parsed)) {
+                barcodes = parsed.map((value) => String(value || '').trim()).filter(Boolean);
+            }
+        }
+        catch {
+            barcodes = [];
+        }
+    }
+    else if (typeof req.body.barcode_value === 'string') {
+        barcodes = [req.body.barcode_value.trim()];
+    }
+    barcodes = [...new Set(barcodes)];
+    const files = req.files || [];
+    const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
+    const images = files.length > 0 ? files.map((file) => file.filename) : bodyImages;
+    if (barcodes.length === 0) {
+        res.status(400).json({ error: 'At least one QR code is required' });
+        return;
+    }
+    const operation = {
+        operation_id: req.body.client_operation_id || (0, crypto_1.randomUUID)(),
+        type: 'DISPATCH_CONFIRM_BULK',
+        client_timestamp: req.body.client_timestamp || new Date().toISOString(),
+        payload: {
+            barcodes,
+            remarks: req.body.remarks || null,
+            images,
+            direct: req.body.direct === true || req.body.direct === 'true',
+        },
+    };
+    const applied = await (0, syncService_1.applyOperation)(req.user, null, operation);
+    if (applied.status === 'APPLIED' || applied.status === 'DUPLICATE') {
+        res.json({ ...(applied.data || {}), duplicate: applied.status === 'DUPLICATE' });
+        return;
+    }
+    res.status(applied.status === 'CONFLICT' ? 409 : 400).json({
+        error: applied.error || 'Group dispatch failed',
+        code: applied.error_code,
+        ...(applied.data || {}),
+    });
+}
 async function today(req, res) {
     const scope = userScope(req, 'dr.dispatcher_id');
     const records = await (0, database_1.query)(`SELECT dr.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku
@@ -87,13 +137,16 @@ async function ready(req, res) {
 async function approvedOrders(req, res) {
     const scope = userScope(req, 'd.raised_by');
     const orders = await (0, database_1.query)(`SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             p.name AS product_name, p.sku AS product_sku,
             u.name AS raised_by_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
-     WHERE d.status = 'APPROVED' ${scope.sql}
+     WHERE d.status = 'APPROVED'
+       AND d.dispatched_at IS NULL
+       AND b.status = 'DISPATCH_APPROVED' ${scope.sql}
      ORDER BY d.updated_at DESC LIMIT 100`, scope.params);
     res.json(orders);
 }
@@ -147,7 +200,12 @@ async function stats(req, res) {
     const orderScope = personal ? 'AND raised_by = ?' : '';
     const orderParams = personal ? [user.userId] : [];
     const pendingOrdersCount = await count(`SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING' ${orderScope}`, orderParams);
-    const approvedOrdersCount = await count(`SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'APPROVED' ${orderScope}`, orderParams);
+    const approvedOrdersCount = await count(`SELECT COUNT(*) AS count
+     FROM dispatch_orders d
+     JOIN batches b ON d.batch_id = b.id
+     WHERE d.status = 'APPROVED'
+       AND d.dispatched_at IS NULL
+       AND b.status = 'DISPATCH_APPROVED' ${orderScope}`, orderParams);
     const readyBatches = await (0, database_1.query)(`SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
             b.created_at, p.name AS product_name, p.sku AS product_sku,
             TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
@@ -166,7 +224,9 @@ async function stats(req, res) {
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
-     WHERE d.status = 'APPROVED' ${orderScope}
+     WHERE d.status = 'APPROVED'
+       AND d.dispatched_at IS NULL
+       AND b.status = 'DISPATCH_APPROVED' ${orderScope}
      ORDER BY d.updated_at ASC LIMIT 10`, orderParams);
     const recentRecords = await (0, database_1.query)(`SELECT dr.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku,
             u.name AS dispatcher_name

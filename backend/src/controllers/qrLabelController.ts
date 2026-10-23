@@ -1,15 +1,6 @@
 import { Request, Response } from 'express';
-import { randomBytes } from 'crypto';
 import { RowDataPacket } from 'mysql2';
 import { query, withTransaction } from '../config/database';
-
-function todayCode(): string {
-  return new Date().toISOString().slice(0, 10).replace(/-/g, '');
-}
-
-function jobCode(): string {
-  return `QRJ-${todayCode()}-${randomBytes(3).toString('hex').toUpperCase()}`;
-}
 
 async function jobDetail(id: number): Promise<{ job: any; labels: any[] } | null> {
   const jobs = await query<RowDataPacket[]>(
@@ -37,77 +28,9 @@ async function jobDetail(id: number): Promise<{ job: any; labels: any[] } | null
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const productId = Number(req.body.product_id);
-  const quantity = Number(req.body.quantity);
-  if (!Number.isInteger(productId) || productId <= 0) {
-    res.status(400).json({ error: 'Select a product' });
-    return;
-  }
-  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 1000) {
-    res.status(400).json({ error: 'Quantity must be a whole number between 1 and 1000' });
-    return;
-  }
-
-  const products = await query<RowDataPacket[]>(
-    'SELECT id, name, sku, price FROM products WHERE id = ?',
-    [productId]
-  );
-  if (products.length === 0) {
-    res.status(404).json({ error: 'Product not found' });
-    return;
-  }
-  const product = products[0];
-  const code = jobCode();
-  const date = todayCode();
-
-  const result = await withTransaction(async (conn) => {
-    const [job] = await conn.execute<any>(
-      `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
-       VALUES (?, ?, ?, ?, ?)`,
-      [code, productId, quantity, req.user!.userId, req.user!.role]
-    );
-    const jobId = Number(job.insertId);
-
-    for (let serial = 1; serial <= quantity; serial += 1) {
-      const serialText = String(serial).padStart(4, '0');
-      const barcode = `QR:${product.sku}:${code}:${serialText}`;
-      const batchNumber = `${String(product.sku).slice(0, 30)}-${date}-${code.slice(-6)}-${serialText}`;
-      const [batch] = await conn.execute<any>(
-        `INSERT INTO batches
-          (product_id, batch_number, quantity, uom, unit_price, storage_location, notes,
-           status, barcode_value)
-         VALUES (?, ?, 1, 'pcs', ?, NULL, ?, 'CREATED', ?)`,
-        [
-          productId,
-          batchNumber,
-          Number(product.price || 0),
-          `QR label job ${code} / label ${serial}`,
-          barcode,
-        ]
-      );
-      await conn.execute(
-        `INSERT INTO qr_labels
-          (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
-         VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`,
-        [jobId, batch.insertId, barcode, serial]
-      );
-    }
-
-    await conn.execute(
-      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-       VALUES (?, ?, ?, 'QR_CODES_GENERATED', ?)`,
-      [
-        req.user!.userId,
-        req.user!.name,
-        req.user!.role,
-        `${quantity} QR labels generated for ${product.name} (${code})`,
-      ]
-    );
-    return { jobId, code };
+  res.status(410).json({
+    error: 'QR labels are generated automatically when an administrator creates a batch.',
   });
-
-  const detail = await jobDetail(result.jobId);
-  res.status(201).json(detail);
 }
 
 export async function list(req: Request, res: Response): Promise<void> {

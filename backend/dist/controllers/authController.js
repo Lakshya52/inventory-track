@@ -18,7 +18,6 @@ const USER_TABLES = [
     { table: 'admins', role: 'ADMIN' },
     { table: 'qc_users', role: 'QC' },
     { table: 'dispatch_users', role: 'DISPATCH' },
-    { table: 'production_users', role: 'PRODUCTION' },
 ];
 function hashToken(token) {
     return (0, crypto_1.createHash)('sha256').update(token).digest('hex');
@@ -87,6 +86,13 @@ async function refresh(req, res) {
             if (rows.length === 0)
                 return null;
             const record = rows[0];
+            const supportedTables = {
+                admins: 'ADMIN',
+                qc_users: 'QC',
+                dispatch_users: 'DISPATCH',
+            };
+            if (supportedTables[record.user_table] !== record.user_role)
+                return null;
             const user = await findActiveUser(record.user_role, record.user_table, record.user_id);
             if (!user)
                 return null;

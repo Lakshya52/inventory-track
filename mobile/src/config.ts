@@ -10,9 +10,6 @@ import { Platform } from 'react-native';
  * EXPO_PUBLIC_API_URL=https://inventory.example.com
  */
 function resolveApiUrl(): string {
-  if (process.env.EXPO_PUBLIC_API_URL) {
-    return process.env.EXPO_PUBLIC_API_URL.replace(/\/+$/, '');
-  }
   const hostUri =
     Constants.expoConfig?.hostUri ||
     (Constants as any).expoGoConfig?.debuggerHost ||
@@ -23,6 +20,9 @@ function resolveApiUrl(): string {
     // keeps physical devices working even when the API port is firewalled.
     const origin = hostUri.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     return `http://${origin}`;
+  }
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL.replace(/\/+$/, '');
   }
   const host = typeof hostUri === 'string' ? hostUri.split(':')[0] : null;
   if (host) return `http://${host}:3001`;

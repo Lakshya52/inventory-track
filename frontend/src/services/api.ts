@@ -50,7 +50,7 @@ export const api = {
   },
   users: {
     list: () => request<any[]>('/users'),
-    add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH' | 'PRODUCTION' }) =>
+    add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH' }) =>
       request<any>('/users', { method: 'POST', body: JSON.stringify(data) }),
     update: (type: string, id: number, data: { name: string; email: string }) =>
       request<any>(`/users/${type}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -176,6 +176,8 @@ export const api = {
         body: JSON.stringify({ barcodes: data.barcodes, result: data.result, remarks: data.remarks }),
       });
     },
+    reopenFailedBatch: (id: number, reason: string) =>
+      request<any>(`/qc/batches/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reason }) }),
     qrJobs: {
       list: (q?: string) => request<{ items: any[]; total: number }>(`/qc/qr-jobs${q ? `?q=${encodeURIComponent(q)}` : ''}`),
       create: (data: { product_id: number; quantity: number }) =>
@@ -256,7 +258,7 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: number; barcode_value?: string; expected_status?: string }) =>
+    raise: (data: { batch_id?: number; barcode_value?: string; expected_status?: string; client_id: number; driver_name: string; vehicle_number: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
     pending: (params?: { q?: string }) => {
       const qs = new URLSearchParams();

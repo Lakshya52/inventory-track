@@ -5,6 +5,7 @@ import { AppLayout } from './components/AppLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Products from './pages/Products';
+import Clients from './pages/Clients';
 import Batches from './pages/Batches';
 import QCScan from './pages/QCScan';
 import QCDashboard from './pages/QCDashboard';
@@ -13,9 +14,7 @@ import DispatchScan from './pages/DispatchScan';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import ShelfLocations from './pages/ShelfLocations';
-import Vendors from './pages/Vendors';
 import Users from './pages/Users';
-import ProductionDashboard from './pages/ProductionDashboard';
 import DispatchOrders from './pages/DispatchOrders';
 import PackingList from './pages/PackingList';
 import QRLabels from './pages/QRLabels';
@@ -39,7 +38,6 @@ export default function App() {
   const redirectHome = () => {
     if (user?.role === 'QC') return '/qc-dashboard';
     if (user?.role === 'DISPATCH') return '/dispatch-dashboard';
-    if (user?.role === 'PRODUCTION') return '/production';
     return '/';
   };
 
@@ -51,26 +49,24 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute roles={['ADMIN']}><Dashboard /></ProtectedRoute>} />
 
         {/* Admin management */}
-        <Route path="/vendors" element={<ProtectedRoute roles={['ADMIN']}><Vendors /></ProtectedRoute>} />
         <Route path="/users" element={<ProtectedRoute roles={['ADMIN']}><Users /></ProtectedRoute>} />
-        <Route path="/products" element={<ProtectedRoute roles={['ADMIN']}><Products /></ProtectedRoute>} />
         <Route path="/shelf-locations" element={<ProtectedRoute roles={['ADMIN']}><ShelfLocations /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute roles={['ADMIN']}><Reports /></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH', 'PRODUCTION']}><Settings /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><Settings /></ProtectedRoute>} />
 
-        {/* Production */}
-        <Route path="/production" element={<ProtectedRoute roles={['PRODUCTION']}><ProductionDashboard /></ProtectedRoute>} />
-        <Route path="/batches" element={<ProtectedRoute roles={['PRODUCTION']}><Batches /></ProtectedRoute>} />
+        <Route path="/clients" element={<ProtectedRoute roles={['ADMIN']}><Clients /></ProtectedRoute>} />
+        <Route path="/batches" element={<ProtectedRoute roles={['ADMIN']}><Batches /></ProtectedRoute>} />
+        <Route path="/products" element={<ProtectedRoute roles={['ADMIN', 'QC']}><Products readOnly={user?.role !== 'ADMIN'} /></ProtectedRoute>} />
 
         {/* QC */}
         <Route path="/qc" element={<ProtectedRoute roles={['QC']}><QCScan /></ProtectedRoute>} />
-        <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QRLabels /></ProtectedRoute>} />
+        <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN']}><QRLabels /></ProtectedRoute>} />
         <Route path="/qc-dashboard" element={<ProtectedRoute roles={['QC']}><QCDashboard /></ProtectedRoute>} />
 
         {/* Dispatch */}
         <Route path="/dispatch" element={<ProtectedRoute roles={['DISPATCH']}><DispatchScan /></ProtectedRoute>} />
         <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
-        <Route path="/dispatch-orders" element={<ProtectedRoute roles={['DISPATCH']}><DispatchOrders /></ProtectedRoute>} />
+        <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchOrders /></ProtectedRoute>} />
         <Route path="/packing-list" element={<ProtectedRoute roles={['DISPATCH']}><PackingList /></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to={redirectHome()} replace />} />

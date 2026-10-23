@@ -28,7 +28,7 @@ export default function DashboardScreen() {
   const userId = session?.user.id || 0;
 
   const load = useCallback(async () => {
-    if (!role || role === 'ADMIN' || role === 'PRODUCTION') return;
+    if (!role || role === 'ADMIN') return;
     if (role === 'QC') {
       const [localStats, records] = await Promise.all([
         getQcLocalStats(userId),
@@ -52,7 +52,7 @@ export default function DashboardScreen() {
     }, [load])
   );
 
-  if (role === 'ADMIN' || role === 'PRODUCTION' || !role) {
+  if (role === 'ADMIN' || !role) {
     return <LimitedAccessScreen />;
   }
 

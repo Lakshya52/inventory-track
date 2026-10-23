@@ -35,7 +35,6 @@ const ALLOWED_TYPES = new Set<SyncOperationType>([
   'DISPATCH_ORDER_RAISE',
   'DISPATCH_CONFIRM',
   'DISPATCH_CONFIRM_BULK',
-  'PRODUCTION_FIX',
 ]);
 
 function safeJson(value: unknown): any {
@@ -173,14 +172,17 @@ async function getBatchForUpdate(
 
   const sql = barcode
     ? `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
-              p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity
+              p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
+              (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count
        FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.barcode_value = ? FOR UPDATE`
+       LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ?
+       WHERE b.barcode_value = ? OR l.qr_value = ? FOR UPDATE`
     : `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
-              p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity
+              p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
+              (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count
        FROM batches b JOIN products p ON b.product_id = p.id
        WHERE b.id = ? FOR UPDATE`;
-  const [rows] = await conn.execute<RowDataPacket[]>(sql, [barcode || batchId]);
+  const [rows] = await conn.execute<RowDataPacket[]>(sql, barcode ? [barcode, barcode, barcode] : [batchId]);
   if (rows.length === 0) {
     throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
   }
@@ -216,7 +218,7 @@ function bulkBarcodes(payload: Record<string, any>): string[] {
     const barcode = value.trim();
     if (!barcode) continue;
     seen.add(barcode);
-    if (seen.size >= 500) break;
+    if (seen.size >= 1000) break;
   }
   return [...seen];
 }
@@ -229,21 +231,57 @@ async function getBatchesForUpdate(
     throw new SyncError('At least one QR code is required', 'BATCH_REFERENCE_REQUIRED');
   }
   const placeholders = barcodes.map(() => '?').join(',');
-  const [rows] = await conn.query<RowDataPacket[]>(
-    `SELECT b.*, p.name AS product_name, p.sku AS product_sku
-     FROM batches b JOIN products p ON b.product_id = p.id
-     WHERE b.barcode_value IN (${placeholders})
-     FOR UPDATE`,
+  const [labelRows] = await conn.query<RowDataPacket[]>(
+    `SELECT l.qr_value, l.batch_id
+     FROM qr_labels l
+     WHERE l.qr_value IN (${placeholders})`,
     barcodes
   );
-  if (rows.length !== barcodes.length) {
-    const found = new Set(rows.map((row) => String(row.barcode_value)));
-    throw new SyncConflictError('Some QR codes were not found', {
-      missing_barcodes: barcodes.filter((barcode) => !found.has(barcode)),
+  const [legacyRows] = await conn.query<RowDataPacket[]>(
+    `SELECT barcode_value, id AS batch_id FROM batches
+     WHERE barcode_value IN (${placeholders})`,
+    barcodes
+  );
+  const codeToBatch = new Map<string, number>();
+  for (const row of labelRows) codeToBatch.set(String(row.qr_value), Number(row.batch_id));
+  for (const row of legacyRows) codeToBatch.set(String(row.barcode_value), Number(row.batch_id));
+  const missing = barcodes.filter((barcode) => !codeToBatch.has(barcode));
+  if (missing.length > 0) {
+    throw new SyncConflictError('Some QR codes were not found', { missing_barcodes: missing });
+  }
+
+  const batchIds = [...new Set(barcodes.map((barcode) => codeToBatch.get(barcode)!))];
+  const batchPlaceholders = batchIds.map(() => '?').join(',');
+  const [batches] = await conn.query<RowDataPacket[]>(
+    `SELECT b.*, p.name AS product_name, p.sku AS product_sku,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count
+     FROM batches b JOIN products p ON b.product_id = p.id
+     WHERE b.id IN (${batchPlaceholders})
+     ORDER BY b.id
+     FOR UPDATE`,
+    batchIds
+  );
+  const scannedCounts = new Map<number, number>();
+  for (const barcode of barcodes) {
+    const batchId = codeToBatch.get(barcode)!;
+    scannedCounts.set(batchId, (scannedCounts.get(batchId) || 0) + 1);
+  }
+  const incomplete = batches.filter((batch) =>
+    Number(batch.quantity) > 1 &&
+    (Number(batch.qr_count) !== Number(batch.quantity) ||
+      scannedCounts.get(Number(batch.id)) !== Number(batch.qr_count))
+  );
+  if (incomplete.length > 0) {
+    throw new SyncConflictError('Scan every unit QR code in each batch before submitting this group', {
+      incomplete_batches: incomplete.map((batch) => ({
+        batch_id: batch.id,
+        batch_number: batch.batch_number,
+        expected_qr_count: Number(batch.qr_count),
+        scanned_qr_count: scannedCounts.get(Number(batch.id)) || 0,
+      })),
     });
   }
-  const byBarcode = new Map(rows.map((row) => [String(row.barcode_value), row]));
-  return barcodes.map((barcode) => byBarcode.get(barcode)!);
+  return batches;
 }
 
 async function logActivity(
@@ -277,6 +315,14 @@ async function applyQcSubmit(
   const images = imageList(payload);
 
   const batch = await getBatchForUpdate(conn, payload);
+  if (Number(batch.quantity) > 1) {
+    throw new SyncConflictError('Scan every unit QR code in the batch before submitting QC', {
+      batch_id: batch.id,
+      batch_number: batch.batch_number,
+      expected_qr_count: Number(batch.qr_count),
+      scanned_qr_count: 1,
+    });
+  }
   if (payload.expected_status && String(payload.expected_status) !== String(batch.status)) {
     throw new SyncConflictError('Batch status changed while this QC test was offline', {
       batch_id: batch.id,
@@ -431,6 +477,19 @@ async function applyDispatchOrderRaise(
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can raise dispatch orders', 'FORBIDDEN', 403);
   }
+  const clientId = Number(input.payload.client_id);
+  const driverName = String(input.payload.driver_name || '').trim().slice(0, 150);
+  const vehicleNumber = String(input.payload.vehicle_number || '').trim().slice(0, 50);
+  if (!Number.isInteger(clientId) || clientId <= 0 || !driverName || !vehicleNumber) {
+    throw new SyncError('Select a client and provide the driver name and vehicle number', 'DISPATCH_DETAILS_REQUIRED');
+  }
+  const [clients] = await conn.execute<RowDataPacket[]>(
+    'SELECT id FROM clients WHERE id = ? AND is_active = 1',
+    [clientId]
+  );
+  if (clients.length === 0) {
+    throw new SyncError('Selected client is no longer active', 'CLIENT_NOT_FOUND', 404);
+  }
   const batch = await getBatchForUpdate(conn, input.payload);
   if (input.payload.expected_status && String(input.payload.expected_status) !== String(batch.status)) {
     throw new SyncConflictError('Batch status changed while this order was offline', {
@@ -444,6 +503,19 @@ async function applyDispatchOrderRaise(
     ['QC_PASSED', 'DISPATCH_REJECTED'],
     `Dispatch order can only be raised for QC_PASSED or DISPATCH_REJECTED batches. Current status: ${batch.status}`
   );
+  if (Number(batch.quantity) > 1) {
+    const [existingLabels] = await conn.execute<RowDataPacket[]>(
+      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ?',
+      [batch.id]
+    );
+    if (Number(existingLabels[0]?.count) !== Number(batch.quantity)) {
+      throw new SyncConflictError('Batch unit QR labels are incomplete. Contact an administrator.', {
+        batch_id: batch.id,
+        expected_qr_count: Number(batch.quantity),
+        actual_qr_count: Number(existingLabels[0]?.count || 0),
+      });
+    }
+  }
 
   const [existing] = await conn.execute<RowDataPacket[]>(
     `SELECT id, status FROM dispatch_orders
@@ -462,11 +534,15 @@ async function applyDispatchOrderRaise(
 
   const [insert] = await conn.execute<ResultSetHeader>(
     `INSERT INTO dispatch_orders
-      (batch_id, raised_by, status, client_operation_id, client_created_at, device_uuid)
-     VALUES (?, ?, 'PENDING', ?, ?, ?)`,
+      (batch_id, raised_by, status, client_id, driver_name, vehicle_number,
+       client_operation_id, client_created_at, device_uuid)
+     VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?, ?)`,
     [
       batch.id,
       user.userId,
+      clientId,
+      driverName,
+      vehicleNumber,
       input.operation_id,
       toDate(input.client_timestamp),
       deviceUuid,
@@ -518,6 +594,14 @@ async function applyDispatchConfirm(
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
   const batch = await getBatchForUpdate(conn, payload);
+  if (Number(batch.quantity) > 1) {
+    throw new SyncConflictError('Scan every unit QR code in the batch before completing dispatch', {
+      batch_id: batch.id,
+      batch_number: batch.batch_number,
+      expected_qr_count: Number(batch.quantity),
+      scanned_qr_count: 1,
+    });
+  }
 
   if (payload.expected_status && String(payload.expected_status) !== String(batch.status)) {
     throw new SyncConflictError('Batch status changed while this dispatch was offline', {
@@ -755,49 +839,6 @@ async function applyDispatchConfirmBulk(
   };
 }
 
-async function applyProductionFix(
-  conn: PoolConnection,
-  user: JwtPayload,
-  input: SyncOperationInput
-): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
-  if (!['PRODUCTION', 'ADMIN'].includes(user.role)) {
-    throw new SyncError('Only production or admin users can record a batch fix', 'FORBIDDEN', 403);
-  }
-  const batch = await getBatchForUpdate(conn, input.payload);
-  assertStatus(batch, ['QC_FAILED'], `Only QC_FAILED batches can be fixed. Current status: ${batch.status}`);
-  const description = typeof input.payload.description === 'string'
-    ? input.payload.description.slice(0, 4000)
-    : null;
-
-  const [insert] = await conn.execute<ResultSetHeader>(
-    `INSERT INTO fix_records (batch_id, fixed_by, description) VALUES (?, ?, ?)`,
-    [batch.id, user.userId, description]
-  );
-  const [update] = await conn.execute<ResultSetHeader>(
-    `UPDATE batches SET status = 'CREATED', updated_at = CURRENT_TIMESTAMP(3)
-     WHERE id = ? AND status = 'QC_FAILED'`,
-    [batch.id]
-  );
-  if (update.affectedRows !== 1) {
-    throw new SyncConflictError('Batch was changed by another user. Refresh and try again.', {
-      batch_id: batch.id,
-      current_status: batch.status,
-    });
-  }
-  await logActivity(
-    conn,
-    user,
-    'BATCH_FIXED',
-    `Batch ${batch.batch_number} fixed and sent back to QC`
-  );
-
-  return {
-    entityType: 'fix_record',
-    entityId: insert.insertId,
-    data: { status: 'CREATED', batch_id: batch.id, batch_number: batch.batch_number },
-  };
-}
-
 /**
  * Applies one offline operation in its own transaction. The unique
  * operation_id is the idempotency key; retries return the original outcome.
@@ -848,9 +889,6 @@ export async function applyOperation(
           break;
         case 'DISPATCH_CONFIRM_BULK':
           applied = await applyDispatchConfirmBulk(conn, user, deviceUuid, input);
-          break;
-        case 'PRODUCTION_FIX':
-          applied = await applyProductionFix(conn, user, input);
           break;
         default:
           throw new SyncError(`Unsupported operation type: ${input.type}`, 'INVALID_OPERATION_TYPE');

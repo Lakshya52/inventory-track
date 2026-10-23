@@ -152,6 +152,7 @@ export async function approvedOrders(req: Request, res: Response): Promise<void>
   const scope = userScope(req, 'd.raised_by');
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             p.name AS product_name, p.sku AS product_sku,
             u.name AS raised_by_name
      FROM dispatch_orders d

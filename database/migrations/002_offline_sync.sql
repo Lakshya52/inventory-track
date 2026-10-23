@@ -16,7 +16,6 @@ ALTER TABLE products        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NU
 ALTER TABLE batches         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 ALTER TABLE shelf_locations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 ALTER TABLE clients         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
-ALTER TABLE vendors         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
 ALTER TABLE qc_records       ADD COLUMN IF NOT EXISTS images LONGTEXT AFTER remarks;
 ALTER TABLE qc_records       ADD COLUMN IF NOT EXISTS client_operation_id VARCHAR(64) NULL;
@@ -41,7 +40,6 @@ ALTER TABLE fix_records      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT N
 ALTER TABLE admins           ADD COLUMN IF NOT EXISTS is_active TINYINT(1) NOT NULL DEFAULT 1;
 ALTER TABLE qc_users         ADD COLUMN IF NOT EXISTS is_active TINYINT(1) NOT NULL DEFAULT 1;
 ALTER TABLE dispatch_users   ADD COLUMN IF NOT EXISTS is_active TINYINT(1) NOT NULL DEFAULT 1;
-ALTER TABLE production_users ADD COLUMN IF NOT EXISTS is_active TINYINT(1) NOT NULL DEFAULT 1;
 
 -- ------------------------------------------------------------
 -- New tables
@@ -179,6 +177,5 @@ CALL ensure_sync_index('activity_logs', 'idx_activity_created', 'created_at', 0)
 CALL ensure_sync_index('activity_logs', 'idx_activity_user_created', 'user_role, user_id, created_at', 0);
 CALL ensure_sync_index('shelf_locations', 'idx_locations_updated', 'updated_at', 0);
 CALL ensure_sync_index('clients', 'idx_clients_updated', 'updated_at', 0);
-CALL ensure_sync_index('vendors', 'idx_vendors_updated', 'updated_at', 0);
 
 DROP PROCEDURE IF EXISTS ensure_sync_index;

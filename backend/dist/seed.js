@@ -33,29 +33,6 @@ async function seed() {
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
-    await (0, database_1.execute)(`CREATE TABLE IF NOT EXISTS production_users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    is_active TINYINT(1) NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
-    await (0, database_1.execute)(`CREATE TABLE IF NOT EXISTS vendors (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    vendor_code VARCHAR(50) NOT NULL UNIQUE,
-    name VARCHAR(200) NOT NULL,
-    contact_person VARCHAR(100),
-    email VARCHAR(100),
-    phone VARCHAR(50),
-    address TEXT,
-    gst_number VARCHAR(50),
-    category VARCHAR(100),
-    payment_terms VARCHAR(100),
-    notes TEXT,
-    is_active TINYINT(1) DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
     await (0, database_1.execute)(`CREATE TABLE IF NOT EXISTS products (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
@@ -149,10 +126,6 @@ async function seed() {
         await (0, database_1.execute)('ALTER TABLE dispatch_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1');
     }
     catch { }
-    try {
-        await (0, database_1.execute)('ALTER TABLE production_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1');
-    }
-    catch { }
     // Migrate products table — add chemical industry columns if missing
     try {
         await (0, database_1.execute)('ALTER TABLE products ADD COLUMN quantity DECIMAL(12,3) DEFAULT 0 AFTER price');
@@ -234,7 +207,6 @@ async function seed() {
     await (0, database_1.execute)('DELETE FROM admins');
     await (0, database_1.execute)('DELETE FROM qc_users');
     await (0, database_1.execute)('DELETE FROM dispatch_users');
-    await (0, database_1.execute)('DELETE FROM vendors');
     await (0, database_1.execute)('INSERT INTO admins (name, email, password_hash) VALUES (?, ?, ?)', ['Admin', 'admin@gmail.com', adminHash]);
     await (0, database_1.execute)('INSERT INTO qc_users (name, email, password_hash) VALUES (?, ?, ?)', ['QC Tester', 'qc@gmail.com', qcHash]);
     await (0, database_1.execute)('INSERT INTO dispatch_users (name, email, password_hash) VALUES (?, ?, ?)', ['Dispatcher', 'dispatch@gmail.com', dispatchHash]);

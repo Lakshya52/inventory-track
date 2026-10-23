@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { query } from '../config/database';
+import { query, withTransaction } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 import { applyOperation } from '../services/syncService';
 import { SyncOperationInput } from '../types';
@@ -63,6 +63,7 @@ export async function submitBulk(req: Request, res: Response): Promise<void> {
       if (Array.isArray(parsed)) {
         barcodes = parsed.map((value: any) => String(value || '').trim()).filter(Boolean);
       }
+
     } catch {
       barcodes = [];
     }
@@ -110,6 +111,40 @@ export async function submitBulk(req: Request, res: Response): Promise<void> {
   });
 }
 
+export async function reopenFailedBatch(req: Request, res: Response): Promise<void> {
+  const reason = String(req.body.reason || '').trim();
+  if (!reason) {
+    res.status(400).json({ error: 'A reason is required to send a failed batch back for QC' });
+    return;
+  }
+  const result = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id, batch_number, status FROM batches WHERE id = ? FOR UPDATE',
+      [req.params.id]
+    );
+    if (rows.length === 0) return { error: 'Batch not found', statusCode: 404 } as const;
+    if (rows[0].status !== 'QC_FAILED') {
+      return { error: 'Only QC-failed batches can be sent back for re-QC', statusCode: 409 } as const;
+    }
+    await conn.execute(
+      `UPDATE batches SET status = 'CREATED', updated_at = CURRENT_TIMESTAMP(3)
+       WHERE id = ? AND status = 'QC_FAILED'`,
+      [req.params.id]
+    );
+    await conn.execute(
+      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
+       VALUES (?, ?, ?, 'BATCH_SENT_FOR_REQC', ?)`,
+      [req.user!.userId, req.user!.name, req.user!.role, `Batch ${rows[0].batch_number} sent back for QC: ${reason.slice(0, 1000)}`]
+    );
+    return { batch_id: Number(rows[0].id), status: 'CREATED' } as const;
+  });
+  if ('error' in result) {
+    res.status(result.statusCode ?? 500).json({ error: result.error });
+    return;
+  }
+  res.json(result);
+}
+
 export async function stats(req: Request, res: Response): Promise<void> {
   const user = req.user!;
   const personal = user.role === 'QC';
@@ -134,6 +169,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
 
   const pendingRows = await query<RowDataPacket[]>(
     `SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             b.created_at, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.grade AS product_grade, p.purity AS product_purity,
             TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes
@@ -221,6 +257,7 @@ export async function pending(req: Request, res: Response): Promise<void> {
   );
   const items = await query<RowDataPacket[]>(
     `SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             b.created_at, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.grade AS product_grade, p.purity AS product_purity,
             TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes

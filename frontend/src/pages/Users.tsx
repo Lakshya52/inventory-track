@@ -11,7 +11,6 @@ const ROLE_OPTIONS = [
   { value: 'ADMIN', label: 'Admin' },
   { value: 'QC', label: 'QC Person' },
   { value: 'DISPATCH', label: 'Dispatch Person' },
-  { value: 'PRODUCTION', label: 'Production Person' },
 ] as const;
 
 type RoleValue = typeof ROLE_OPTIONS[number]['value'];
@@ -20,7 +19,6 @@ const roleBadge: Record<string, string> = {
   ADMIN: 'badge-purple',
   QC: 'badge-info',
   DISPATCH: 'badge-warning',
-  PRODUCTION: 'badge-neutral',
 };
 
 function apiType(role: string): string {

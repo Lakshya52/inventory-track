@@ -79,7 +79,7 @@ export default function ProfileScreen() {
                 ? 'You can scan groups of QR labels, record PASS or FAIL, and queue QR label prints on the web.'
                 : role === 'DISPATCH'
                   ? 'You can raise dispatch orders and confirm groups of approved QR labels.'
-                  : 'Admin and production work is available in the web dashboard. This app keeps sync and account tools available.'}
+                  : 'Admin work is available in the web dashboard. This app keeps sync and account tools available.'}
             </Text>
           </View>
         </Card>

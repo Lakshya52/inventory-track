@@ -1,9 +1,12 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { Product } from '../types';
+import { useAuth } from '../contexts/AuthContext';
 import { Package, Plus, Search, Download, Upload, Pencil, Trash2, X } from 'lucide-react';
 
-export default function Products() {
+export default function Products({ readOnly = false }: { readOnly?: boolean }) {
+  const { user } = useAuth();
+  const canManage = !readOnly && user?.role === 'ADMIN';
   const [products, setProducts] = useState<Product[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -59,7 +62,7 @@ export default function Products() {
           <h1 className="page-title">Products</h1>
           <p className="page-subtitle">Manage your product catalog and inventory</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        {canManage && <div className="flex flex-wrap gap-2">
           <button onClick={() => api.products.downloadSample()} className="btn-secondary btn-sm">
             <Download size={14} /> Sample
           </button>
@@ -70,10 +73,10 @@ export default function Products() {
           <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
             <Plus size={16} /> Add Product
           </button>
-        </div>
+        </div>}
       </div>
 
-      {showForm && (
+      {canManage && showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
           <div className="modal-content max-w-2xl" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
@@ -121,7 +124,7 @@ export default function Products() {
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>SKU</th><th>Price</th><th>Qty</th><th>CAS</th><th>Grade</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>SKU</th><th>Price</th><th>Qty</th><th>CAS</th><th>Grade</th>{canManage && <th>Actions</th>}</tr>
             </thead>
             <tbody>
               {filtered.map(p => (
@@ -132,16 +135,16 @@ export default function Products() {
                   <td>{p.quantity}</td>
                   <td className="font-mono text-xs">{p.cas_number || '-'}</td>
                   <td>{p.grade || '-'}</td>
-                  <td>
+                  {canManage && <td>
                     <div className="flex gap-1">
                       <button onClick={() => handleEdit(p)} className="btn-ghost btn-sm"><Pencil size={14} /></button>
                       <button onClick={() => handleDelete(p.id)} className="btn-ghost btn-sm text-rose-500 hover:text-rose-600"><Trash2 size={14} /></button>
                     </div>
-                  </td>
+                  </td>}
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={7}><div className="empty-state"><div className="empty-icon"><Package size={24} className="text-surface-400" /></div><div className="empty-title">No products found</div><div className="empty-desc">{search ? 'Try a different search term' : 'Add your first product to get started'}</div></div></td></tr>
+                <tr><td colSpan={canManage ? 7 : 6}><div className="empty-state"><div className="empty-icon"><Package size={24} className="text-surface-400" /></div><div className="empty-title">No products found</div><div className="empty-desc">{search ? 'Try a different search term' : 'No products are available yet'}</div></div></td></tr>
               )}
             </tbody>
           </table>

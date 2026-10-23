@@ -22,7 +22,7 @@ export default function LimitedAccessScreen() {
             subtitle={`Signed in as ${session?.user.name || 'user'} (${session?.user.role || '-'})`}
           />
           <Text style={styles.body}>
-            The mobile field app is designed for QC and DISPATCH operators. Admin, production, and
+            The mobile field app is designed for QC and DISPATCH operators. Admin and
             reporting work is available in the main web dashboard.
           </Text>
           <View style={styles.infoBox}>

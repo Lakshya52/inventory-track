@@ -55,7 +55,7 @@ export default function HistoryScreen() {
     );
   }, [dispatchRecords, qcRecords, role, search]);
 
-  if (role === 'ADMIN' || role === 'PRODUCTION' || !role) {
+  if (role === 'ADMIN' || !role) {
     return <LimitedAccessScreen />;
   }
 

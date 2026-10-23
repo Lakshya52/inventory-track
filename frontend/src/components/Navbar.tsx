@@ -15,17 +15,17 @@ const navSections: { title: string; items: NavItem[] }[] = [
     items: [
       { label: 'Admin Dashboard', path: '/', icon: '⊞', roles: ['ADMIN'] },
       { label: 'Reports & Logs', path: '/reports', icon: '📈', roles: ['ADMIN'] },
-      { label: 'Production', path: '/production', icon: '⚙', roles: ['PRODUCTION'] },
     ],
   },
   {
     title: 'Management',
     items: [
       { label: 'Vendors', path: '/vendors', icon: '🤝', roles: ['ADMIN'] },
+      { label: 'Clients', path: '/clients', icon: '🤝', roles: ['ADMIN'] },
       { label: 'Users', path: '/users', icon: '👥', roles: ['ADMIN'] },
       { label: 'Products', path: '/products', icon: '📦', roles: ['ADMIN'] },
       { label: 'Shelf Locations', path: '/shelf-locations', icon: '📍', roles: ['ADMIN'] },
-      { label: 'Batches', path: '/batches', icon: '🏷', roles: ['PRODUCTION'] },
+      { label: 'Batches', path: '/batches', icon: '🏷', roles: ['ADMIN'] },
     ],
   },
   {
@@ -47,14 +47,13 @@ const navSections: { title: string; items: NavItem[] }[] = [
   {
     title: 'Account',
     items: [
-      { label: 'My Profile', path: '/settings', icon: '👤', roles: ['ADMIN', 'QC', 'DISPATCH', 'PRODUCTION'] },
+      { label: 'My Profile', path: '/settings', icon: '👤', roles: ['ADMIN', 'QC', 'DISPATCH'] },
     ],
   },
 ];
 
 const roleHome: Record<string, string> = {
   ADMIN: '/',
-  PRODUCTION: '/production',
   QC: '/qc-dashboard',
   DISPATCH: '/dispatch-dashboard',
 };

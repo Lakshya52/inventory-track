@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
-import { query, execute } from '../config/database';
+import { randomBytes, randomUUID } from 'crypto';
+import { query, execute, withTransaction } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const { product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date, storage_location, notes } = req.body;
+  const { product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
   if (!product_id || !batch_number) {
     res.status(400).json({ error: 'Product ID and batch number are required' });
     return;
@@ -12,31 +13,94 @@ export async function create(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Manufacturing date and expiry date are required' });
     return;
   }
-  const products = await query<RowDataPacket[]>('SELECT name, sku FROM products WHERE id = ?', [product_id]);
+  const labelCount = Number(quantity);
+  if (!Number.isInteger(labelCount) || labelCount < 1 || labelCount > 1000) {
+    res.status(400).json({ error: 'Batch quantity must be a whole number between 1 and 1000 because one QR label is generated per unit' });
+    return;
+  }
+  const products = await query<RowDataPacket[]>('SELECT id, name, sku, price FROM products WHERE id = ?', [product_id]);
   if (products.length === 0) { res.status(404).json({ error: 'Product not found' }); return; }
   const product = products[0];
 
   const existing = await query<RowDataPacket[]>('SELECT id FROM batches WHERE batch_number = ?', [batch_number]);
   if (existing.length > 0) { res.status(409).json({ error: `Batch number "${batch_number}" already exists` }); return; }
+  if (shelf_location_id) {
+    const locations = await query<RowDataPacket[]>(
+      'SELECT id, location_code FROM shelf_locations WHERE id = ? AND is_active = 1',
+      [shelf_location_id]
+    );
+    if (locations.length === 0) { res.status(400).json({ error: 'Select an active shelf location' }); return; }
+  }
 
-  const tempId = `_TEMP_${Date.now()}`;
-  const result = await execute(
-    'INSERT INTO batches (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date, storage_location, notes, barcode_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [product_id, batch_number, quantity || 1, uom || 'kg', unit_price || 0, manufacturing_date || null, expiry_date || null, storage_location || null, notes || null, tempId]
-  );
-  const batchId = result.insertId;
-  const barcode_value = `QR:${product.sku}:${batchId}`;
-  await execute('UPDATE batches SET barcode_value = ? WHERE id = ?', [barcode_value, batchId]);
-
-  await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
-    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'BATCH_CREATED', `Batch ${batch_number} created for ${product.name}`]);
-  res.status(201).json({ id: batchId, barcode_value, product_name: product.name, product_sku: product.sku });
+  const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
+  const result = await withTransaction(async (conn) => {
+    const [batchInsert] = await conn.execute<any>(
+      `INSERT INTO batches
+        (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date,
+         shelf_location_id, storage_location, notes, barcode_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        product_id, batch_number, labelCount, 'pcs', Number(unit_price) || 0,
+        manufacturing_date, expiry_date, shelf_location_id || null,
+        storage_location || null, notes || null, `_TEMP_${randomUUID()}`,
+      ]
+    );
+    const batchId = Number(batchInsert.insertId);
+    const [jobInsert] = await conn.execute<any>(
+      `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
+       VALUES (?, ?, ?, ?, 'ADMIN')`,
+      [jobCode, product_id, labelCount, req.user!.userId]
+    );
+    const jobId = Number(jobInsert.insertId);
+    const labels = [];
+    let firstBarcode = '';
+    for (let serial = 1; serial <= labelCount; serial += 1) {
+      const qrValue = `QR:${randomUUID()}`;
+      if (serial === 1) firstBarcode = qrValue;
+      const [labelInsert] = await conn.execute<any>(
+        `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
+         VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`,
+        [jobId, batchId, qrValue, serial]
+      );
+      labels.push({
+        id: Number(labelInsert.insertId),
+        qr_value: qrValue,
+        serial_no: serial,
+        batch_number,
+        print_count: 1,
+      });
+    }
+    await conn.execute('UPDATE batches SET barcode_value = ? WHERE id = ?', [firstBarcode, batchId]);
+    await conn.execute(
+      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
+       VALUES (?, ?, ?, 'BATCH_CREATED', ?)`,
+      [req.user!.userId, req.user!.name, req.user!.role, `Batch ${batch_number} created for ${product.name} with ${labelCount} unit QR labels`]
+    );
+    return { batchId, jobId, labels, barcode_value: firstBarcode };
+  });
+  res.status(201).json({
+    id: result.batchId,
+    barcode_value: result.barcode_value,
+    product_name: product.name,
+    product_sku: product.sku,
+    qr_job: {
+      id: result.jobId,
+      job_code: jobCode,
+      product_name: product.name,
+      product_sku: product.sku,
+      quantity: labelCount,
+    },
+    labels: result.labels,
+  });
 }
 
 export async function list(req: Request, res: Response): Promise<void> {
   const batches = await query<RowDataPacket[]>(
-    `SELECT b.*, p.name as product_name, p.sku as product_sku
+    `SELECT b.*, p.name as product_name, p.sku as product_sku, s.location_code,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
+            (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id
      FROM batches b JOIN products p ON b.product_id = p.id
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
      ORDER BY b.created_at DESC`
   );
   res.json(batches);
@@ -49,9 +113,14 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
             p.name as product_name, p.sku as product_sku, p.description as product_description,
             p.cas_number, p.molecular_formula, p.purity as product_purity, p.grade as product_grade,
             p.storage_conditions as product_storage_conditions, p.hazard_classification,
-            p.physical_state as product_physical_state, p.hsn_code, p.manufacturer
+            p.physical_state as product_physical_state, p.hsn_code, p.manufacturer,
+            l.qr_value AS scanned_qr, s.location_code,
+            (SELECT COUNT(*) FROM qr_labels units WHERE units.batch_id = b.id) AS qr_count
      FROM batches b JOIN products p ON b.product_id = p.id
-     WHERE b.barcode_value = ?`, [barcode]
+     LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ?
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
+     WHERE b.barcode_value = ? OR l.qr_value = ?`,
+    [barcode, barcode, barcode]
   );
   if (batches.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
   res.json(batches[0]);
@@ -71,10 +140,39 @@ export async function search(req: Request, res: Response): Promise<void> {
 
 export async function update(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const { storage_location, notes, quantity, uom, unit_price, manufacturing_date, expiry_date } = req.body;
+  const { shelf_location_id, storage_location, notes, quantity, unit_price, manufacturing_date, expiry_date } = req.body;
+  const batches = await query<RowDataPacket[]>(
+    'SELECT b.id, b.quantity FROM batches b WHERE b.id = ?',
+    [id]
+  );
+  if (batches.length === 0) {
+    res.status(404).json({ error: 'Batch not found' });
+    return;
+  }
+  if (quantity !== undefined && Number(quantity) !== Number(batches[0].quantity)) {
+    res.status(400).json({ error: 'Batch quantity cannot be changed after unit QR labels are generated. Create a new batch with the correct quantity.' });
+    return;
+  }
+  const locationId = shelf_location_id === undefined || shelf_location_id === null || shelf_location_id === ''
+    ? null
+    : Number(shelf_location_id);
+  if (locationId !== null) {
+    if (!Number.isInteger(locationId) || locationId <= 0) {
+      res.status(400).json({ error: 'Select a valid shelf location' });
+      return;
+    }
+    const locations = await query<RowDataPacket[]>(
+      'SELECT id FROM shelf_locations WHERE id = ? AND is_active = 1',
+      [locationId]
+    );
+    if (locations.length === 0) {
+      res.status(400).json({ error: 'Select an active shelf location' });
+      return;
+    }
+  }
   await execute(
-    'UPDATE batches SET storage_location = ?, notes = ?, quantity = ?, uom = ?, unit_price = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ?',
-    [storage_location || null, notes || null, quantity, uom || 'kg', unit_price || 0, manufacturing_date || null, expiry_date || null, id]
+    'UPDATE batches SET shelf_location_id = ?, storage_location = ?, notes = ?, unit_price = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ?',
+    [locationId, storage_location || null, notes || null, unit_price || 0, manufacturing_date || null, expiry_date || null, id]
   );
   await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
     [req.user?.name || 'System', req.user?.role || 'ADMIN', 'BATCH_UPDATED', `Batch #${id} updated`]);

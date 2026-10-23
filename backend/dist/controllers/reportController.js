@@ -42,15 +42,13 @@ async function summary(_req, res) {
        SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved,
        SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected
      FROM dispatch_orders`);
-    const [vendors] = await (0, database_1.query)(`SELECT COUNT(*) AS total, SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active FROM vendors`);
     const [locations] = await (0, database_1.query)(`SELECT COUNT(*) AS total, SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active FROM shelf_locations`);
     const [users] = await (0, database_1.query)(`SELECT
        (SELECT COUNT(*) FROM admins) + (SELECT COUNT(*) FROM qc_users) +
-       (SELECT COUNT(*) FROM dispatch_users) + (SELECT COUNT(*) FROM production_users) AS total,
+       (SELECT COUNT(*) FROM dispatch_users) AS total,
        (SELECT COUNT(*) FROM admins WHERE is_active = 1) +
        (SELECT COUNT(*) FROM qc_users WHERE is_active = 1) +
-       (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1) +
-       (SELECT COUNT(*) FROM production_users WHERE is_active = 1) AS active`);
+       (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1) AS active`);
     const qcTotal = Number(qc.total) || 0;
     const qcPassed = Number(qc.passed) || 0;
     res.json({
@@ -69,8 +67,6 @@ async function summary(_req, res) {
         pendingRequests: Number(requests.pending) || 0,
         approvedRequests: Number(requests.approved) || 0,
         rejectedRequests: Number(requests.rejected) || 0,
-        totalVendors: Number(vendors.total) || 0,
-        activeVendors: Number(vendors.active) || 0,
         totalLocations: Number(locations.total) || 0,
         activeLocations: Number(locations.active) || 0,
         totalUsers: Number(users.total) || 0,
@@ -121,13 +117,17 @@ async function dispatchRequests(req, res) {
         filter.params.push(req.query.status);
     }
     const orders = await (0, database_1.query)(`SELECT d.id, d.batch_id, d.status, d.admin_remarks, d.created_at, d.updated_at,
+            d.driver_name, d.vehicle_number,
             b.batch_number, b.status AS batch_status, b.quantity, b.uom, b.barcode_value,
             p.name AS product_name, p.sku AS product_sku,
+            c.name AS client_name, c.contact_person AS client_contact,
+            c.email AS client_email, c.phone AS client_phone, c.address AS client_address,
             COALESCE(du.name, 'Unknown') AS raised_by_name,
             da.name AS admin_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN clients c ON c.id = d.client_id
      LEFT JOIN dispatch_users du ON d.raised_by = du.id
      LEFT JOIN admins da ON d.admin_id = da.id
      ${whereSql(filter)}

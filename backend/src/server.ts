@@ -17,8 +17,6 @@ import userRoutes, { profileRoutes } from './routes/users';
 import importRoutes from './routes/import';
 import shelfLocationRoutes from './routes/shelfLocations';
 import clientRoutes from './routes/clients';
-import productionRoutes from './routes/production';
-import vendorRoutes from './routes/vendors';
 import reportRoutes from './routes/reports';
 import syncRoutes from './routes/sync';
 import { errorHandler } from './middleware/errorHandler';
@@ -74,8 +72,6 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/products/import', importRoutes);
 app.use('/api/shelf-locations', shelfLocationRoutes);
 app.use('/api/clients', clientRoutes);
-app.use('/api/production', productionRoutes);
-app.use('/api/vendors', vendorRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/sync', syncRoutes);
 

@@ -8,7 +8,7 @@ exports.authorize = authorize;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const database_1 = require("../config/database");
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
-const USER_TABLES = new Set(['admins', 'qc_users', 'dispatch_users', 'production_users']);
+const USER_TABLES = new Set(['admins', 'qc_users', 'dispatch_users']);
 async function authenticate(req, res, next) {
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {

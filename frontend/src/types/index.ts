@@ -1,4 +1,4 @@
-export type Role = 'ADMIN' | 'QC' | 'DISPATCH' | 'PRODUCTION';
+export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 
 export type BatchStatus = 'CREATED' | 'QC_PASSED' | 'QC_FAILED'
   | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'DISPATCH_REJECTED' | 'DISPATCHED';
@@ -43,6 +43,10 @@ export interface Batch {
   manufacturing_date: string | null;
   expiry_date: string | null;
   storage_location: string | null;
+  shelf_location_id?: number | null;
+  location_code?: string | null;
+  qr_count?: number;
+  qr_job_id?: number | null;
   notes: string | null;
   status: BatchStatus;
   barcode_value: string;
@@ -104,6 +108,9 @@ export interface DispatchOrder {
   status: DispatchOrderStatus;
   admin_id: number | null;
   admin_remarks: string | null;
+  client_id: number;
+  driver_name: string;
+  vehicle_number: string;
   created_at: string;
   updated_at: string;
   batch_number?: string;
@@ -145,8 +152,6 @@ export interface AdminStats {
   pendingRequests: number;
   approvedRequests: number;
   rejectedRequests: number;
-  totalVendors: number;
-  activeVendors: number;
   totalLocations: number;
   activeLocations: number;
   totalUsers: number;

@@ -5,11 +5,11 @@ const batchController_1 = require("../controllers/batchController");
 const auth_1 = require("../middleware/auth");
 const router = (0, express_1.Router)();
 router.use(auth_1.authenticate);
-router.post('/', (0, auth_1.authorize)('ADMIN', 'PRODUCTION'), batchController_1.create);
+router.post('/', (0, auth_1.authorize)('ADMIN'), batchController_1.create);
 router.get('/', batchController_1.list);
 router.get('/search', batchController_1.search);
 router.get('/barcode/:barcode', batchController_1.getByBarcode);
 router.get('/:id', batchController_1.getById);
-router.put('/:id', (0, auth_1.authorize)('ADMIN', 'PRODUCTION'), batchController_1.update);
+router.put('/:id', (0, auth_1.authorize)('ADMIN'), batchController_1.update);
 exports.default = router;
 //# sourceMappingURL=batches.js.map
