@@ -99,7 +99,7 @@ export default function Batches() {
       .then(([productRows, batchRows, locationRows, vendorRows, gradeRows, bagQuantityRows]) => {
         setProducts(productRows);
         setBatches(batchRows);
-        setLocations(locationRows.filter((location: any) => location.is_active));
+        setLocations(locationRows.filter((location: any) => hasUsableMasterId(location) && isActiveMaster(location)));
         setVendors(vendorRows.filter((vendor: any) => hasUsableMasterId(vendor) && isActiveMaster(vendor)));
         setGrades(gradeRows.filter((grade: any) => hasUsableMasterId(grade) && isActiveMaster(grade)));
         setBagQuantities(bagQuantityRows.filter((value: any) => hasUsableMasterId(value) && isActiveMaster(value)));

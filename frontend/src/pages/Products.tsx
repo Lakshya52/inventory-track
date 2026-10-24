@@ -17,7 +17,7 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
   const { user } = useAuth();
   const canManage = !readOnly && user?.role === 'ADMIN';
   const [products, setProducts] = useState<Product[]>([]);
-  const [grades, setGrades] = useState<Array<{ id: number; name: string; is_active: number }>>([]);
+  const [grades, setGrades] = useState<Array<{ id: number; name: string; is_active: number | boolean }>>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
@@ -30,7 +30,11 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
     Promise.all([api.products.list(), api.masters.list('grades')])
       .then(([productRows, gradeRows]) => {
         setProducts(productRows);
-        setGrades(gradeRows.filter(grade => grade.is_active !== 0));
+        setGrades(gradeRows.filter(grade =>
+          Number.isSafeInteger(Number(grade.id)) &&
+          Number(grade.id) > 0 &&
+          (grade.is_active === true || Number(grade.is_active) === 1)
+        ));
       })
       .catch((err: Error) => setError(err.message));
   }, []);

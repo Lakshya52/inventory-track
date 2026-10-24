@@ -135,13 +135,29 @@ const COLLECTIONS = [
 
 /**
  * Idempotent startup migration. MongoDB creates collections on first write,
- * so this only creates indexes and repairs the numeric ID counters that keep
- * the existing REST API contract stable.
+ * so this creates indexes, repairs numeric ID counters, and normalizes legacy
+ * active flags used by master-data dropdowns.
  */
 export async function ensureAdminSchema(): Promise<void> {
   const ctx = await getContext();
   await ensureIndexes(ctx);
   await syncCounters(ctx, COLLECTIONS);
+  for (const collection of ['grades', 'bag_quantities', 'vendors', 'shelf_locations']) {
+    await ctx.updateMany(
+      collection,
+      {
+        $or: [
+          { is_active: { $exists: false } },
+          { is_active: null },
+          { is_active: true },
+          { is_active: '1' },
+          { is_active: 'true' },
+        ],
+      },
+      { $set: { is_active: 1 } }
+    );
+    await ctx.updateMany(collection, { is_active: { $in: [false, '0', 'false'] } }, { $set: { is_active: 0 } });
+  }
   const selfVendor = await ctx.findOne('vendors', { vendor_code: 'SELF' }, { projection: { _id: 0, id: 1 } });
   if (selfVendor) {
     await ctx.updateOne('vendors', { id: Number(selfVendor.id) }, {

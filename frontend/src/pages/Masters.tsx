@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../services/api';
 import {
   Check, FlaskConical, PackageCheck, Pencil, Plus, RefreshCw,
@@ -12,8 +12,12 @@ type MasterItem = {
   name: string;
   quantity?: number;
   unit?: string;
-  is_active: number;
+  is_active?: number | boolean | string | null;
 };
+
+function isActive(item: MasterItem): boolean {
+  return item.is_active === true || Number(item.is_active) === 1;
+}
 
 const UNIT_SUGGESTIONS = [
   'mg', 'g', 'kg', 'tonne', 'mL', 'L', 'cm3', 'm3', 'pcs', 'units',
@@ -34,22 +38,28 @@ export default function Masters() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const requestSequence = useRef(0);
 
-  const load = async (selectedKind = kind) => {
+  const load = useCallback(async (selectedKind: MasterKind = kind) => {
+    const requestId = ++requestSequence.current;
     setLoading(true);
     setError('');
     try {
-      setItems(await api.masters.list(selectedKind));
+      const rows = await api.masters.list(selectedKind);
+      if (requestId === requestSequence.current) setItems(rows);
     } catch (err: any) {
-      setError(err.message || 'Could not load master values');
+      if (requestId === requestSequence.current) {
+        setItems([]);
+        setError(err.message || 'Could not load master values');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
     }
-  };
+  }, [kind]);
 
-  useEffect(() => { void load(kind); }, [kind]);
+  useEffect(() => { void load(kind); }, [kind, load]);
 
-  const activeCount = items.filter(item => item.is_active !== 0).length;
+  const activeCount = items.filter(isActive).length;
   const inactiveCount = items.length - activeCount;
   const filteredItems = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -57,8 +67,8 @@ export default function Masters() {
       const label = kind === 'grades' ? item.name : `${item.quantity ?? ''} ${item.unit ?? ''}`;
       const matchesSearch = !query || label.toLowerCase().includes(query);
       const matchesStatus = statusFilter === 'all'
-        || (statusFilter === 'active' && item.is_active !== 0)
-        || (statusFilter === 'inactive' && item.is_active === 0);
+        || (statusFilter === 'active' && isActive(item))
+        || (statusFilter === 'inactive' && !isActive(item));
       return matchesSearch && matchesStatus;
     });
   }, [items, kind, search, statusFilter]);
@@ -90,9 +100,12 @@ export default function Masters() {
     setNotice('');
     const data = kind === 'grades' ? { name: name.trim() } : { quantity: Number(quantity), unit: unit.trim() };
     try {
-      if (editId) await api.masters.update(kind, editId, data);
-      else await api.masters.create(kind, data);
-      setNotice(editId ? 'Master value updated.' : 'Master value added.');
+      const result = editId
+        ? await api.masters.update(kind, editId, data)
+        : await api.masters.create(kind, data);
+      setNotice(result.reactivated
+        ? 'Existing inactive value reactivated and is now available in dropdowns.'
+        : editId ? 'Master value updated.' : 'Master value added.');
       closeForm();
       await load();
     } catch (err: any) {
@@ -126,9 +139,24 @@ export default function Masters() {
     }
   };
 
+  const handleActivate = async (item: MasterItem) => {
+    setError('');
+    setNotice('');
+    try {
+      await api.masters.setStatus(kind, item.id, true);
+      setNotice('Master value activated and is now available in dropdowns.');
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'Could not activate master value');
+    }
+  };
+
   const changeKind = (nextKind: MasterKind) => {
     if (kind === nextKind) return;
+    requestSequence.current += 1;
     setKind(nextKind);
+    setItems([]);
+    setLoading(true);
     setSearch('');
     setStatusFilter('all');
     setNotice('');
@@ -255,15 +283,15 @@ export default function Masters() {
             </thead>
             <tbody>
               {filteredItems.map(item => (
-                <tr key={item.id} className={item.is_active === 0 ? 'opacity-60' : ''}>
+                <tr key={item.id} className={!isActive(item) ? 'opacity-60' : ''}>
                   <td className="font-medium text-surface-800">
                     {kind === 'grades' ? item.name : (
                       <span><span className="font-semibold">{item.quantity}</span> <span className="text-surface-500">{item.unit}</span></span>
                     )}
                   </td>
                   <td>
-                    <span className={`badge ${item.is_active === 0 ? 'badge-neutral' : 'badge-success'}`}>
-                      {item.is_active === 0 ? 'Inactive' : 'Active'}
+                    <span className={`badge ${isActive(item) ? 'badge-success' : 'badge-neutral'}`}>
+                      {isActive(item) ? 'Active' : 'Inactive'}
                     </span>
                   </td>
                   <td>
@@ -271,9 +299,13 @@ export default function Masters() {
                       <button onClick={() => handleEdit(item)} className="btn-ghost btn-sm" title={`Edit ${itemLabel}`} aria-label={`Edit ${itemLabel}`}>
                         <Pencil size={14} />
                       </button>
-                      {item.is_active !== 0 && (
+                      {isActive(item) ? (
                         <button onClick={() => void handleDeactivate(item)} className="btn-ghost btn-sm text-rose-600" title={`Deactivate ${itemLabel}`} aria-label={`Deactivate ${itemLabel}`}>
                           <Trash2 size={14} />
+                        </button>
+                      ) : (
+                        <button onClick={() => void handleActivate(item)} className="btn-ghost btn-sm text-emerald-600" title={`Activate ${itemLabel}`} aria-label={`Activate ${itemLabel}`}>
+                          <Check size={14} />
                         </button>
                       )}
                     </div>
@@ -322,7 +354,7 @@ export default function Masters() {
                   <>
                     <div>
                       <label className="input-label" htmlFor="master-bag-quantity">Amount per bag *</label>
-                      <input id="master-bag-quantity" className="input" type="number" min="0.0001" step="any" value={quantity} onChange={event => setQuantity(event.target.value)} required autoFocus />
+                      <input id="master-bag-quantity" className="input" type="number" min="0.0001" max="9999999999.9999" step="0.0001" value={quantity} onChange={event => setQuantity(event.target.value)} required autoFocus />
                     </div>
                     <div>
                       <label className="input-label" htmlFor="master-bag-unit">Measuring unit *</label>

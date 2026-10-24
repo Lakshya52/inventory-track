@@ -74,6 +74,8 @@ export const api = {
       request<any>(`/masters/${kind}`, { method: 'POST', body: JSON.stringify(data) }),
     update: (kind: 'grades' | 'bag-quantities', id: number, data: any) =>
       request<any>(`/masters/${kind}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    setStatus: (kind: 'grades' | 'bag-quantities', id: number, is_active: boolean) =>
+      request<any>(`/masters/${kind}/${id}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
     remove: (kind: 'grades' | 'bag-quantities', id: number) =>
       request<any>(`/masters/${kind}/${id}`, { method: 'DELETE' }),
   },
