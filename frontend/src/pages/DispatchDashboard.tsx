@@ -28,7 +28,6 @@ export default function DispatchDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [raisingId, setRaisingId] = useState<number | null>(null);
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
@@ -44,21 +43,6 @@ export default function DispatchDashboard() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
-  const raiseOrder = async (batch: any) => {
-    setRaisingId(batch.id);
-    setError('');
-    setMessage('');
-    try {
-      await api.dispatchOrders.raise({ batch_id: batch.id, expected_status: batch.status });
-      setMessage(`Dispatch order raised for ${batch.batch_number}. Waiting for admin approval.`);
-      await load();
-    } catch (err: any) {
-      setError(err.message || 'Could not raise dispatch order');
-    } finally {
-      setRaisingId(null);
-    }
-  };
 
   if (loading && !stats) {
     return <div className="page-container flex items-center justify-center h-64"><span className="text-sm text-surface-400">Loading dispatch dashboard...</span></div>;
@@ -135,18 +119,12 @@ export default function DispatchDashboard() {
                     <td className="text-sm text-surface-600">{batch.quantity} {batch.uom || ''}</td>
                     <td><span className={`badge ${Number(batch.age_minutes) > 240 ? 'badge-danger' : 'badge-neutral'}`}>{formatAge(batch.age_minutes)}</span></td>
                     <td>
-                      <button
-                        className="btn-primary btn-xs"
-                        disabled={raisingId === batch.id}
-                        onClick={() => raiseOrder(batch)}
-                      >
-                        {raisingId === batch.id ? 'Raising...' : 'Raise Order'}
-                      </button>
+                      <Link to="/dispatch-orders" className="btn-primary btn-xs">Raise Order</Link>
                     </td>
                   </tr>
                 ))}
                 {(!stats?.readyBatches || stats.readyBatches.length === 0) && (
-                  <tr><td colSpan={5}><div className="empty-state"><div className="empty-title">No QC-passed batches are waiting</div></div></td></tr>
+                  <tr><td colSpan={5}><div className="empty-state"><div className="empty-title">No QC-passed batches with complete bag labels are waiting</div></div></td></tr>
                 )}
               </tbody>
             </table>
@@ -196,7 +174,7 @@ export default function DispatchDashboard() {
                   <td className="text-sm text-surface-600">{order.quantity} {order.uom || ''}</td>
                   <td className="text-xs text-surface-400">{formatDate(order.updated_at)}</td>
                   <td>
-                    <button className="btn-primary btn-xs" onClick={() => navigate(`/dispatch?barcode=${encodeURIComponent(order.barcode_value)}`)}>
+                    <button className="btn-primary btn-xs" onClick={() => navigate(`/dispatch?order=${encodeURIComponent(order.id)}`)}>
                       Dispatch <ArrowRight size={12} />
                     </button>
                   </td>

@@ -53,6 +53,7 @@ async function seed() {
     id INT AUTO_INCREMENT PRIMARY KEY,
     product_id INT NOT NULL,
     batch_number VARCHAR(100) NOT NULL,
+    batch_group_id CHAR(36) NULL,
     quantity DECIMAL(12,3) NOT NULL DEFAULT 1,
     uom VARCHAR(20) DEFAULT 'kg',
     unit_price DECIMAL(12,2) DEFAULT 0,

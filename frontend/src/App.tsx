@@ -18,6 +18,8 @@ import Users from './pages/Users';
 import DispatchOrders from './pages/DispatchOrders';
 import PackingList from './pages/PackingList';
 import QRLabels from './pages/QRLabels';
+import Vendors from './pages/Vendors';
+import Masters from './pages/Masters';
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -55,6 +57,8 @@ export default function App() {
         <Route path="/settings" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><Settings /></ProtectedRoute>} />
 
         <Route path="/clients" element={<ProtectedRoute roles={['ADMIN']}><Clients /></ProtectedRoute>} />
+        <Route path="/vendors" element={<ProtectedRoute roles={['ADMIN']}><Vendors /></ProtectedRoute>} />
+        <Route path="/masters" element={<ProtectedRoute roles={['ADMIN']}><Masters /></ProtectedRoute>} />
         <Route path="/batches" element={<ProtectedRoute roles={['ADMIN']}><Batches /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute roles={['ADMIN', 'QC']}><Products readOnly={user?.role !== 'ADMIN'} /></ProtectedRoute>} />
 
@@ -66,7 +70,7 @@ export default function App() {
         {/* Dispatch */}
         <Route path="/dispatch" element={<ProtectedRoute roles={['DISPATCH']}><DispatchScan /></ProtectedRoute>} />
         <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
-        <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchOrders /></ProtectedRoute>} />
+        <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><DispatchOrders /></ProtectedRoute>} />
         <Route path="/packing-list" element={<ProtectedRoute roles={['DISPATCH']}><PackingList /></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to={redirectHome()} replace />} />

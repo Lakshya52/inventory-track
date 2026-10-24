@@ -2,28 +2,55 @@ import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { query, execute, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
+import { buildBatchNumbers } from '../utils/batchNumbers';
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const { product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
-  if (!product_id || !batch_number) {
+  const { product_id, batch_number, quantity, batch_count = 1, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
+  if (!product_id || !String(batch_number || '').trim()) {
     res.status(400).json({ error: 'Product ID and batch number are required' });
+    return;
+  }
+  const productId = Number(product_id);
+  if (!Number.isInteger(productId) || productId < 1) {
+    res.status(400).json({ error: 'Select a valid product' });
     return;
   }
   if (!manufacturing_date || !expiry_date) {
     res.status(400).json({ error: 'Manufacturing date and expiry date are required' });
     return;
   }
-  const labelCount = Number(quantity);
-  if (!Number.isInteger(labelCount) || labelCount < 1 || labelCount > 1000) {
-    res.status(400).json({ error: 'Batch quantity must be a whole number between 1 and 1000 because one QR label is generated per unit' });
+  const bagCount = Number(quantity);
+  if (!Number.isInteger(bagCount) || bagCount < 1 || bagCount > 1000) {
+    res.status(400).json({ error: 'Products per batch must be a whole number between 1 and 1000' });
     return;
   }
-  const products = await query<RowDataPacket[]>('SELECT id, name, sku, price FROM products WHERE id = ?', [product_id]);
+  const batchCount = Number(batch_count);
+  if (!Number.isInteger(batchCount) || batchCount < 1 || batchCount > 100) {
+    res.status(400).json({ error: 'Number of batches must be a whole number between 1 and 100' });
+    return;
+  }
+  if (batchCount * bagCount > 10_000) {
+    res.status(400).json({ error: 'A single generation can contain no more than 10,000 products' });
+    return;
+  }
+  const batchNumbers = buildBatchNumbers(String(batch_number).trim(), batchCount);
+  if (batchNumbers.some((number) => number.length > 100)) {
+    res.status(400).json({ error: 'Generated batch numbers must not exceed 100 characters' });
+    return;
+  }
+  const products = await query<RowDataPacket[]>('SELECT id, name, sku, price FROM products WHERE id = ?', [productId]);
   if (products.length === 0) { res.status(404).json({ error: 'Product not found' }); return; }
   const product = products[0];
 
-  const existing = await query<RowDataPacket[]>('SELECT id FROM batches WHERE batch_number = ?', [batch_number]);
-  if (existing.length > 0) { res.status(409).json({ error: `Batch number "${batch_number}" already exists` }); return; }
+  const placeholders = batchNumbers.map(() => '?').join(',');
+  const existing = await query<RowDataPacket[]>(
+    `SELECT batch_number FROM batches WHERE batch_number IN (${placeholders})`,
+    batchNumbers
+  );
+  if (existing.length > 0) {
+    res.status(409).json({ error: `Batch number "${existing[0].batch_number}" already exists` });
+    return;
+  }
   if (shelf_location_id) {
     const locations = await query<RowDataPacket[]>(
       'SELECT id, location_code FROM shelf_locations WHERE id = ? AND is_active = 1',
@@ -32,75 +59,159 @@ export async function create(req: Request, res: Response): Promise<void> {
     if (locations.length === 0) { res.status(400).json({ error: 'Select an active shelf location' }); return; }
   }
 
-  const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
+  const batchGroupId = randomUUID();
   const result = await withTransaction(async (conn) => {
-    const [batchInsert] = await conn.execute<any>(
-      `INSERT INTO batches
-        (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date,
-         shelf_location_id, storage_location, notes, barcode_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        product_id, batch_number, labelCount, 'pcs', Number(unit_price) || 0,
-        manufacturing_date, expiry_date, shelf_location_id || null,
-        storage_location || null, notes || null, `_TEMP_${randomUUID()}`,
-      ]
+    const createdBatches: Array<{ id: number; batch_number: string; barcode_value: string }> = [];
+    for (const number of batchNumbers) {
+      const qcBarcode = `QC:${randomUUID()}`;
+      const [batchInsert] = await conn.execute<any>(
+        `INSERT INTO batches
+          (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date,
+           shelf_location_id, storage_location, notes, barcode_value, batch_group_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          productId, number, bagCount, 'pcs', Number(unit_price) || 0,
+          manufacturing_date, expiry_date, shelf_location_id || null,
+          storage_location || null, notes || null, qcBarcode, batchGroupId,
+        ]
+      );
+      const batchId = Number(batchInsert.insertId);
+      createdBatches.push({ id: batchId, batch_number: number, barcode_value: qcBarcode });
+      await conn.execute(
+        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
+         VALUES (?, ?, ?, 'BATCH_CREATED', ?)`,
+        [req.user!.userId, req.user!.name, req.user!.role, `QC batch ${number} created for ${product.name} with ${bagCount} products`]
+      );
+    }
+    return createdBatches;
+  });
+  res.status(201).json({
+    id: result[0].id,
+    barcode_value: result[0].barcode_value,
+    batch_group_id: batchGroupId,
+    batch_count: batchCount,
+    batches: result,
+    product_name: product.name,
+    product_sku: product.sku,
+    message: `${batchCount} QC batch${batchCount === 1 ? '' : 'es'} created. Finished-goods details and bag labels are available after QC passes.`,
+  });
+}
+
+export async function finishGoods(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const vendorId = Number(req.body.vendor_id);
+  const gradeId = Number(req.body.grade_id);
+  const bagQuantityId = Number(req.body.bag_quantity_id);
+  const locationId = req.body.shelf_location_id ? Number(req.body.shelf_location_id) : null;
+  if (![vendorId, gradeId, bagQuantityId].every((value) => Number.isInteger(value) && value > 0)) {
+    res.status(400).json({ error: 'Select a supplier, grade, and bag quantity' });
+    return;
+  }
+  const result = await withTransaction(async (conn) => {
+    const [batches] = await conn.execute<RowDataPacket[]>(
+      'SELECT * FROM batches WHERE id = ? FOR UPDATE',
+      [id]
     );
-    const batchId = Number(batchInsert.insertId);
+    if (batches.length === 0) return { status: 404 as const, error: 'Batch not found' };
+    const batch = batches[0];
+    if (batch.status !== 'QC_PASSED') {
+      return { status: 409 as const, error: 'Finished-goods details can only be entered after QC passes' };
+    }
+    const [existingLabels] = await conn.execute<RowDataPacket[]>(
+      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ?',
+      [id]
+    );
+    if (batch.fg_details_completed_at || Number(existingLabels[0]?.count) > 0) {
+      return { status: 409 as const, error: 'Finished-goods details and QR labels already exist for this batch' };
+    }
+    const [masters] = await conn.execute<RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM vendors WHERE id = ? AND is_active = 1) AS vendor_count,
+         (SELECT COUNT(*) FROM grades WHERE id = ? AND is_active = 1) AS grade_count,
+         (SELECT COUNT(*) FROM bag_quantities WHERE id = ? AND is_active = 1) AS bag_quantity_count,
+         (SELECT COUNT(*) FROM shelf_locations WHERE id = ? AND is_active = 1) AS location_count`,
+      [vendorId, gradeId, bagQuantityId, locationId]
+    );
+    if (
+      Number(masters[0]?.vendor_count) !== 1 ||
+      Number(masters[0]?.grade_count) !== 1 ||
+      Number(masters[0]?.bag_quantity_count) !== 1 ||
+      (locationId !== null && Number(masters[0]?.location_count) !== 1)
+    ) {
+      return { status: 400 as const, error: 'Select active supplier, grade, bag quantity, and shelf location values' };
+    }
+    const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
+    const [products] = await conn.execute<RowDataPacket[]>(
+      'SELECT id, name, sku FROM products WHERE id = ?',
+      [batch.product_id]
+    );
+    if (products.length === 0) return { status: 404 as const, error: 'Product not found' };
     const [jobInsert] = await conn.execute<any>(
       `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
        VALUES (?, ?, ?, ?, 'ADMIN')`,
-      [jobCode, product_id, labelCount, req.user!.userId]
+      [jobCode, batch.product_id, batch.quantity, req.user!.userId]
     );
     const jobId = Number(jobInsert.insertId);
-    const labels = [];
+    const labels: Array<Record<string, unknown>> = [];
     let firstBarcode = '';
-    for (let serial = 1; serial <= labelCount; serial += 1) {
+    for (let serial = 1; serial <= Number(batch.quantity); serial += 1) {
       const qrValue = `QR:${randomUUID()}`;
       if (serial === 1) firstBarcode = qrValue;
       const [labelInsert] = await conn.execute<any>(
         `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
          VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`,
-        [jobId, batchId, qrValue, serial]
+        [jobId, id, qrValue, serial]
       );
       labels.push({
         id: Number(labelInsert.insertId),
         qr_value: qrValue,
         serial_no: serial,
-        batch_number,
+        batch_number: batch.batch_number,
         print_count: 1,
       });
     }
-    await conn.execute('UPDATE batches SET barcode_value = ? WHERE id = ?', [firstBarcode, batchId]);
+    const [update] = await conn.execute(
+      `UPDATE batches
+       SET vendor_id = ?, grade_id = ?, bag_quantity_id = ?, shelf_location_id = ?,
+           fg_details_completed_at = CURRENT_TIMESTAMP(3), barcode_value = ?
+       WHERE id = ? AND status = 'QC_PASSED'`,
+      [vendorId, gradeId, bagQuantityId, locationId, firstBarcode, id]
+    );
+    if ((update as any).affectedRows !== 1) throw new Error('Batch changed while finished-goods labels were generated');
     await conn.execute(
       `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-       VALUES (?, ?, ?, 'BATCH_CREATED', ?)`,
-      [req.user!.userId, req.user!.name, req.user!.role, `Batch ${batch_number} created for ${product.name} with ${labelCount} unit QR labels`]
+       VALUES (?, ?, ?, 'FINISHED_GOODS_COMPLETED', ?)`,
+      [req.user!.userId, req.user!.name, req.user!.role, `Finished-goods details completed for batch ${batch.batch_number}; ${labels.length} bag QR labels generated`]
     );
-    return { batchId, jobId, labels, barcode_value: firstBarcode };
+    return {
+      status: 201 as const,
+      qr_job: {
+        id: jobId,
+        job_code: jobCode,
+        product_name: products[0].name,
+        product_sku: products[0].sku,
+        quantity: Number(batch.quantity),
+      },
+      labels,
+      barcode_value: firstBarcode,
+    };
   });
-  res.status(201).json({
-    id: result.batchId,
-    barcode_value: result.barcode_value,
-    product_name: product.name,
-    product_sku: product.sku,
-    qr_job: {
-      id: result.jobId,
-      job_code: jobCode,
-      product_name: product.name,
-      product_sku: product.sku,
-      quantity: labelCount,
-    },
-    labels: result.labels,
-  });
+  if ('error' in result) { res.status(result.status).json({ error: result.error }); return; }
+  res.status(201).json(result);
 }
 
 export async function list(req: Request, res: Response): Promise<void> {
   const batches = await query<RowDataPacket[]>(
-    `SELECT b.*, p.name as product_name, p.sku as product_sku, s.location_code,
+    `SELECT b.*, p.name as product_name, p.sku as product_sku, p.grade AS product_grade,
+            s.location_code, v.name AS vendor_name, g.name AS grade_name,
+            q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id
      FROM batches b JOIN products p ON b.product_id = p.id
      LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
+     LEFT JOIN vendors v ON v.id = b.vendor_id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      ORDER BY b.created_at DESC`
   );
   res.json(batches);
@@ -112,17 +223,29 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
     `SELECT b.*,
             p.name as product_name, p.sku as product_sku, p.description as product_description,
             p.cas_number, p.molecular_formula, p.purity as product_purity, p.grade as product_grade,
+            g.name AS grade_name,
             p.storage_conditions as product_storage_conditions, p.hazard_classification,
             p.physical_state as product_physical_state, p.hsn_code, p.manufacturer,
             l.qr_value AS scanned_qr, s.location_code,
-            (SELECT COUNT(*) FROM qr_labels units WHERE units.batch_id = b.id) AS qr_count
+            (SELECT COUNT(*) FROM qr_labels units WHERE units.batch_id = b.id) AS qr_count,
+            CASE
+              WHEN b.batch_number = ? AND b.barcode_value <> ? AND l.qr_value IS NULL THEN 1
+              ELSE 0
+            END AS matched_by_batch_number
      FROM batches b JOIN products p ON b.product_id = p.id
      LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ?
      LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
-     WHERE b.barcode_value = ? OR l.qr_value = ?`,
-    [barcode, barcode, barcode]
+     LEFT JOIN grades g ON g.id = b.grade_id
+     WHERE b.barcode_value = ? OR l.qr_value = ? OR b.batch_number = ?
+     ORDER BY CASE WHEN b.barcode_value = ? OR l.qr_value IS NOT NULL THEN 0 ELSE 1 END
+     LIMIT 2`,
+    [barcode, barcode, barcode, barcode, barcode, barcode]
   );
   if (batches.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
+  if (batches.length > 1 && Number(batches[0].matched_by_batch_number)) {
+    res.status(409).json({ error: 'Batch number matches more than one batch. Scan its QR or barcode instead.' });
+    return;
+  }
   res.json(batches[0]);
 }
 

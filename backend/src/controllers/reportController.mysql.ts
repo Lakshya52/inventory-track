@@ -112,13 +112,19 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
   dateFilter(req, 'd.created_at', filter);
 
   const records = await query<RowDataPacket[]>(
-    `SELECT d.id, d.batch_id, d.remarks, d.images, d.created_at,
+    `SELECT d.id, d.batch_id, d.dispatch_order_id, d.remarks, d.images, d.created_at,
             b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
-            p.name AS product_name, p.sku AS product_sku,
+            p.name AS product_name, p.sku AS product_sku, COALESCE(g.name, p.grade) AS grade,
+            q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
+            c.name AS client_name, o.container_number, o.vehicle_number,
             COALESCE(u.name, 'Unknown') AS dispatcher_name
      FROM dispatch_records d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN dispatch_orders o ON o.id = d.dispatch_order_id
+     LEFT JOIN clients c ON c.id = o.client_id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN dispatch_users u ON d.dispatcher_id = u.id
      ${whereSql(filter)}
      ORDER BY d.created_at DESC
@@ -138,19 +144,25 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
 
   const orders = await query<RowDataPacket[]>(
     `SELECT d.id, d.batch_id, d.status, d.admin_remarks, d.created_at, d.updated_at,
-            d.driver_name, d.vehicle_number,
+            d.driver_name, d.vehicle_number, d.container_number,
             b.batch_number, b.status AS batch_status, b.quantity, b.uom, b.barcode_value,
-            p.name AS product_name, p.sku AS product_sku,
+            p.name AS product_name, p.sku AS product_sku, p.grade AS product_grade,
+            g.name AS grade_name, q.name AS bag_quantity_name,
+            q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             c.name AS client_name, c.contact_person AS client_contact,
             c.email AS client_email, c.phone AS client_phone, c.address AS client_address,
             COALESCE(du.name, 'Unknown') AS raised_by_name,
-            da.name AS admin_name
+            COALESCE(aa.name, qu.name) AS admin_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN clients c ON c.id = d.client_id
      LEFT JOIN dispatch_users du ON d.raised_by = du.id
      LEFT JOIN admins da ON d.admin_id = da.id
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
      ${whereSql(filter)}
      ORDER BY d.created_at DESC
      LIMIT 1000`,

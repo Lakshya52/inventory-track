@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import {
   LayoutDashboard, Package, Tags, MapPin, Handshake, Users,
   Microscope, BarChart3, Camera, ClipboardList, FileText, FileBarChart,
-  LogOut, ChevronLeft, ChevronRight, UserCircle, Menu, X, Wifi, WifiOff, QrCode,
+  LogOut, ChevronLeft, ChevronRight, UserCircle, Menu, X, Wifi, WifiOff, QrCode, Settings2,
 } from 'lucide-react';
 
 type NavItem = {
@@ -29,6 +29,8 @@ const navSections: { title: string; items: NavItem[] }[] = [
       { label: 'Shelf Locations', path: '/shelf-locations', icon: <MapPin size={18} />, roles: ['ADMIN'] },
       { label: 'Batches', path: '/batches', icon: <Tags size={18} />, roles: ['ADMIN'] },
       { label: 'Clients', path: '/clients', icon: <Handshake size={18} />, roles: ['ADMIN'] },
+      { label: 'Vendors', path: '/vendors', icon: <Handshake size={18} />, roles: ['ADMIN'] },
+      { label: 'Masters', path: '/masters', icon: <Settings2 size={18} />, roles: ['ADMIN'] },
       { label: 'Users', path: '/users', icon: <Users size={18} />, roles: ['ADMIN'] },
     ],
   },
@@ -47,7 +49,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
       { label: 'Dispatch Group Scan', path: '/dispatch', icon: <Camera size={18} />, roles: ['DISPATCH'] },
       { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['DISPATCH'] },
       { label: 'Packing List', path: '/packing-list', icon: <FileText size={18} />, roles: ['DISPATCH'] },
-      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['ADMIN'] },
+      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['ADMIN', 'QC'] },
     ],
   },
   {
@@ -100,7 +102,7 @@ export function AppLayout() {
   const sidebar = (
     <>
       <div className="flex items-center gap-3 px-4 h-16 border-b border-white/5 shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+        <div className="w-8 h-8 rounded-lg bg-linear-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
           A
         </div>
         {!collapsed && <span className="text-white font-semibold text-sm tracking-wide">Aceone</span>}
@@ -178,7 +180,7 @@ export function AppLayout() {
         {sidebar}
       </aside>
 
-      <div className={`flex min-w-0 w-full flex-1 flex-col transition-all duration-300 ${collapsed ? 'lg:ml-16' : 'lg:ml-60'}`}>
+      <div className={`flex min-w-0 flex-col transition-all duration-300 ${collapsed ? 'lg:ml-16' : 'lg:ml-60'}`}>
         <header className="h-16 flex items-center justify-between px-4 lg:px-8 bg-white/80 backdrop-blur-md border-b border-surface-200 sticky top-0 z-20 shrink-0">
           <div className="flex items-center gap-3">
             <button className="lg:hidden p-1.5 rounded-lg hover:bg-surface-100 text-surface-500" onClick={() => setMobileOpen(true)}>

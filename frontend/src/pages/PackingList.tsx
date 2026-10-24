@@ -86,21 +86,24 @@ export default function PackingList() {
         <span><strong>GST:</strong> ${escapeHtml(packingData.client?.gst_number || '-')}</span>
         <span><strong>Driver:</strong> ${escapeHtml(packingData.driver_name || '-')}</span>
         <span><strong>Vehicle:</strong> ${escapeHtml(packingData.vehicle_number || '-')}</span>
+        <span><strong>Container:</strong> ${escapeHtml(packingData.container_number || '-')}</span>
+        <span><strong>Grade:</strong> ${escapeHtml(packingData.grade || '-')}</span>
         <span><strong>Batch:</strong> ${escapeHtml(packingData.batch_number || 'N/A')}</span>
         <span><strong>Generated:</strong> ${escapeHtml(new Date(packingData.generated_at).toLocaleString())}</span>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>SKU</th><th>Batch</th><th>Qty</th><th>UOM</th><th>Location</th><th>Barcode</th></tr></thead>
+        <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Bags</th><th>Bag Content</th><th>Location</th><th>Barcode</th></tr></thead>
         <tbody>
           ${packingData.items.map((item: any, i: number) => `
             <tr>
               <td>☐</td>
               <td>${i + 1}</td>
               <td>${escapeHtml(item.product_name || '-')}</td>
+              <td>${escapeHtml(item.grade || packingData.grade || '-')}</td>
               <td>${escapeHtml(item.sku || '-')}</td>
               <td style="font-family:monospace;font-size:11px;">${escapeHtml(item.batch_number || packingData.batch_number || '-')}</td>
-              <td>${escapeHtml(item.quantity)}</td>
-              <td>${escapeHtml(item.uom || '-')}</td>
+              <td>${escapeHtml(item.quantity)} bags</td>
+              <td>${escapeHtml([item.bag_quantity, item.bag_quantity_unit].filter(Boolean).join(' ') || '-')}</td>
               <td>${escapeHtml(itemLocation(item))}</td>
               <td style="font-size:10px;font-family:monospace;">${escapeHtml(itemBarcode(item, packingData))}</td>
             </tr>`).join('')}
@@ -113,14 +116,14 @@ export default function PackingList() {
     win.document.close();
   };
 
-  const processedOrders = orders.filter((order) => order.status === 'APPROVED');
+  const processedOrders = orders.filter((order) => order.status === 'APPROVED' && order.dispatched_at);
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <h1 className="page-title">Packing List</h1>
-          <p className="page-subtitle">View and print packing lists after admin approval. Use the checkbox during loading.</p>
+          <p className="page-subtitle">Packing lists are available after all labeled bags for the approved order have been scanned and loading is complete.</p>
         </div>
       </div>
 
@@ -131,18 +134,19 @@ export default function PackingList() {
       )}
 
       <div className="card mb-6">
-        <div className="card-header"><h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Processed Orders</h3></div>
+        <div className="card-header"><h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Loaded orders</h3></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Client</th><th>Driver / Vehicle</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot / Qty</th><th>Client</th><th>Driver / Vehicle</th><th>Container</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
             <tbody>
               {processedOrders.map((order) => (
                 <tr key={order.id}>
                   <td className="text-xs text-surface-400">{new Date(order.created_at).toLocaleDateString()}</td>
-                  <td><span className="font-medium text-surface-800">{order.product_name}</span></td>
-                  <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span></td>
+                  <td><span className="font-medium text-surface-800">{order.product_name}</span><div className="text-xs text-surface-400">{order.grade_name || order.product_grade || '-'}</div></td>
+                  <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span><div className="text-xs text-surface-400">{order.quantity} bags · {order.bag_quantity_name || ''}</div></td>
                   <td>{order.client_name || '-'}</td>
                   <td className="text-xs">{order.driver_name || '-'} / {order.vehicle_number || '-'}</td>
+                  <td>{order.container_number || '-'}</td>
                   <td><span className={`badge ${order.status === 'APPROVED' ? 'badge-success' : 'badge-danger'}`}>{order.status}</span></td>
                   <td className="text-right">
                     <button onClick={() => handleViewPacking(order.id)} disabled={loading} className="btn-primary btn-sm">
@@ -151,7 +155,7 @@ export default function PackingList() {
                   </td>
                 </tr>
               ))}
-              {processedOrders.length === 0 && <tr><td colSpan={7}><div className="empty-state"><div className="empty-title">No approved dispatch orders</div></div></td></tr>}
+              {processedOrders.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No completed loads available</div></div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -175,6 +179,8 @@ export default function PackingList() {
             <span><strong>GST:</strong> {packingData.client?.gst_number || '-'}</span>
             <span><strong>Driver:</strong> {packingData.driver_name || '-'}</span>
             <span><strong>Vehicle:</strong> {packingData.vehicle_number || '-'}</span>
+            <span><strong>Container:</strong> {packingData.container_number || '-'}</span>
+            <span><strong>Grade:</strong> {packingData.grade || '-'}</span>
             <span><strong>Status:</strong> {packingData.status}</span>
             <span><strong>Generated:</strong> {new Date(packingData.generated_at).toLocaleString()}</span>
             {packingData.raised_by_name && <span><strong>Raised by:</strong> {packingData.raised_by_name}</span>}
@@ -182,17 +188,18 @@ export default function PackingList() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>SKU</th><th>Batch</th><th>Qty</th><th>UOM</th><th>Location</th></tr></thead>
+              <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Bags</th><th>Bag Content</th><th>Location</th></tr></thead>
               <tbody>
                 {packingData.items.map((item: any, i: number) => (
                   <tr key={i}>
                     <td><input type="checkbox" aria-label={`Batch ${item.batch_number || packingData.batch_number} loaded`} /></td>
                     <td className="text-sm text-surface-400">{i + 1}</td>
                     <td><span className="font-medium text-surface-800">{item.product_name || '-'}</span></td>
+                    <td>{item.grade || packingData.grade || '-'}</td>
                     <td className="text-sm">{item.sku || '-'}</td>
                     <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{item.batch_number || packingData.batch_number}</span></td>
-                    <td className="text-sm">{item.quantity}</td>
-                    <td className="text-sm">{item.uom || '-'}</td>
+                    <td className="text-sm">{item.quantity} bags</td>
+                    <td className="text-sm">{[item.bag_quantity, item.bag_quantity_unit].filter(Boolean).join(' ') || '-'}</td>
                     <td className="text-sm">{itemLocation(item)}</td>
                   </tr>
                 ))}

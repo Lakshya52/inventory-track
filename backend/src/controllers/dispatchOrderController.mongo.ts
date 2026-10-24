@@ -25,8 +25,19 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
     'products',
     [...batches.values()].map((batch) => Number(batch.product_id))
   );
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => Number(batch.vendor_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
   const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => Number(order.raised_by)));
-  const admins = await mapNames(ctx, 'admins', orders.map((order) => Number(order.admin_id)));
+  const approvers = await Promise.all(orders.map(async (order) => {
+    if (order.approved_by_role === 'QC') {
+      const qc = await ctx.findOne('qc_users', { id: Number(order.approved_by_id) }, { projection: { _id: 0, name: 1 } });
+      return [Number(order.id), qc?.name ?? null] as const;
+    }
+    const adminName = order.admin_id ? await ctx.findOne('admins', { id: Number(order.admin_id) }, { projection: { _id: 0, name: 1 } }) : null;
+    return [Number(order.id), adminName?.name ?? null] as const;
+  }));
+  const approverNames = new Map(approvers);
   const clients = await mapNames(ctx, 'clients', orders.map((order) => Number(order.client_id)));
   const qrStats = await batchQrStats(ctx, orders.map((order) => Number(order.batch_id)));
 
@@ -41,12 +52,18 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       uom: batch?.uom ?? null,
       batch_status: batch?.status ?? null,
       storage_location: batch?.storage_location ?? null,
+      vendor_name: vendors.get(Number(batch?.vendor_id))?.name ?? null,
+      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
       qr_count: qrStats.get(Number(order.batch_id))?.count ?? 0,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
       raised_by_name: raisedBy.get(Number(order.raised_by)) ?? null,
-      admin_name: admins.get(Number(order.admin_id)) ?? null,
+      admin_name: approverNames.get(Number(order.id)) ?? null,
       client_name: clients.get(Number(order.client_id)) ?? null,
+      approver_name: approverNames.get(Number(order.id)) ?? null,
     };
   });
 }
@@ -80,6 +97,7 @@ export async function raise(req: Request, res: Response): Promise<void> {
       client_id: Number(req.body.client_id),
       driver_name: String(req.body.driver_name || ''),
       vehicle_number: String(req.body.vehicle_number || ''),
+      container_number: String(req.body.container_number || ''),
     },
   };
 
@@ -167,7 +185,13 @@ export async function approve(req: Request, res: Response): Promise<void> {
       const orderUpdate = await ctx.updateOne(
         'dispatch_orders',
         { id, status: 'PENDING' },
-        { $set: { status: 'APPROVED', admin_id: req.user!.userId, admin_remarks: admin_remarks || null } }
+        { $set: {
+          status: 'APPROVED',
+          admin_id: req.user!.role === 'ADMIN' ? req.user!.userId : null,
+          approved_by_role: req.user!.role,
+          approved_by_id: req.user!.userId,
+          admin_remarks: admin_remarks || null,
+        } }
       );
       if (orderUpdate.matchedCount !== 1) {
         throw new SyncConflictError('Dispatch order was changed by another user', { order_id: id });
@@ -214,7 +238,13 @@ export async function reject(req: Request, res: Response): Promise<void> {
       const orderUpdate = await ctx.updateOne(
         'dispatch_orders',
         { id, status: 'PENDING' },
-        { $set: { status: 'REJECTED', admin_id: req.user!.userId, admin_remarks: admin_remarks || null } }
+        { $set: {
+          status: 'REJECTED',
+          admin_id: req.user!.role === 'ADMIN' ? req.user!.userId : null,
+          approved_by_role: req.user!.role,
+          approved_by_id: req.user!.userId,
+          admin_remarks: admin_remarks || null,
+        } }
       );
       if (orderUpdate.matchedCount !== 1) {
         throw new SyncConflictError('Dispatch order was changed by another user', { order_id: id });
@@ -246,7 +276,7 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
   const ctx = await getContext();
   const order = await ctx.findOne(
     'dispatch_orders',
-    { id, raised_by: req.user!.userId, status: 'APPROVED' },
+    { id, raised_by: req.user!.userId, status: 'APPROVED', dispatched_at: { $ne: null } },
     { projection: { _id: 0 } }
   );
   if (!order) {
@@ -269,14 +299,25 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
     }),
   ]);
 
-  const [product, location, raisedBy, admin, dispatcher] = await Promise.all([
+  const [product, location, grade, vendor, bagQuantity, raisedBy, admin, dispatcher] = await Promise.all([
     batch ? ctx.findOne('products', { id: Number(batch.product_id) }, { projection: { _id: 0 } }) : null,
     batch && batch.shelf_location_id
       ? ctx.findOne('shelf_locations', { id: Number(batch.shelf_location_id) }, { projection: { _id: 0, location_code: 1 } })
       : null,
+    batch?.grade_id
+      ? ctx.findOne('grades', { id: Number(batch.grade_id) }, { projection: { _id: 0, name: 1 } })
+      : null,
+    batch?.vendor_id
+      ? ctx.findOne('vendors', { id: Number(batch.vendor_id) }, { projection: { _id: 0, name: 1 } })
+      : null,
+    batch?.bag_quantity_id
+      ? ctx.findOne('bag_quantities', { id: Number(batch.bag_quantity_id) }, { projection: { _id: 0, name: 1, quantity: 1, unit: 1 } })
+      : null,
     ctx.findOne('dispatch_users', { id: Number(order.raised_by) }, { projection: { _id: 0, name: 1 } }),
-    order.admin_id
-      ? ctx.findOne('admins', { id: Number(order.admin_id) }, { projection: { _id: 0, name: 1 } })
+    order.approved_by_role === 'QC'
+      ? ctx.findOne('qc_users', { id: Number(order.approved_by_id) }, { projection: { _id: 0, name: 1 } })
+      : order.admin_id
+        ? ctx.findOne('admins', { id: Number(order.admin_id) }, { projection: { _id: 0, name: 1 } })
       : null,
     dispatchRecord[0]
       ? ctx.findOne('dispatch_users', { id: Number(dispatchRecord[0].dispatcher_id) }, { projection: { _id: 0, name: 1 } })
@@ -293,6 +334,9 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
         barcode: batch?.barcode_value ?? null,
         quantity: batch?.quantity ?? null,
         uom: batch?.uom ?? null,
+        grade: grade?.name ?? product?.grade ?? null,
+        bag_quantity: bagQuantity?.quantity ?? null,
+        bag_quantity_unit: bagQuantity?.unit ?? null,
         location: storageLocation || 'N/A',
       }];
 
@@ -302,12 +346,15 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
     batch_number: batch?.batch_number ?? null,
     barcode: batch?.barcode_value ?? null,
     raised_by_name: raisedBy?.name ?? null,
-    admin_name: admin?.name ?? null,
+    approver_name: admin?.name ?? null,
     admin_remarks: order.admin_remarks || null,
     client: client || null,
     client_name: client?.name ?? null,
     driver_name: order.driver_name,
     vehicle_number: order.vehicle_number,
+    container_number: order.container_number,
+    grade: grade?.name ?? product?.grade ?? null,
+    vendor_name: vendor?.name ?? null,
     dispatched_by: dispatcher?.name ?? null,
     location: storageLocation,
     dispatched_at: order.dispatched_at || null,

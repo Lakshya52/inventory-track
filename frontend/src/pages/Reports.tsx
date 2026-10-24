@@ -222,12 +222,13 @@ export default function Reports() {
   ])), [qcRecords, search]);
 
   const filteredDispatch = useMemo(() => dispatchRecords.filter(r => matchesSearch([
-    r.product_name, r.product_sku, r.batch_number, r.dispatcher_name, r.remarks,
+    r.created_at, r.client_name, r.grade, r.batch_number, r.container_number,
+    r.vehicle_number, r.product_name, r.product_sku, r.dispatcher_name, r.remarks,
   ])), [dispatchRecords, search]);
 
   const filteredRequests = useMemo(() => requests.filter(r => matchesSearch([
     r.product_name, r.product_sku, r.batch_number, r.raised_by_name, r.status, r.admin_remarks,
-    r.client_name, r.driver_name, r.vehicle_number,
+    r.client_name, r.driver_name, r.vehicle_number, r.container_number, r.grade_name,
   ])), [requests, search]);
 
   const filteredInventory = useMemo(() => inventory.filter(r => matchesSearch([
@@ -255,13 +256,17 @@ export default function Reports() {
     } else if (tab === 'dispatch') {
       filename = `dispatch_report_${new Date().toISOString().slice(0, 10)}`;
       title = 'Dispatch report';
-      headers = ['Date', 'Product', 'SKU', 'Batch', 'Quantity', 'UOM', 'Dispatched By', 'Remarks'];
-      rows = filteredDispatch.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.uom || '', r.dispatcher_name, r.remarks || '']);
+      headers = ['Date', 'Party', 'Product', 'SKU', 'Grade', 'Lot', 'Bags', 'Bag Content', 'Container', 'Vehicle', 'Dispatched By', 'Remarks'];
+      rows = filteredDispatch.map(r => [
+        new Date(r.created_at).toLocaleString(), r.client_name || '', r.product_name, r.product_sku,
+        r.grade || '', r.batch_number, r.quantity, [r.bag_quantity, r.bag_quantity_unit].filter(Boolean).join(' '),
+        r.container_number || '', r.vehicle_number || '', r.dispatcher_name, r.remarks || '',
+      ]);
     } else if (tab === 'requests') {
       filename = `dispatch_requests_${new Date().toISOString().slice(0, 10)}`;
       title = 'Dispatch requests';
-      headers = ['Date', 'Product', 'SKU', 'Batch', 'Quantity', 'Client', 'Driver', 'Vehicle', 'Raised By', 'Status', 'Admin Remarks'];
-      rows = filteredRequests.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.batch_number, r.quantity, r.client_name || '', r.driver_name || '', r.vehicle_number || '', r.raised_by_name, r.status, r.admin_remarks || '']);
+      headers = ['Date', 'Product', 'SKU', 'Grade', 'Lot', 'Bags', 'Client', 'Driver', 'Vehicle', 'Container', 'Raised By', 'Status', 'Approver Remarks'];
+      rows = filteredRequests.map(r => [new Date(r.created_at).toLocaleString(), r.product_name, r.product_sku, r.grade_name || r.product_grade || '', r.batch_number, r.quantity, r.client_name || '', r.driver_name || '', r.vehicle_number || '', r.container_number || '', r.raised_by_name, r.status, r.admin_remarks || '']);
     } else if (tab === 'inventory') {
       filename = `inventory_report_${new Date().toISOString().slice(0, 10)}`;
       title = 'Inventory report';
@@ -578,16 +583,21 @@ export default function Reports() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Qty</th><th>Location</th><th>Dispatched By</th><th>Remarks</th><th>Evidence</th></tr></thead>
+              <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Grade</th><th>Lot</th><th>Bags</th><th>Bag Content</th><th>Container</th><th>Vehicle</th><th>Location</th><th>Dispatched By</th><th>Remarks</th><th>Evidence</th></tr></thead>
               <tbody>
                 {filteredDispatch.map(r => {
                   const images = parseImages(r.images);
                   return (
                     <tr key={r.id}>
                       <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="text-sm">{r.client_name || '-'}</td>
                       <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku}</div></td>
+                      <td>{r.grade || '-'}</td>
                       <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                      <td className="text-sm">{r.quantity} {r.uom || ''}</td>
+                      <td className="text-sm">{r.quantity} bags</td>
+                      <td className="text-sm">{r.bag_quantity ? `${r.bag_quantity} ${r.bag_quantity_unit || ''}` : '-'}</td>
+                      <td>{r.container_number || '-'}</td>
+                      <td>{r.vehicle_number || '-'}</td>
                       <td className="text-sm">{r.storage_location || '-'}</td>
                       <td className="text-sm">{r.dispatcher_name || '-'}</td>
                       <td className="text-sm text-surface-500 max-w-[220px]">{r.remarks || '-'}</td>
@@ -599,7 +609,7 @@ export default function Reports() {
                     </tr>
                   );
                 })}
-                {filteredDispatch.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No dispatch records found</div><div className="empty-desc">Try changing the date range</div></div></td></tr>}
+                {filteredDispatch.length === 0 && <tr><td colSpan={13}><div className="empty-state"><div className="empty-title">No dispatch records found</div><div className="empty-desc">Search by party, grade, lot, container, vehicle, or change the date range</div></div></td></tr>}
               </tbody>
             </table>
           </div>
@@ -619,18 +629,19 @@ export default function Reports() {
           )}
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Qty</th><th>Client / Transport</th><th>Raised By</th><th>Status</th><th>Admin Remarks</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot</th><th>Bags</th><th>Client / Transport</th><th>Container</th><th>Raised By</th><th>Status</th><th>Approver Remarks</th><th>Actions</th></tr></thead>
               <tbody>
                 {filteredRequests.map(r => (
                   <tr key={r.id}>
                     <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
-                    <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku}</div></td>
+                    <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku} · {r.grade_name || r.product_grade || '-'}</div></td>
                     <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
                     <td className="text-sm">{r.quantity} {r.uom || ''}</td>
                     <td className="text-sm">
                       <div>{r.client_name || '-'}</div>
                       <div className="text-xs text-surface-400">{r.driver_name || '-'} / {r.vehicle_number || '-'}</div>
                     </td>
+                    <td>{r.container_number || '-'}</td>
                     <td className="text-sm">{r.raised_by_name || '-'}</td>
                     <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{r.status}</span></td>
                     <td className="text-sm text-surface-500 max-w-[220px]">{r.admin_remarks || '-'}</td>
@@ -641,7 +652,7 @@ export default function Reports() {
                     </td>
                   </tr>
                 ))}
-                {filteredRequests.length === 0 && <tr><td colSpan={9}><div className="empty-state"><div className="empty-title">No dispatch requests found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
+                {filteredRequests.length === 0 && <tr><td colSpan={10}><div className="empty-state"><div className="empty-title">No dispatch requests found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
               </tbody>
             </table>
           </div>

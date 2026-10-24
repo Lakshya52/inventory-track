@@ -1,4 +1,4 @@
-import { getContext, DbContext } from './database';
+import { getContext, DbContext, isDuplicateKey } from './database';
 
 async function ensureIndexes(ctx: DbContext): Promise<void> {
   const unique = { unique: true } as const;
@@ -22,10 +22,15 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('vendors').createIndex({ vendor_code: 1 }, unique),
     ctx.collection('vendors').createIndex({ name: 1 }),
     ctx.collection('vendors').createIndex({ is_active: 1 }),
+    ctx.collection('grades').createIndex({ name: 1 }, unique),
+    ctx.collection('grades').createIndex({ is_active: 1 }),
+    ctx.collection('bag_quantities').createIndex({ name: 1 }, unique),
+    ctx.collection('bag_quantities').createIndex({ is_active: 1 }),
 
     ctx.collection('batches').createIndex({ barcode_value: 1 }, unique),
     ctx.collection('batches').createIndex({ batch_number: 1 }),
     ctx.collection('batches').createIndex({ product_id: 1, created_at: -1 }),
+    ctx.collection('batches').createIndex({ batch_group_id: 1 }),
     ctx.collection('batches').createIndex({ status: 1, updated_at: 1 }),
     ctx.collection('batches').createIndex({ updated_at: 1 }),
     ctx.collection('batches').createIndex({ shelf_location_id: 1 }),
@@ -111,6 +116,8 @@ const COLLECTIONS = [
   'shelf_locations',
   'clients',
   'vendors',
+  'grades',
+  'bag_quantities',
   'batches',
   'qr_print_jobs',
   'qr_labels',
@@ -135,4 +142,33 @@ export async function ensureAdminSchema(): Promise<void> {
   const ctx = await getContext();
   await ensureIndexes(ctx);
   await syncCounters(ctx, COLLECTIONS);
+  const products = await ctx.find(
+    'products',
+    { grade: { $type: 'string', $ne: '' } },
+    { projection: { grade: 1 } }
+  );
+  const legacyGrades = new Map<string, string>();
+  const existingGrades = await ctx.find('grades', {}, { projection: { name: 1 } });
+  const knownGrades = new Set(
+    existingGrades
+      .map((grade) => typeof grade.name === 'string' ? grade.name.trim().toLocaleLowerCase() : '')
+      .filter(Boolean)
+  );
+  for (const product of products) {
+    const grade = typeof product.grade === 'string' ? product.grade.trim() : '';
+    const key = grade.toLocaleLowerCase();
+    if (grade && !knownGrades.has(key)) legacyGrades.set(key, grade);
+  }
+  for (const grade of legacyGrades.values()) {
+    try {
+      await ctx.updateOne(
+        'grades',
+        { name: grade },
+        { $setOnInsert: { name: grade, is_active: 1 } },
+        { upsert: true }
+      );
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+    }
+  }
 }

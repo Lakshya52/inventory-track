@@ -39,6 +39,7 @@ export async function submit(req: Request, res: Response): Promise<void> {
       images,
       expected_status: req.body.expected_status || undefined,
       direct: req.body.direct === true || req.body.direct === 'true',
+      dispatch_order_id: Number(req.body.dispatch_order_id) || undefined,
     },
   };
 
@@ -90,6 +91,7 @@ export async function submitBulk(req: Request, res: Response): Promise<void> {
       remarks: req.body.remarks || null,
       images,
       direct: req.body.direct === true || req.body.direct === 'true',
+      dispatch_order_id: Number(req.body.dispatch_order_id) || undefined,
     },
   };
 
@@ -152,12 +154,17 @@ export async function approvedOrders(req: Request, res: Response): Promise<void>
   const scope = userScope(req, 'd.raised_by');
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
+            g.name AS grade_name, q.name AS bag_quantity_name, q.quantity AS bag_quantity,
+            q.unit AS bag_quantity_unit, c.name AS client_name,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             p.name AS product_name, p.sku AS product_sku,
             u.name AS raised_by_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
+     LEFT JOIN clients c ON c.id = d.client_id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
      WHERE d.status = 'APPROVED'
        AND d.dispatched_at IS NULL
@@ -232,7 +239,11 @@ export async function stats(req: Request, res: Response): Promise<void> {
      WHERE dr.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) ${recordScope}`,
     recordParams
   );
-  const readyToDispatch = await count(`SELECT COUNT(*) AS count FROM batches WHERE status = 'QC_PASSED'`);
+  const readyToDispatch = await count(
+    `SELECT COUNT(*) AS count FROM batches b
+     WHERE b.status = 'QC_PASSED'
+       AND (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) = b.quantity`
+  );
 
   const orderScope = personal ? 'AND raised_by = ?' : '';
   const orderParams = personal ? [user.userId] : [];
@@ -256,6 +267,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
             TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
      FROM batches b JOIN products p ON b.product_id = p.id
      WHERE b.status = 'QC_PASSED'
+       AND (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) = b.quantity
      ORDER BY b.updated_at ASC LIMIT 10`
   );
   const pendingOrders = await query<RowDataPacket[]>(

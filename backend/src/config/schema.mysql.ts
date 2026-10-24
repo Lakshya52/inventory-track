@@ -65,6 +65,15 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing('dispatch_orders', 'client_id', 'INT NULL');
   await addColumnIfMissing('dispatch_orders', 'driver_name', 'VARCHAR(150) NULL');
   await addColumnIfMissing('dispatch_orders', 'vehicle_number', 'VARCHAR(50) NULL');
+  await addColumnIfMissing('dispatch_orders', 'container_number', 'VARCHAR(100) NULL');
+  await addColumnIfMissing('dispatch_orders', 'approved_by_role', "VARCHAR(20) NULL");
+  await addColumnIfMissing('dispatch_orders', 'approved_by_id', 'INT NULL');
+  await addColumnIfMissing('batches', 'vendor_id', 'INT NULL');
+  await addColumnIfMissing('batches', 'grade_id', 'INT NULL');
+  await addColumnIfMissing('batches', 'bag_quantity_id', 'INT NULL');
+  await addColumnIfMissing('batches', 'fg_details_completed_at', 'DATETIME(3) NULL');
+  await addColumnIfMissing('batches', 'batch_group_id', 'CHAR(36) NULL');
+  await addIndexIfMissing('batches', 'idx_batches_group', 'batch_group_id');
 
   // Offline idempotency / provenance columns. The server timestamp stays in
   // created_at; client_created_at preserves the time the field user acted.
@@ -81,6 +90,49 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing('fix_records', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
   await addColumnIfMissing('dispatch_orders', 'dispatched_at', 'DATETIME(3) NULL');
   await addColumnIfMissing('dispatch_records', 'dispatch_order_id', 'INT NULL');
+
+  await execute(`CREATE TABLE IF NOT EXISTS vendors (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    vendor_code VARCHAR(30) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    contact_person VARCHAR(100) NULL,
+    email VARCHAR(100) NULL,
+    phone VARCHAR(50) NULL,
+    address TEXT NULL,
+    gst_number VARCHAR(50) NULL,
+    category VARCHAR(100) NULL,
+    payment_terms VARCHAR(100) NULL,
+    notes TEXT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_vendors_name (name),
+    KEY idx_vendors_active (is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS grades (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`INSERT INTO grades (name)
+    SELECT DISTINCT TRIM(p.grade)
+    FROM products p
+    LEFT JOIN grades g ON g.name = TRIM(p.grade)
+    WHERE p.grade IS NOT NULL AND TRIM(p.grade) <> '' AND g.id IS NULL`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS bag_quantities (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(120) NOT NULL UNIQUE,
+    quantity DECIMAL(14,4) NOT NULL,
+    unit VARCHAR(40) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // A nullable unique column is valid in MariaDB/MySQL: multiple NULLs are
   // allowed while a non-null client operation can only be applied once.

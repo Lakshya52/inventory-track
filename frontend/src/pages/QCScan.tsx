@@ -19,7 +19,7 @@ function expectedQrCount(batch: any): number {
       return Math.max(1, Math.floor(Number(batch.quantity) || 1));
     }
   }
-  return Math.max(1, Math.floor(Number(batch.qr_count ?? batch.quantity) || 1));
+  return Math.max(1, Math.floor(Number(batch.qr_count) || 1));
 }
 
 export default function QCScan() {
@@ -77,8 +77,9 @@ export default function QCScan() {
     try {
       const result = await api.qc.pending({ limit: 20 });
       setQueue(result.items || []);
-    } catch {
-      // The manual scan paths still work if the queue cannot be refreshed.
+    } catch (err: any) {
+      setMessageKind('error');
+      setMessage(err.message || 'Could not load the pending QC queue. You can still look up a batch by its number.');
     } finally {
       setQueueLoading(false);
     }
@@ -105,7 +106,7 @@ export default function QCScan() {
       }
       return false;
     }
-    if (Number(found.quantity) > 1 && !found.scanned_qr) {
+    if (Number(found.quantity) > 1 && Number(found.qr_count) > 0 && !found.scanned_qr) {
       if (!silent) {
         setMessageKind('info');
         setMessage('Scan every individual QR label on this batch. The queue shortcut cannot replace a unit scan.');
@@ -323,14 +324,14 @@ export default function QCScan() {
         <div className="flex flex-col sm:flex-row gap-2">
           <input
             className="input flex-1"
-            placeholder="Scan or type a QR / barcode value"
+            placeholder="Scan or type a QR / barcode value or batch number"
             value={manualValue}
             onChange={(event) => setManualValue(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') void addBatch(manualValue); }}
           />
           <button className="btn-secondary" onClick={() => void addBatch(manualValue)} disabled={lookupLoading || !manualValue.trim()}>
             {lookupLoading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-            {lookupLoading ? 'Checking...' : 'Add code'}
+            {lookupLoading ? 'Checking...' : 'Add / find batch'}
           </button>
           <button
             className="btn-primary"
@@ -356,14 +357,14 @@ export default function QCScan() {
         )}
 
         <p className="text-xs text-surface-400 mt-3">
-          Scan every unique QR label on a batch. QC is blocked until all units in each scanned batch are present.
+          QC is recorded against the lot tracking code. Bag-specific QR labels are created only after QC passes.
         </p>
 
         <div className="mt-4 pt-4 border-t border-surface-100">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div>
               <div className="input-label mb-0">Pending batches</div>
-              <p className="text-[11px] text-surface-400 mt-1">This list is for reference; scan every product label to submit QC.</p>
+              <p className="text-[11px] text-surface-400 mt-1">For pre-finished QC batches, use Add lot; previously labeled batches still require every unit QR.</p>
             </div>
             <div className="flex items-center gap-2">
               <button className="btn-secondary btn-xs" onClick={() => void loadQueue()} disabled={queueLoading}>
@@ -388,7 +389,9 @@ export default function QCScan() {
                     {batch.batch_number} · {batch.product_sku} · {batch.quantity} {batch.uom || ''}
                   </div>
                 </div>
-                <span className="text-xs text-surface-400">Scan {expectedQrCount(batch)} labels</span>
+                {Number(batch.qr_count) === 0
+                  ? <button className="btn-secondary btn-xs" onClick={() => void addBatch(batch.barcode_value)}>Add QC lot</button>
+                  : <span className="text-xs text-surface-400">Scan {expectedQrCount(batch)} labels</span>}
               </div>
             ))}
             {filteredQueue.length === 0 && (

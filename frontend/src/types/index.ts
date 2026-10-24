@@ -37,6 +37,7 @@ export interface Batch {
   id: number;
   product_id: number;
   batch_number: string;
+  batch_group_id?: string | null;
   quantity: number;
   uom: string | null;
   unit_price: number;
@@ -53,7 +54,16 @@ export interface Batch {
   created_at: string;
   product_name?: string;
   product_sku?: string;
+  product_grade?: string | null;
   product_description?: string | null;
+  vendor_id?: number | null;
+  vendor_name?: string | null;
+  grade_id?: number | null;
+  grade_name?: string | null;
+  bag_quantity_id?: number | null;
+  bag_quantity?: number | null;
+  bag_quantity_unit?: string | null;
+  fg_details_completed_at?: string | null;
 }
 
 export interface ActivityLog {

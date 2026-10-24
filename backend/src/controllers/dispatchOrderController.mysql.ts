@@ -33,6 +33,7 @@ export async function raise(req: Request, res: Response): Promise<void> {
       client_id: Number(req.body.client_id),
       driver_name: String(req.body.driver_name || ''),
       vehicle_number: String(req.body.vehicle_number || ''),
+      container_number: String(req.body.container_number || ''),
     },
   };
 
@@ -68,12 +69,19 @@ export async function listPending(req: Request, res: Response): Promise<void> {
   const search = searchClause(q);
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, p.name AS product_name,
-            p.sku AS product_sku, u.name AS raised_by_name, c.name AS client_name
+            p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
+            q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
+            u.name AS raised_by_name, c.name AS client_name,
+            d.container_number, COALESCE(aa.name, qu.name) AS approver_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
      LEFT JOIN clients c ON c.id = d.client_id
+     LEFT JOIN admins aa ON aa.id = d.approved_by_id AND d.approved_by_role = 'ADMIN'
+     LEFT JOIN qc_users qu ON qu.id = d.approved_by_id AND d.approved_by_role = 'QC'
      WHERE d.status = 'PENDING' ${search.sql}
      ORDER BY d.created_at ASC LIMIT 100`,
     search.params
@@ -95,14 +103,21 @@ export async function listAll(req: Request, res: Response): Promise<void> {
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.status AS batch_status,
             p.name AS product_name,
-            p.sku AS product_sku, u.name AS raised_by_name, a.name AS admin_name,
-            c.name AS client_name
+            p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
+            q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
+            u.name AS raised_by_name, a.name AS admin_name,
+            c.name AS client_name, d.container_number,
+            COALESCE(aa.name, qu.name) AS approver_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
      LEFT JOIN clients c ON c.id = d.client_id
      LEFT JOIN admins a ON d.admin_id = a.id
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
      WHERE ${where.join(' AND ')} ${search.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
     params
@@ -124,11 +139,18 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.status AS batch_status,
             p.name AS product_name,
-            p.sku AS product_sku, a.name AS admin_name, c.name AS client_name
+            p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
+            q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
+            a.name AS admin_name, c.name AS client_name,
+            d.container_number, COALESCE(aa.name, qu.name) AS approver_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN admins a ON d.admin_id = a.id
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
      LEFT JOIN clients c ON c.id = d.client_id
      WHERE ${where.join(' AND ')} ${search.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
@@ -165,9 +187,10 @@ export async function approve(req: Request, res: Response): Promise<void> {
       }
 
       await conn.execute(
-        `UPDATE dispatch_orders SET status = 'APPROVED', admin_id = ?, admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
+        `UPDATE dispatch_orders SET status = 'APPROVED', admin_id = ?, approved_by_role = ?, approved_by_id = ?,
+         admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
          WHERE id = ? AND status = 'PENDING'`,
-        [req.user!.userId, admin_remarks || null, id]
+        [req.user!.role === 'ADMIN' ? req.user!.userId : null, req.user!.role, req.user!.userId, admin_remarks || null, id]
       );
       const [batchUpdate] = await conn.execute(
         `UPDATE batches SET status = 'DISPATCH_APPROVED', updated_at = CURRENT_TIMESTAMP(3)
@@ -212,9 +235,10 @@ export async function reject(req: Request, res: Response): Promise<void> {
       if (batches.length === 0) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
 
       await conn.execute(
-        `UPDATE dispatch_orders SET status = 'REJECTED', admin_id = ?, admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
+        `UPDATE dispatch_orders SET status = 'REJECTED', admin_id = ?, approved_by_role = ?, approved_by_id = ?,
+         admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
          WHERE id = ? AND status = 'PENDING'`,
-        [req.user!.userId, admin_remarks || null, id]
+        [req.user!.role === 'ADMIN' ? req.user!.userId : null, req.user!.role, req.user!.userId, admin_remarks || null, id]
       );
       await conn.execute(
         `UPDATE batches SET status = 'DISPATCH_REJECTED', updated_at = CURRENT_TIMESTAMP(3)
@@ -239,7 +263,9 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom,
             COALESCE(s.location_code, b.storage_location) AS storage_location,
-            p.name AS product_name, p.sku, u.name AS raised_by_name, a.name AS admin_name,
+            p.name AS product_name, p.sku, u.name AS raised_by_name, COALESCE(aa.name, qu.name) AS approver_name,
+            COALESCE(g.name, p.grade) AS grade, v.name AS vendor_name,
+            q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             c.name AS client_name,
             (SELECT du.name FROM dispatch_records dr
              LEFT JOIN dispatch_users du ON du.id = dr.dispatcher_id
@@ -248,10 +274,15 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN vendors v ON v.id = b.vendor_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
      LEFT JOIN admins a ON d.admin_id = a.id
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
      LEFT JOIN clients c ON c.id = d.client_id
-     WHERE d.id = ? AND d.raised_by = ? AND d.status = 'APPROVED'`,
+     WHERE d.id = ? AND d.raised_by = ? AND d.status = 'APPROVED' AND d.dispatched_at IS NOT NULL`,
     [id, req.user!.userId]
   );
   if (orders.length === 0) {
@@ -272,6 +303,9 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
         barcode: order.barcode_value,
         quantity: order.quantity,
         uom: order.uom,
+        grade: order.grade,
+        bag_quantity: order.bag_quantity,
+        bag_quantity_unit: order.bag_quantity_unit,
         location: order.storage_location || 'N/A',
       }];
 
@@ -281,12 +315,15 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
     batch_number: order.batch_number,
     barcode: order.barcode_value,
     raised_by_name: order.raised_by_name || null,
-    admin_name: order.admin_name || null,
+    approver_name: order.approver_name || null,
     admin_remarks: order.admin_remarks || null,
     client: order.client_id ? await getClient(order.client_id) : null,
     client_name: order.client_name || null,
     driver_name: order.driver_name,
     vehicle_number: order.vehicle_number,
+    container_number: order.container_number,
+    grade: order.grade,
+    vendor_name: order.vendor_name,
     dispatched_by: order.dispatched_by || null,
     location: order.storage_location || null,
     dispatched_at: order.dispatched_at || null,

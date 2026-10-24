@@ -35,8 +35,8 @@ function safeFileName(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]+/g, '-');
 }
 
-export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void> {
-  if (labels.length === 0) return;
+export async function createQrPdfBlob(labels: QrLabel[], job: QrJob): Promise<Blob> {
+  if (labels.length === 0) return new Blob([], { type: 'application/pdf' });
   const images = await qrDataUrls(labels);
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
   const pageWidth = 210;
@@ -85,7 +85,18 @@ export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void
     doc.text(label.qr_value, textX, qrY + qrSize + 18, { maxWidth });
   });
 
-  doc.save(`QR-${safeFileName(job.job_code)}-${labels.length}-labels.pdf`);
+  return doc.output('blob');
+}
+
+export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void> {
+  if (labels.length === 0) return;
+  const blob = await createQrPdfBlob(labels, job);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `QR-${safeFileName(job.job_code)}-${labels.length}-labels.pdf`;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function printQrLabels(labels: QrLabel[], job: QrJob): Promise<void> {

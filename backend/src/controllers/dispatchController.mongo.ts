@@ -37,6 +37,9 @@ async function enrichDispatchRecords(
     'products',
     [...batches.values()].map((batch) => Number(batch.product_id))
   );
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => Number(batch.vendor_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
   const dispatchers = options.withDispatcherName
     ? await mapNames(ctx, 'dispatch_users', records.map((record) => Number(record.dispatcher_id)))
     : new Map<number, string>();
@@ -56,6 +59,11 @@ async function enrichDispatchRecords(
       barcode_value: batch?.barcode_value ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      vendor_name: vendors.get(Number(batch?.vendor_id))?.name ?? null,
+      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
       ...(options.withDispatcherName
         ? { dispatcher_name: dispatchers.get(Number(record.dispatcher_id)) ?? null }
         : {}),
@@ -81,9 +89,22 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
     'products',
     [...batches.values()].map((batch) => Number(batch.product_id))
   );
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => Number(batch.vendor_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
   const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => Number(order.raised_by)));
-  const admins = await mapNames(ctx, 'admins', orders.map((order) => Number(order.admin_id)));
+  const approvers = await Promise.all(orders.map(async (order) => {
+    if (order.approved_by_role === 'QC') {
+      const user = await ctx.findOne('qc_users', { id: Number(order.approved_by_id) }, { projection: { _id: 0, name: 1 } });
+      return [Number(order.id), user?.name ?? null] as const;
+    }
+    const user = order.admin_id
+      ? await ctx.findOne('admins', { id: Number(order.admin_id) }, { projection: { _id: 0, name: 1 } })
+      : null;
+    return [Number(order.id), user?.name ?? null] as const;
+  }));
   const clients = await mapNames(ctx, 'clients', orders.map((order) => Number(order.client_id)));
+  const approverNames = new Map(approvers);
   const qrStats = await batchQrStats(ctx, orders.map((order) => Number(order.batch_id)));
 
   return orders.map((order) => {
@@ -97,11 +118,17 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       uom: batch?.uom ?? null,
       batch_status: batch?.status ?? null,
       storage_location: batch?.storage_location ?? null,
+      vendor_name: vendors.get(Number(batch?.vendor_id))?.name ?? null,
+      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
       qr_count: qrStats.get(Number(order.batch_id))?.count ?? 0,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
       raised_by_name: raisedBy.get(Number(order.raised_by)) ?? null,
-      admin_name: admins.get(Number(order.admin_id)) ?? null,
+      admin_name: approverNames.get(Number(order.id)) ?? null,
+      approver_name: approverNames.get(Number(order.id)) ?? null,
       client_name: clients.get(Number(order.client_id)) ?? null,
     };
   });
@@ -151,6 +178,7 @@ export async function submit(req: Request, res: Response): Promise<void> {
       images,
       expected_status: req.body.expected_status || undefined,
       direct: req.body.direct === true || req.body.direct === 'true',
+      dispatch_order_id: Number(req.body.dispatch_order_id) || undefined,
     },
   };
 
@@ -202,6 +230,7 @@ export async function submitBulk(req: Request, res: Response): Promise<void> {
       remarks: req.body.remarks || null,
       images,
       direct: req.body.direct === true || req.body.direct === 'true',
+      dispatch_order_id: Number(req.body.dispatch_order_id) || undefined,
     },
   };
 
@@ -309,7 +338,25 @@ export async function stats(req: Request, res: Response): Promise<void> {
     ...recordFilter,
     created_at: { $gte: startOfWeek() },
   });
-  const readyToDispatch = await ctx.count('batches', { status: 'QC_PASSED' });
+  const qcPassedBatches = await ctx.find('batches', { status: 'QC_PASSED' }, {
+    sort: { updated_at: 1 },
+    projection: { _id: 0 },
+  });
+  const qcPassedBatchIds = qcPassedBatches.map((batch) => Number(batch.id));
+  const labels = qcPassedBatchIds.length > 0
+    ? await ctx.find('qr_labels', { batch_id: { $in: qcPassedBatchIds } }, {
+      projection: { _id: 0, batch_id: 1 },
+    })
+    : [];
+  const qrCounts = new Map<number, number>();
+  labels.forEach((label) => {
+    const batchId = Number(label.batch_id);
+    qrCounts.set(batchId, (qrCounts.get(batchId) || 0) + 1);
+  });
+  const dispatchReadyBatches = qcPassedBatches.filter(
+    (batch) => (qrCounts.get(Number(batch.id)) || 0) === Number(batch.quantity)
+  );
+  const readyToDispatch = dispatchReadyBatches.length;
 
   const orderFilter: Record<string, any> = personal ? { raised_by: user.userId } : {};
   const pendingOrdersCount = await ctx.count('dispatch_orders', { ...orderFilter, status: 'PENDING' });
@@ -323,11 +370,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
   };
   const approvedOrdersCount = await ctx.count('dispatch_orders', approvedFilter);
 
-  const readyBatchesRaw = await ctx.find('batches', { status: 'QC_PASSED' }, {
-    sort: { updated_at: 1 },
-    limit: 10,
-    projection: { _id: 0 },
-  });
+  const readyBatchesRaw = dispatchReadyBatches.slice(0, 10);
   const pendingOrdersRaw = await ctx.find('dispatch_orders', { ...orderFilter, status: 'PENDING' }, {
     sort: { created_at: 1 },
     limit: 10,
@@ -351,7 +394,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
     projection: { _id: 0 },
   });
 
-  const [readyBatches, pendingOrdersList, approvedOrdersList, recentRecords, todayRecords] = await Promise.all([
+  const [readyBatchList, pendingOrdersList, approvedOrdersList, recentRecords, todayRecords] = await Promise.all([
     enrichReadyBatches(ctx, readyBatchesRaw),
     enrichOrders(ctx, pendingOrdersRaw),
     enrichOrders(ctx, approvedOrdersRaw),
@@ -369,7 +412,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
     approvedOrders: approvedOrdersCount,
     myDispatchedToday: dispatchedToday,
     myTotalDispatches: totalDispatches,
-    readyBatches,
+    readyBatches: readyBatchList,
     pendingOrdersList,
     approvedOrdersList,
     recentRecords,

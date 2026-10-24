@@ -82,15 +82,57 @@ CREATE TABLE IF NOT EXISTS clients (
     KEY idx_clients_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS vendors (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    vendor_code VARCHAR(30) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    contact_person VARCHAR(100),
+    email VARCHAR(100),
+    phone VARCHAR(50),
+    address TEXT,
+    gst_number VARCHAR(50),
+    category VARCHAR(100),
+    payment_terms VARCHAR(100),
+    notes TEXT,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_vendors_name (name),
+    KEY idx_vendors_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS grades (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bag_quantities (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(120) NOT NULL UNIQUE,
+    quantity DECIMAL(14,4) NOT NULL,
+    unit VARCHAR(40) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS batches (
     id INT AUTO_INCREMENT PRIMARY KEY,
     product_id INT NOT NULL,
     batch_number VARCHAR(100) NOT NULL,
+    batch_group_id CHAR(36) NULL,
     quantity DECIMAL(12,3) NOT NULL DEFAULT 1,
     uom VARCHAR(20) DEFAULT 'kg',
     unit_price DECIMAL(12,2) DEFAULT 0,
     manufacturing_date DATE,
     expiry_date DATE,
+    vendor_id INT NULL,
+    grade_id INT NULL,
+    bag_quantity_id INT NULL,
+    fg_details_completed_at DATETIME(3) NULL,
     shelf_location_id INT NULL,
     storage_location VARCHAR(200),
     notes TEXT,
@@ -109,6 +151,7 @@ CREATE TABLE IF NOT EXISTS batches (
     KEY idx_batches_status_updated (status, updated_at),
     KEY idx_batches_updated (updated_at),
     KEY idx_batches_product_created (product_id, created_at),
+    KEY idx_batches_group (batch_group_id),
     KEY idx_batches_shelf_location (shelf_location_id),
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -174,6 +217,9 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
     client_id INT NULL,
     driver_name VARCHAR(150) NULL,
     vehicle_number VARCHAR(50) NULL,
+    container_number VARCHAR(100) NULL,
+    approved_by_role VARCHAR(20) NULL,
+    approved_by_id INT NULL,
     client_operation_id VARCHAR(64) NULL,
     client_created_at DATETIME(3) NULL,
     device_uuid VARCHAR(100) NULL,

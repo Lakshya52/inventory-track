@@ -16,6 +16,8 @@ import userRoutes, { profileRoutes } from './routes/users';
 import importRoutes from './routes/import';
 import shelfLocationRoutes from './routes/shelfLocations';
 import clientRoutes from './routes/clients';
+import vendorRoutes from './routes/vendors';
+import masterRoutes from './routes/masters';
 import reportRoutes from './routes/reports';
 import syncRoutes from './routes/sync';
 import { errorHandler } from './middleware/errorHandler';
@@ -27,9 +29,9 @@ import { getUpload } from './controllers/uploadController';
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 
-const allowedOrigins = (process.env.CORS_ORIGIN || '')
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
   .split(',')
-  .map((origin) => origin.trim())
+  .map((origin) => origin.trim().replace(/\/+$/, ''))
   .filter(Boolean);
 
 function isOriginAllowed(origin: string): boolean {
@@ -91,6 +93,8 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/products/import', importRoutes);
 app.use('/api/shelf-locations', shelfLocationRoutes);
 app.use('/api/clients', clientRoutes);
+app.use('/api/vendors', vendorRoutes);
+app.use('/api/masters', masterRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/sync', syncRoutes);
 

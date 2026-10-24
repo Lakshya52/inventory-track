@@ -17,6 +17,7 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
   const { user } = useAuth();
   const canManage = !readOnly && user?.role === 'ADMIN';
   const [products, setProducts] = useState<Product[]>([]);
+  const [grades, setGrades] = useState<Array<{ id: number; name: string; is_active: number }>>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
@@ -25,7 +26,14 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
   const initForm = { name: '', description: '', sku: '', price: '', quantity: '', cas_number: '', molecular_formula: '', purity: '', grade: '', storage_conditions: '', hazard_classification: '', physical_state: '', hsn_code: '', manufacturer: '' };
   const [form, setForm] = useState(initForm);
 
-  useEffect(() => { api.products.list().then(setProducts); }, []);
+  useEffect(() => {
+    Promise.all([api.products.list(), api.masters.list('grades')])
+      .then(([productRows, gradeRows]) => {
+        setProducts(productRows);
+        setGrades(gradeRows.filter(grade => grade.is_active !== 0));
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
 
   const filtered = products.filter(p =>
     !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase())
@@ -125,7 +133,14 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
                   <div className="space-y-1.5"><label className="input-label">CAS Number</label><input className="input" value={form.cas_number} onChange={e => setForm({...form, cas_number: e.target.value})} /></div>
                   <div className="space-y-1.5"><label className="input-label">Molecular Formula</label><input className="input" value={form.molecular_formula} onChange={e => setForm({...form, molecular_formula: e.target.value})} /></div>
                   <div className="space-y-1.5"><label className="input-label">Purity</label><input className="input" value={form.purity} onChange={e => setForm({...form, purity: e.target.value})} /></div>
-                  <div className="space-y-1.5"><label className="input-label">Grade</label><input className="input" value={form.grade} onChange={e => setForm({...form, grade: e.target.value})} /></div>
+                  <div className="space-y-1.5">
+                    <label className="input-label">Grade</label>
+                    <select className="select" value={form.grade} onChange={e => setForm({ ...form, grade: e.target.value })}>
+                      <option value="">-- Select Grade --</option>
+                      {grades.map(grade => <option key={grade.id} value={grade.name}>{grade.name}</option>)}
+                    </select>
+                    {grades.length === 0 && <p className="text-xs text-surface-400">Add grade values in Masters before creating new grades.</p>}
+                  </div>
                   <div className="space-y-1.5"><label className="input-label">Physical State</label><input className="input" value={form.physical_state} onChange={e => setForm({...form, physical_state: e.target.value})} /></div>
                   <div className="space-y-1.5"><label className="input-label">HSN Code</label><input className="input" value={form.hsn_code} onChange={e => setForm({...form, hsn_code: e.target.value})} /></div>
                   <div className="space-y-1.5"><label className="input-label">Manufacturer</label><input className="input" value={form.manufacturer} onChange={e => setForm({...form, manufacturer: e.target.value})} /></div>

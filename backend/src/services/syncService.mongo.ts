@@ -259,6 +259,7 @@ async function getBatchesForUpdate(
   }
   const incomplete = enriched.filter((batch) =>
     Number(batch.quantity) > 1 &&
+    Number(batch.qr_count) > 0 &&
     (Number(batch.qr_count) !== Number(batch.quantity) ||
       scannedCounts.get(Number(batch.id)) !== Number(batch.qr_count))
   );
@@ -346,7 +347,7 @@ async function applyQcSubmit(
   const images = imageList(payload);
 
   const batch = await getBatchForUpdate(ctx, payload);
-  if (Number(batch.quantity) > 1) {
+  if (Number(batch.quantity) > 1 && Number(batch.qr_count) > 0) {
     throw new SyncConflictError('Scan every unit QR code in the batch before submitting QC', {
       batch_id: batch.id,
       batch_number: batch.batch_number,
@@ -496,8 +497,9 @@ async function applyDispatchOrderRaise(
   const clientId = Number(input.payload.client_id);
   const driverName = String(input.payload.driver_name || '').trim().slice(0, 150);
   const vehicleNumber = String(input.payload.vehicle_number || '').trim().slice(0, 50);
-  if (!Number.isInteger(clientId) || clientId <= 0 || !driverName || !vehicleNumber) {
-    throw new SyncError('Select a client and provide the driver name and vehicle number', 'DISPATCH_DETAILS_REQUIRED');
+  const containerNumber = String(input.payload.container_number || '').trim().slice(0, 100);
+  if (!Number.isInteger(clientId) || clientId <= 0 || !driverName || !vehicleNumber || !containerNumber) {
+    throw new SyncError('Select a client and provide the driver, vehicle, and container details', 'DISPATCH_DETAILS_REQUIRED');
   }
   const client = await ctx.findOne('clients', { id: clientId, is_active: 1 }, { projection: { id: 1 } });
   if (!client) {
@@ -516,6 +518,16 @@ async function applyDispatchOrderRaise(
     ['QC_PASSED', 'DISPATCH_REJECTED'],
     `Dispatch order can only be raised for QC_PASSED or DISPATCH_REJECTED batches. Current status: ${batch.status}`
   );
+  if (!batch.fg_details_completed_at) {
+    const labelCount = await ctx.count('qr_labels', { batch_id: Number(batch.id) });
+    if (labelCount !== Number(batch.quantity)) {
+      throw new SyncConflictError('Complete finished-goods details and generate bag QR labels before raising a dispatch order', {
+        batch_id: batch.id,
+        expected_qr_count: Number(batch.quantity),
+        actual_qr_count: labelCount,
+      });
+    }
+  }
   if (Number(batch.quantity) > 1) {
     const labelCount = await ctx.count('qr_labels', { batch_id: Number(batch.id) });
     if (labelCount !== Number(batch.quantity)) {
@@ -549,6 +561,7 @@ async function applyDispatchOrderRaise(
     client_id: clientId,
     driver_name: driverName,
     vehicle_number: vehicleNumber,
+    container_number: containerNumber,
     client_operation_id: input.operation_id,
     client_created_at: toDate(input.client_timestamp),
     device_uuid: deviceUuid,
@@ -728,6 +741,7 @@ async function applyDispatchConfirmBulk(
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
   const barcodes = bulkBarcodes(payload);
+  const requestedOrderId = Number(payload.dispatch_order_id);
   const batches = await getBatchesForUpdate(ctx, barcodes);
 
   const directAllowed = payload.direct === true &&
@@ -771,6 +785,13 @@ async function applyDispatchConfirmBulk(
         });
       }
       orderId = Number(orders[0].id);
+      if (!Number.isInteger(requestedOrderId) || requestedOrderId !== orderId) {
+        throw new SyncConflictError('Scan bags for one approved dispatch order at a time', {
+          batch_id: batch.id,
+          expected_order_id: orderId,
+          requested_order_id: payload.dispatch_order_id ?? null,
+        });
+      }
       orderIds.push(orderId);
     } else if (batch.status === 'QC_PASSED') {
       if (!directAllowed) {

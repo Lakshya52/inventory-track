@@ -44,6 +44,7 @@ export default function DispatchScan() {
   const [submitting, setSubmitting] = useState(false);
   const [manualValue, setManualValue] = useState('');
   const [queue, setQueue] = useState<any[]>([]);
+  const [selectedOrderId, setSelectedOrderId] = useState('');
   const [queueSearch, setQueueSearch] = useState('');
   const [queueLoading, setQueueLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -98,12 +99,14 @@ export default function DispatchScan() {
       setQueue(
         orders.map((order: any) => ({
           ...order,
+          order_id: Number(order.id),
           id: Number(order.batch_id || order.id),
           status: 'DISPATCH_APPROVED',
         }))
       );
-    } catch {
-      // Manual scanning still works if the approved-order list cannot load.
+    } catch (err: any) {
+      setMessageKind('error');
+      setMessage(err.message || 'Could not load approved dispatch orders. Refresh the order list and try again.');
     } finally {
       setQueueLoading(false);
     }
@@ -116,6 +119,21 @@ export default function DispatchScan() {
   const addFoundBatch = useCallback((found: any, silent = false): boolean => {
     const barcode = String(found?.scanned_qr || found?.barcode_value || '').trim();
     if (!barcode) return false;
+    const selectedOrder = queue.find(order => String(order.order_id) === selectedOrderId);
+    if (!selectedOrder) {
+      if (!silent) {
+        setMessageKind('error');
+        setMessage('Select an approved dispatch order before scanning.');
+      }
+      return false;
+    }
+    if (Number(found.id || found.batch_id) !== Number(selectedOrder.batch_id)) {
+      if (!silent) {
+        setMessageKind('error');
+        setMessage(`This QR belongs to a different batch. Scan only lot ${selectedOrder.batch_number} (grade ${selectedOrder.grade_name || selectedOrder.product_grade || 'not specified'}).`);
+      }
+      return false;
+    }
     if (scannedRef.current.some((batch) => batch.barcode_value === barcode)) {
       if (!silent) {
         setMessageKind('info');
@@ -163,7 +181,7 @@ export default function DispatchScan() {
       setMessage(`${found.batch_number} added. ${next.length} approved QR code${next.length === 1 ? '' : 's'} in this group.`);
     }
     return true;
-  }, []);
+  }, [queue, selectedOrderId]);
 
   const addBatch = useCallback(async (value: string) => {
     const barcode = value.trim();
@@ -179,6 +197,21 @@ export default function DispatchScan() {
     setMessage('');
     try {
       const found = await api.batches.getByBarcode(barcode);
+      if (found.matched_by_batch_number) {
+        const selectedOrder = queue.find((order) =>
+          Number(order.batch_id) === Number(found.id) && String(order.order_id) === selectedOrderId
+        ) || queue.find((order) => Number(order.batch_id) === Number(found.id));
+        if (!selectedOrder) {
+          setMessageKind('error');
+          setMessage(`No approved dispatch order is available for batch ${found.batch_number}. Refresh the order list or contact QC.`);
+          return;
+        }
+        setSelectedOrderId(String(selectedOrder.order_id));
+        setManualValue('');
+        setMessageKind('info');
+        setMessage(`Order #${selectedOrder.order_id} selected for batch ${found.batch_number}. Scan every individual bag QR label to confirm loading.`);
+        return;
+      }
       if (addFoundBatch(found)) setManualValue('');
     } catch (err: any) {
       setMessageKind('error');
@@ -187,7 +220,19 @@ export default function DispatchScan() {
       inFlightRef.current.delete(barcode);
       setLookupLoading(false);
     }
-  }, [addFoundBatch]);
+  }, [addFoundBatch, queue, selectedOrderId]);
+
+  useEffect(() => {
+    const orderId = searchParams.get('order');
+    if (orderId) {
+      setSelectedOrderId(orderId);
+      const next = new URLSearchParams(searchParams);
+      next.delete('order');
+      setSearchParams(next, { replace: true });
+    } else if (!selectedOrderId && queue.length === 1) {
+      setSelectedOrderId(String(queue[0].order_id));
+    }
+  }, [queue, searchParams, selectedOrderId, setSearchParams]);
 
   useEffect(() => {
     const barcode = searchParams.get('barcode');
@@ -276,6 +321,11 @@ export default function DispatchScan() {
   }, [queue, queueSearch, scanned]);
 
   const confirmDispatch = async () => {
+    if (!selectedOrderId) {
+      setMessageKind('error');
+      setMessage('Select an approved dispatch order before confirming loading.');
+      return;
+    }
     if (scannedRef.current.length === 0) {
       setMessageKind('error');
       setMessage('Scan at least one approved QR code before dispatching.');
@@ -301,6 +351,7 @@ export default function DispatchScan() {
         barcodes: scannedRef.current.map((batch) => batch.barcode_value),
         remarks: remarks || undefined,
         images: images.length > 0 ? images : undefined,
+        dispatch_order_id: Number(selectedOrderId),
       });
       const count = Number(response?.count || scannedRef.current.length);
       setMessageKind('success');
@@ -321,7 +372,7 @@ export default function DispatchScan() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Dispatch Group Scan</h1>
-          <p className="page-subtitle">Scan multiple approved QR codes and confirm them in one atomic dispatch</p>
+          <p className="page-subtitle">Scan only the bags listed in the selected QC-approved dispatch order.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to="/dispatch-orders" className="btn-secondary btn-sm"><ClipboardList size={14} /> Dispatch Orders</Link>
@@ -353,14 +404,14 @@ export default function DispatchScan() {
         <div className="flex flex-col sm:flex-row gap-2">
           <input
             className="input flex-1"
-            placeholder="Scan or type a QR / barcode value"
+            placeholder="Scan a bag QR, or type a batch number to select its order"
             value={manualValue}
             onChange={(event) => setManualValue(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') void addBatch(manualValue); }}
           />
           <button className="btn-secondary" onClick={() => void addBatch(manualValue)} disabled={lookupLoading || !manualValue.trim()}>
             {lookupLoading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-            {lookupLoading ? 'Checking...' : 'Add code'}
+            {lookupLoading ? 'Checking...' : 'Add / find batch'}
           </button>
           <button
             className="btn-primary"
@@ -392,8 +443,8 @@ export default function DispatchScan() {
         <div className="mt-4 pt-4 border-t border-surface-100">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div>
-              <div className="input-label mb-0">Approved batches</div>
-              <p className="text-[11px] text-surface-400 mt-1">Scan each physical QR label; this list cannot substitute for loading scans.</p>
+              <div className="input-label mb-0">Approved dispatch orders</div>
+              <p className="text-[11px] text-surface-400 mt-1">Choose one order; wrong-order batches are rejected.</p>
             </div>
             <div className="flex items-center gap-2">
               <button className="btn-secondary btn-xs" onClick={() => void loadQueue()} disabled={queueLoading}>
@@ -408,18 +459,26 @@ export default function DispatchScan() {
             value={queueSearch}
             onChange={(event) => setQueueSearch(event.target.value)}
           />
+          <select className="input text-xs mb-2" value={selectedOrderId} onChange={event => setSelectedOrderId(event.target.value)} disabled={scanned.length > 0}>
+            <option value="">-- Select approved order / container --</option>
+            {queue.map(order => (
+              <option key={order.order_id} value={order.order_id}>
+                #{order.order_id} · {order.client_name || 'Party'} · {order.grade_name || order.product_grade || 'Grade'} · {order.container_number || 'No container'} · Lot {order.batch_number}
+              </option>
+            ))}
+          </select>
 
           <div className="max-h-52 overflow-y-auto rounded-xl border border-surface-100 divide-y divide-surface-100">
             {filteredQueue.slice(0, 12).map((batch) => (
-              <div key={batch.id} className="flex items-center gap-3 p-2.5">
+              <button key={batch.order_id} type="button" onClick={() => setSelectedOrderId(String(batch.order_id))} disabled={scanned.length > 0} className={`flex w-full items-center gap-3 p-2.5 text-left ${String(batch.order_id) === selectedOrderId ? 'bg-brand-50' : 'hover:bg-surface-50'}`}>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-surface-800 truncate">{batch.product_name}</div>
                   <div className="text-[10px] text-surface-400 truncate">
-                    {batch.batch_number} · {batch.product_sku} · {batch.quantity} {batch.uom || ''}
+                    Order #{batch.order_id} · {batch.client_name} · {batch.grade_name || batch.product_grade || '-'} · {batch.batch_number} · {batch.container_number || '-'} · {batch.quantity} bags
                   </div>
                 </div>
                 <span className="text-xs text-surface-400">Scan {expectedQrCount(batch)} labels</span>
-              </div>
+              </button>
             ))}
             {filteredQueue.length === 0 && (
               <div className="p-4 text-center text-xs text-surface-400">
@@ -525,7 +584,7 @@ export default function DispatchScan() {
           {submitting ? 'Dispatching the group...' : `Confirm dispatch for ${scanned.length} QR code${scanned.length === 1 ? '' : 's'}`}
         </button>
         <p className="text-xs text-surface-400 text-center mt-2">
-          This is an all-or-nothing group dispatch. If any QR code is no longer approved, the whole group is rejected and nothing is saved.
+          Only QR codes belonging to order #{selectedOrderId || '-'} are accepted. If any code is no longer approved, nothing is saved.
         </p>
       </div>
 

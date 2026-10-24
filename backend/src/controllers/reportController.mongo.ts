@@ -163,10 +163,19 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
     'dispatch_users',
     records.map((record) => Number(record.dispatcher_id))
   );
+  const orders = await mapByIds<Record<string, any>>(
+    ctx,
+    'dispatch_orders',
+    records.map((record) => Number(record.dispatch_order_id))
+  );
+  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', [...orders.values()].map((order) => Number(order.client_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
 
   res.json(records.map((record) => {
     const batch = batches.get(Number(record.batch_id));
     const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const order = orders.get(Number(record.dispatch_order_id));
     return {
       id: record.id,
       batch_id: record.batch_id,
@@ -180,6 +189,13 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
       storage_location: batch?.storage_location ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      grade: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
+      client_name: clients.get(Number(order?.client_id))?.name ?? null,
+      container_number: order?.container_number ?? null,
+      vehicle_number: order?.vehicle_number ?? null,
+      dispatch_order_id: order?.id ?? null,
       dispatcher_name: dispatchers.get(Number(record.dispatcher_id))?.name ?? 'Unknown',
     };
   }));
@@ -206,6 +222,8 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
     'products',
     [...batches.values()].map((batch) => Number(batch.product_id))
   );
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
   const clients = await mapByIds<Record<string, any>>(ctx, 'clients', orders.map((order) => Number(order.client_id)));
   const raisedBy = await mapByIds<Record<string, any>>(
     ctx,
@@ -227,6 +245,7 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
       updated_at: order.updated_at,
       driver_name: order.driver_name,
       vehicle_number: order.vehicle_number,
+      container_number: order.container_number,
       batch_number: batch?.batch_number ?? null,
       batch_status: batch?.status ?? null,
       quantity: batch?.quantity ?? null,
@@ -234,6 +253,12 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
       barcode_value: batch?.barcode_value ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      product_grade: product?.grade ?? null,
+      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
+      grade: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
       client_name: client?.name ?? null,
       client_contact: client?.contact_person ?? null,
       client_email: client?.email ?? null,

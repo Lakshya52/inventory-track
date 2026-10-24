@@ -68,6 +68,15 @@ export const api = {
     delete: (type: string, id: number) =>
       request<any>(`/users/${type}/${id}`, { method: 'DELETE' }),
   },
+  masters: {
+    list: (kind: 'grades' | 'bag-quantities') => request<any[]>(`/masters/${kind}`),
+    create: (kind: 'grades' | 'bag-quantities', data: any) =>
+      request<any>(`/masters/${kind}`, { method: 'POST', body: JSON.stringify(data) }),
+    update: (kind: 'grades' | 'bag-quantities', id: number, data: any) =>
+      request<any>(`/masters/${kind}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (kind: 'grades' | 'bag-quantities', id: number) =>
+      request<any>(`/masters/${kind}/${id}`, { method: 'DELETE' }),
+  },
   vendors: {
     list: (params?: { q?: string; status?: string }) => {
       const qs = new URLSearchParams();
@@ -149,8 +158,20 @@ export const api = {
   },
   batches: {
     list: () => request<any[]>('/batches'),
-    create: (data: any) =>
+    create: (data: {
+      product_id: number;
+      batch_number: string;
+      quantity: number;
+      batch_count?: number;
+      uom?: string;
+      unit_price?: number;
+      manufacturing_date?: string;
+      expiry_date?: string;
+      notes?: string;
+    }) =>
       request<any>('/batches', { method: 'POST', body: JSON.stringify(data) }),
+    finishGoods: (id: number, data: { vendor_id: number; grade_id: number; bag_quantity_id: number; shelf_location_id?: number }) =>
+      request<any>(`/batches/${id}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
     getByBarcode: (barcode: string) =>
       request<any>(`/batches/barcode/${encodeURIComponent(barcode)}`),
     getById: (id: number) => request<any>(`/batches/${id}`),
@@ -228,18 +249,24 @@ export const api = {
       }
       return request<any>('/dispatch', { method: 'POST', body: JSON.stringify(data) });
     },
-    submitBulk: (data: { barcodes: string[]; remarks?: string; images?: File[]; direct?: boolean }) => {
+    submitBulk: (data: { barcodes: string[]; remarks?: string; images?: File[]; direct?: boolean; dispatch_order_id?: number }) => {
       if (data.images && data.images.length > 0) {
         const fd = new FormData();
         fd.append('barcodes', JSON.stringify(data.barcodes));
         if (data.remarks) fd.append('remarks', data.remarks);
         if (data.direct) fd.append('direct', 'true');
+        if (data.dispatch_order_id) fd.append('dispatch_order_id', String(data.dispatch_order_id));
         data.images.forEach(f => fd.append('images', f));
         return uploadForm<any>('/dispatch/bulk', fd);
       }
       return request<any>('/dispatch/bulk', {
         method: 'POST',
-        body: JSON.stringify({ barcodes: data.barcodes, remarks: data.remarks, direct: data.direct }),
+        body: JSON.stringify({
+          barcodes: data.barcodes,
+          remarks: data.remarks,
+          direct: data.direct,
+          dispatch_order_id: data.dispatch_order_id,
+        }),
       });
     },
     today: () => request<any[]>('/dispatch/today'),
@@ -265,7 +292,7 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: number; barcode_value?: string; expected_status?: string; client_id: number; driver_name: string; vehicle_number: string }) =>
+    raise: (data: { batch_id?: number; barcode_value?: string; expected_status?: string; client_id: number; driver_name: string; vehicle_number: string; container_number: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
     pending: (params?: { q?: string }) => {
       const qs = new URLSearchParams();
