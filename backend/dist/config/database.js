@@ -1,92 +1,80 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getPool = getPool;
-exports.query = query;
-exports.execute = execute;
+exports.dayKey = exports.ageMinutes = exports.daysAgo = exports.startOfWeek = exports.endOfDay = exports.startOfDay = exports.parseDateValue = exports.isDuplicateKey = exports.stripIds = exports.stripId = exports.now = exports.DbContext = exports.getContext = exports.getDb = exports.getClient = exports.execute = exports.query = exports.getPool = exports.useMongo = void 0;
 exports.withTransaction = withTransaction;
 exports.checkDatabase = checkDatabase;
 exports.closePool = closePool;
-const promise_1 = __importDefault(require("mysql2/promise"));
-let pool;
+const mysql = __importStar(require("./database.mysql"));
+const mongo = __importStar(require("./database.mongo"));
 /**
- * A single pool is shared by the whole Node process. In production each API
- * instance gets its own pool; the database remains the source of truth.
+ * Database switch. MySQL remains the production default; set
+ * DB_CLIENT=mongo to run the same API on MongoDB (for example on Vercel).
  */
-async function getPool() {
-    if (!pool) {
-        const connectionLimit = Number(process.env.DB_POOL_SIZE) || 20;
-        pool = promise_1.default.createPool({
-            host: process.env.DB_HOST || 'localhost',
-            port: Number(process.env.DB_PORT) || 3306,
-            user: process.env.DB_USER || 'root',
-            password: process.env.DB_PASSWORD || '',
-            database: process.env.DB_NAME || 'factory_inventory',
-            waitForConnections: true,
-            connectionLimit,
-            maxIdle: connectionLimit,
-            idleTimeout: 60_000,
-            queueLimit: Number(process.env.DB_QUEUE_LIMIT) || 0,
-            enableKeepAlive: true,
-            keepAliveInitialDelay: 0,
-            connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS) || 10_000,
-            timezone: 'Z',
-            decimalNumbers: true,
-        });
-    }
-    return pool;
+exports.useMongo = (process.env.DB_CLIENT || 'mysql').toLowerCase() === 'mongo';
+// --- MySQL (default / production) -----------------------------------------
+exports.getPool = mysql.getPool;
+exports.query = mysql.query;
+exports.execute = mysql.execute;
+// --- MongoDB --------------------------------------------------------------
+exports.getClient = mongo.getClient;
+exports.getDb = mongo.getDb;
+exports.getContext = mongo.getContext;
+var database_mongo_1 = require("./database.mongo");
+Object.defineProperty(exports, "DbContext", { enumerable: true, get: function () { return database_mongo_1.DbContext; } });
+exports.now = mongo.now;
+exports.stripId = mongo.stripId;
+exports.stripIds = mongo.stripIds;
+exports.isDuplicateKey = mongo.isDuplicateKey;
+exports.parseDateValue = mongo.parseDateValue;
+exports.startOfDay = mongo.startOfDay;
+exports.endOfDay = mongo.endOfDay;
+exports.startOfWeek = mongo.startOfWeek;
+exports.daysAgo = mongo.daysAgo;
+exports.ageMinutes = mongo.ageMinutes;
+exports.dayKey = mongo.dayKey;
+// --- Shared API -----------------------------------------------------------
+function withTransaction(fn) {
+    return exports.useMongo
+        ? mongo.withTransaction(fn)
+        : mysql.withTransaction(fn);
 }
-async function query(sql, params) {
-    const p = await getPool();
-    const [rows] = await p.query(sql, params);
-    return rows;
+function checkDatabase() {
+    return exports.useMongo ? mongo.checkDatabase() : mysql.checkDatabase();
 }
-async function execute(sql, params) {
-    const p = await getPool();
-    const [result] = await p.execute(sql, params);
-    return result;
-}
-/**
- * Runs a unit of work in a single transaction. Callers must use the provided
- * connection for every statement that belongs to the transaction.
- */
-async function withTransaction(fn) {
-    const p = await getPool();
-    const conn = await p.getConnection();
-    try {
-        await conn.beginTransaction();
-        const result = await fn(conn);
-        await conn.commit();
-        return result;
-    }
-    catch (error) {
-        try {
-            await conn.rollback();
-        }
-        catch {
-            // The original error is more useful than a rollback failure.
-        }
-        throw error;
-    }
-    finally {
-        conn.release();
-    }
-}
-async function checkDatabase() {
-    try {
-        const rows = await query('SELECT 1 AS ok');
-        return Number(rows[0]?.ok) === 1;
-    }
-    catch {
-        return false;
-    }
-}
-async function closePool() {
-    if (pool) {
-        await pool.end();
-        pool = undefined;
-    }
+function closePool() {
+    return exports.useMongo ? mongo.closePool() : mysql.closePool();
 }
 //# sourceMappingURL=database.js.map

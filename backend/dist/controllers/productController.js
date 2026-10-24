@@ -1,71 +1,47 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.create = create;
-exports.list = list;
-exports.getById = getById;
-exports.search = search;
-exports.remove = remove;
-exports.update = update;
+exports.update = exports.remove = exports.search = exports.getById = exports.list = exports.create = void 0;
 const database_1 = require("../config/database");
-async function create(req, res) {
-    const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
-    if (!name || !sku) {
-        res.status(400).json({ error: 'Name and SKU are required' });
-        return;
-    }
-    try {
-        const result = await (0, database_1.execute)('INSERT INTO products (name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [name, description || null, sku, price || 0, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null]);
-        await (0, database_1.execute)('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)', [req.user?.name || 'System', req.user?.role || 'ADMIN', 'PRODUCT_CREATED', `Product "${name}" (${sku}) created`]);
-        res.status(201).json({ id: result.insertId, name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
-    }
-    catch (err) {
-        if (err.code === 'ER_DUP_ENTRY') {
-            res.status(400).json({ error: 'SKU already exists' });
-            return;
-        }
-        throw err;
-    }
-}
-async function list(_req, res) {
-    const products = await (0, database_1.query)('SELECT * FROM products ORDER BY created_at DESC');
-    res.json(products);
-}
-async function getById(req, res) {
-    const products = await (0, database_1.query)('SELECT * FROM products WHERE id = ?', [req.params.id]);
-    if (products.length === 0) {
-        res.status(404).json({ error: 'Product not found' });
-        return;
-    }
-    res.json(products[0]);
-}
-async function search(req, res) {
-    const q = req.query.q || '';
-    const products = await (0, database_1.query)('SELECT * FROM products WHERE name LIKE ? OR sku LIKE ? ORDER BY created_at DESC', [`%${q}%`, `%${q}%`]);
-    res.json(products);
-}
-async function remove(req, res) {
-    const { id } = req.params;
-    const result = await (0, database_1.execute)('DELETE FROM products WHERE id = ?', [id]);
-    if (result.affectedRows === 0) {
-        res.status(404).json({ error: 'Product not found' });
-        return;
-    }
-    await (0, database_1.execute)('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)', [req.user?.name || 'System', req.user?.role || 'ADMIN', 'PRODUCT_DELETED', `Product #${id} deleted`]);
-    res.json({ message: 'Product deleted' });
-}
-async function update(req, res) {
-    const { id } = req.params;
-    const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
-    if (!name || !sku) {
-        res.status(400).json({ error: 'Name and SKU are required' });
-        return;
-    }
-    const result = await (0, database_1.execute)('UPDATE products SET name = ?, description = ?, sku = ?, price = ?, quantity = ?, cas_number = ?, molecular_formula = ?, purity = ?, grade = ?, storage_conditions = ?, hazard_classification = ?, physical_state = ?, hsn_code = ?, manufacturer = ? WHERE id = ?', [name, description || null, sku, price || 0, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null, id]);
-    if (result.affectedRows === 0) {
-        res.status(404).json({ error: 'Product not found' });
-        return;
-    }
-    await (0, database_1.execute)('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)', [req.user?.name || 'System', req.user?.role || 'ADMIN', 'PRODUCT_UPDATED', `Product "${name}" (${sku}) updated`]);
-    res.json({ message: 'Product updated' });
-}
+const mysqlImpl = __importStar(require("./productController.mysql"));
+const mongoImpl = __importStar(require("./productController.mongo"));
+const implementation = database_1.useMongo ? mongoImpl : mysqlImpl;
+exports.create = implementation.create;
+exports.list = implementation.list;
+exports.getById = implementation.getById;
+exports.search = implementation.search;
+exports.remove = implementation.remove;
+exports.update = implementation.update;
 //# sourceMappingURL=productController.js.map

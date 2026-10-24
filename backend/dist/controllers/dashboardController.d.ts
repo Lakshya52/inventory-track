@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
-export declare function stats(_req: Request, res: Response): Promise<void>;
-export declare function adminStats(_req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './dashboardController.mysql';
+export declare const stats: typeof mysqlImpl.stats;
+export declare const adminStats: typeof mysqlImpl.adminStats;
 //# sourceMappingURL=dashboardController.d.ts.map

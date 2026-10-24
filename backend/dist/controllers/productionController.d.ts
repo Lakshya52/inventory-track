@@ -1,6 +1,6 @@
-import { Request, Response } from 'express';
-export declare function listBatches(_req: Request, res: Response): Promise<void>;
-export declare function fixBatch(req: Request, res: Response): Promise<void>;
-export declare function listFixRecords(_req: Request, res: Response): Promise<void>;
-export declare function submitForQc(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './productionController.mysql';
+export declare const listBatches: typeof mysqlImpl.listBatches;
+export declare const fixBatch: typeof mysqlImpl.fixBatch;
+export declare const listFixRecords: typeof mysqlImpl.listFixRecords;
+export declare const submitForQc: typeof mysqlImpl.submitForQc;
 //# sourceMappingURL=productionController.d.ts.map

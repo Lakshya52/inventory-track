@@ -1,9 +1,9 @@
-import { Request, Response } from 'express';
-export declare function submit(req: Request, res: Response): Promise<void>;
-export declare function submitBulk(req: Request, res: Response): Promise<void>;
-export declare function today(req: Request, res: Response): Promise<void>;
-export declare function ready(req: Request, res: Response): Promise<void>;
-export declare function approvedOrders(req: Request, res: Response): Promise<void>;
-export declare function records(req: Request, res: Response): Promise<void>;
-export declare function stats(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './dispatchController.mysql';
+export declare const submit: typeof mysqlImpl.submit;
+export declare const submitBulk: typeof mysqlImpl.submitBulk;
+export declare const today: typeof mysqlImpl.today;
+export declare const ready: typeof mysqlImpl.ready;
+export declare const approvedOrders: typeof mysqlImpl.approvedOrders;
+export declare const records: typeof mysqlImpl.records;
+export declare const stats: typeof mysqlImpl.stats;
 //# sourceMappingURL=dispatchController.d.ts.map

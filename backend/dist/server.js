@@ -63,13 +63,35 @@ const schema_1 = require("./config/schema");
 const database_1 = require("./config/database");
 const app = (0, express_1.default)();
 const PORT = Number(process.env.PORT) || 3001;
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+function isOriginAllowed(origin) {
+    return allowedOrigins.some((allowed) => {
+        if (allowed === '*')
+            return true;
+        if (!allowed.includes('*'))
+            return origin === allowed;
+        const [prefix, suffix] = allowed.split('*');
+        return origin.startsWith(prefix) && origin.endsWith(suffix);
+    });
+}
 app.set('trust proxy', 1);
 app.use((0, helmet_1.default)({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 app.use((0, compression_1.default)());
 app.use((0, cors_1.default)({
-    origin: true,
+    origin: allowedOrigins.length === 0
+        ? true
+        : (origin, callback) => {
+            if (!origin || isOriginAllowed(origin)) {
+                callback(null, true);
+                return;
+            }
+            callback(new Error(`Origin ${origin} is not allowed by CORS`));
+        },
     credentials: true,
     exposedHeaders: ['RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset', 'X-Request-Id'],
 }));

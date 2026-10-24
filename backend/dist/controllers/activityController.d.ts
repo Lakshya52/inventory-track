@@ -1,3 +1,3 @@
-import { Request, Response } from 'express';
-export declare function list(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './activityController.mysql';
+export declare const list: typeof mysqlImpl.list;
 //# sourceMappingURL=activityController.d.ts.map

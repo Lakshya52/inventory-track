@@ -1,12 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
-import { JwtPayload, Role } from '../types';
-declare global {
-    namespace Express {
-        interface Request {
-            user?: JwtPayload;
-        }
-    }
-}
-export declare function authenticate(req: Request, res: Response, next: NextFunction): Promise<void>;
-export declare function authorize(...roles: Role[]): (req: Request, res: Response, next: NextFunction) => void;
+import * as mysqlAuth from './auth.mysql';
+export declare const authenticate: typeof mysqlAuth.authenticate;
+export declare const authorize: typeof mysqlAuth.authorize;
 //# sourceMappingURL=auth.d.ts.map

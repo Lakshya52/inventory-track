@@ -1,9 +1,9 @@
-import { Request, Response } from 'express';
-export declare function raise(req: Request, res: Response): Promise<void>;
-export declare function listPending(req: Request, res: Response): Promise<void>;
-export declare function listAll(req: Request, res: Response): Promise<void>;
-export declare function listMine(req: Request, res: Response): Promise<void>;
-export declare function approve(req: Request, res: Response): Promise<void>;
-export declare function reject(req: Request, res: Response): Promise<void>;
-export declare function getPackingList(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './dispatchOrderController.mysql';
+export declare const raise: typeof mysqlImpl.raise;
+export declare const listPending: typeof mysqlImpl.listPending;
+export declare const listAll: typeof mysqlImpl.listAll;
+export declare const listMine: typeof mysqlImpl.listMine;
+export declare const approve: typeof mysqlImpl.approve;
+export declare const reject: typeof mysqlImpl.reject;
+export declare const getPackingList: typeof mysqlImpl.getPackingList;
 //# sourceMappingURL=dispatchOrderController.d.ts.map

@@ -1,66 +1,45 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listBatches = listBatches;
-exports.fixBatch = fixBatch;
-exports.listFixRecords = listFixRecords;
-exports.submitForQc = submitForQc;
+exports.submitForQc = exports.listFixRecords = exports.fixBatch = exports.listBatches = void 0;
 const database_1 = require("../config/database");
-async function listBatches(_req, res) {
-    const batches = await (0, database_1.query)(`SELECT b.*, p.name as product_name, p.sku as product_sku
-     FROM batches b JOIN products p ON b.product_id = p.id
-     WHERE b.status IN ('CREATED', 'QC_FAILED', 'DISPATCH_APPROVED')
-     ORDER BY b.created_at DESC`);
-    res.json(batches);
-}
-async function fixBatch(req, res) {
-    const { batch_id, description } = req.body;
-    if (!batch_id) {
-        res.status(400).json({ error: 'Batch ID required' });
-        return;
-    }
-    const batches = await (0, database_1.query)('SELECT * FROM batches WHERE id = ?', [batch_id]);
-    if (batches.length === 0) {
-        res.status(404).json({ error: 'Batch not found' });
-        return;
-    }
-    const batch = batches[0];
-    if (batch.status !== 'QC_FAILED') {
-        res.status(400).json({ error: `Can only fix QC_FAILED batches. Current status: ${batch.status}` });
-        return;
-    }
-    await (0, database_1.execute)('INSERT INTO fix_records (batch_id, fixed_by, description) VALUES (?, ?, ?)', [batch_id, req.user.userId, description || null]);
-    await (0, database_1.execute)('UPDATE batches SET status = ? WHERE id = ?', ['CREATED', batch_id]);
-    await (0, database_1.execute)('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)', [req.user?.name || 'Production', req.user?.role || 'PRODUCTION', 'BATCH_FIXED',
-        `Batch ${batch.batch_number} fixed and sent back to QC`]);
-    res.json({ status: 'CREATED', batch_id });
-}
-async function listFixRecords(_req, res) {
-    const records = await (0, database_1.query)(`SELECT f.*, b.batch_number, p.name as product_name, u.name as fixed_by_name
-     FROM fix_records f
-     JOIN batches b ON f.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN production_users u ON f.fixed_by = u.id
-     ORDER BY f.created_at DESC LIMIT 50`);
-    res.json(records);
-}
-async function submitForQc(req, res) {
-    const { barcode_value } = req.body;
-    if (!barcode_value) {
-        res.status(400).json({ error: 'Barcode value required' });
-        return;
-    }
-    const batches = await (0, database_1.query)(`SELECT b.*, p.name as product_name FROM batches b JOIN products p ON b.product_id = p.id WHERE b.barcode_value = ?`, [barcode_value]);
-    if (batches.length === 0) {
-        res.status(404).json({ error: 'Batch not found' });
-        return;
-    }
-    const batch = batches[0];
-    if (batch.status !== 'CREATED') {
-        res.status(400).json({ error: `Can only submit CREATED batches to QC. Current status: ${batch.status}` });
-        return;
-    }
-    await (0, database_1.execute)('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)', [req.user?.name || 'Production', req.user?.role || 'PRODUCTION', 'SUBMITTED_FOR_QC',
-        `Batch ${batch.batch_number} (${batch.product_name}) submitted for QC`]);
-    res.json({ status: 'CREATED', batch_id: batch.id, message: 'Batch submitted for QC verification' });
-}
+const mysqlImpl = __importStar(require("./productionController.mysql"));
+const mongoImpl = __importStar(require("./productionController.mongo"));
+const implementation = database_1.useMongo ? mongoImpl : mysqlImpl;
+exports.listBatches = implementation.listBatches;
+exports.fixBatch = implementation.fixBatch;
+exports.listFixRecords = implementation.listFixRecords;
+exports.submitForQc = implementation.submitForQc;
 //# sourceMappingURL=productionController.js.map

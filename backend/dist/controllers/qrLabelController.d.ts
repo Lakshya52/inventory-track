@@ -1,6 +1,6 @@
-import { Request, Response } from 'express';
-export declare function create(req: Request, res: Response): Promise<void>;
-export declare function list(req: Request, res: Response): Promise<void>;
-export declare function getById(req: Request, res: Response): Promise<void>;
-export declare function reprint(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './qrLabelController.mysql';
+export declare const create: typeof mysqlImpl.create;
+export declare const list: typeof mysqlImpl.list;
+export declare const getById: typeof mysqlImpl.getById;
+export declare const reprint: typeof mysqlImpl.reprint;
 //# sourceMappingURL=qrLabelController.d.ts.map

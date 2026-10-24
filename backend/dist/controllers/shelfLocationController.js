@@ -1,42 +1,45 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.list = list;
-exports.create = create;
-exports.update = update;
-exports.remove = remove;
+exports.remove = exports.update = exports.create = exports.list = void 0;
 const database_1 = require("../config/database");
-async function list(_req, res) {
-    const locations = await (0, database_1.query)('SELECT * FROM shelf_locations ORDER BY location_code');
-    res.json(locations);
-}
-async function create(req, res) {
-    const { location_code, description, warehouse, rack, shelf } = req.body;
-    if (!location_code) {
-        res.status(400).json({ error: 'Location code is required' });
-        return;
-    }
-    try {
-        const result = await (0, database_1.execute)('INSERT INTO shelf_locations (location_code, description, warehouse, rack, shelf) VALUES (?, ?, ?, ?, ?)', [location_code, description || null, warehouse || null, rack || null, shelf || null]);
-        await (0, database_1.execute)('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)', [req.user?.name || 'System', req.user?.role || 'ADMIN', 'LOCATION_CREATED', `Location "${location_code}" created`]);
-        res.status(201).json({ id: result.insertId, location_code, description, warehouse, rack, shelf });
-    }
-    catch (err) {
-        if (err.code === 'ER_DUP_ENTRY') {
-            res.status(400).json({ error: 'Location code already exists' });
-            return;
-        }
-        throw err;
-    }
-}
-async function update(req, res) {
-    const { id } = req.params;
-    const { location_code, description, warehouse, rack, shelf, is_active } = req.body;
-    await (0, database_1.execute)('UPDATE shelf_locations SET location_code = ?, description = ?, warehouse = ?, rack = ?, shelf = ?, is_active = ? WHERE id = ?', [location_code, description || null, warehouse || null, rack || null, shelf || null, is_active ?? 1, id]);
-    res.json({ message: 'Location updated' });
-}
-async function remove(req, res) {
-    const { id } = req.params;
-    await (0, database_1.execute)('DELETE FROM shelf_locations WHERE id = ?', [id]);
-    res.json({ message: 'Location deleted' });
-}
+const mysqlImpl = __importStar(require("./shelfLocationController.mysql"));
+const mongoImpl = __importStar(require("./shelfLocationController.mongo"));
+const implementation = database_1.useMongo ? mongoImpl : mysqlImpl;
+exports.list = implementation.list;
+exports.create = implementation.create;
+exports.update = implementation.update;
+exports.remove = implementation.remove;
 //# sourceMappingURL=shelfLocationController.js.map

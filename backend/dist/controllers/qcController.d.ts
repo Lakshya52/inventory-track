@@ -1,8 +1,8 @@
-import { Request, Response } from 'express';
-export declare function submit(req: Request, res: Response): Promise<void>;
-export declare function submitBulk(req: Request, res: Response): Promise<void>;
-export declare function reopenFailedBatch(req: Request, res: Response): Promise<void>;
-export declare function stats(req: Request, res: Response): Promise<void>;
-export declare function pending(req: Request, res: Response): Promise<void>;
-export declare function records(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './qcController.mysql';
+export declare const submit: typeof mysqlImpl.submit;
+export declare const submitBulk: typeof mysqlImpl.submitBulk;
+export declare const reopenFailedBatch: typeof mysqlImpl.reopenFailedBatch;
+export declare const stats: typeof mysqlImpl.stats;
+export declare const pending: typeof mysqlImpl.pending;
+export declare const records: typeof mysqlImpl.records;
 //# sourceMappingURL=qcController.d.ts.map

@@ -1,16 +1,29 @@
-import { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import * as mysql from './database.mysql';
+import * as mongo from './database.mongo';
 /**
- * A single pool is shared by the whole Node process. In production each API
- * instance gets its own pool; the database remains the source of truth.
+ * Database switch. MySQL remains the production default; set
+ * DB_CLIENT=mongo to run the same API on MongoDB (for example on Vercel).
  */
-export declare function getPool(): Promise<Pool>;
-export declare function query<T extends RowDataPacket[]>(sql: string, params?: any[]): Promise<T>;
-export declare function execute(sql: string, params?: any[]): Promise<ResultSetHeader>;
-/**
- * Runs a unit of work in a single transaction. Callers must use the provided
- * connection for every statement that belongs to the transaction.
- */
-export declare function withTransaction<T>(fn: (conn: PoolConnection) => Promise<T>): Promise<T>;
+export declare const useMongo: boolean;
+export declare const getPool: typeof mysql.getPool;
+export declare const query: typeof mysql.query;
+export declare const execute: typeof mysql.execute;
+export declare const getClient: typeof mongo.getClient;
+export declare const getDb: typeof mongo.getDb;
+export declare const getContext: typeof mongo.getContext;
+export { DbContext } from './database.mongo';
+export declare const now: typeof mongo.now;
+export declare const stripId: typeof mongo.stripId;
+export declare const stripIds: typeof mongo.stripIds;
+export declare const isDuplicateKey: typeof mongo.isDuplicateKey;
+export declare const parseDateValue: typeof mongo.parseDateValue;
+export declare const startOfDay: typeof mongo.startOfDay;
+export declare const endOfDay: typeof mongo.endOfDay;
+export declare const startOfWeek: typeof mongo.startOfWeek;
+export declare const daysAgo: typeof mongo.daysAgo;
+export declare const ageMinutes: typeof mongo.ageMinutes;
+export declare const dayKey: typeof mongo.dayKey;
+export declare function withTransaction<T>(fn: (client: any) => Promise<T>): Promise<T>;
 export declare function checkDatabase(): Promise<boolean>;
 export declare function closePool(): Promise<void>;
 //# sourceMappingURL=database.d.ts.map

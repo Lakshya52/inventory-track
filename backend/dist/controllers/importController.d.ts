@@ -1,7 +1,5 @@
-import { Request, Response } from 'express';
-import multer from 'multer';
-declare const upload: multer.Multer;
-export { upload };
-export declare function importProducts(req: Request, res: Response): Promise<void>;
-export declare function downloadSample(req: Request, res: Response): void;
+import * as mysqlImpl from './importController.mysql';
+export declare const upload: import("multer").Multer;
+export declare const importProducts: typeof mysqlImpl.importProducts;
+export declare const downloadSample: typeof mysqlImpl.downloadSample;
 //# sourceMappingURL=importController.d.ts.map

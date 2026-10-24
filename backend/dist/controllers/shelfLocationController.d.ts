@@ -1,6 +1,6 @@
-import { Request, Response } from 'express';
-export declare function list(_req: Request, res: Response): Promise<void>;
-export declare function create(req: Request, res: Response): Promise<void>;
-export declare function update(req: Request, res: Response): Promise<void>;
-export declare function remove(req: Request, res: Response): Promise<void>;
+import * as mysqlImpl from './shelfLocationController.mysql';
+export declare const list: typeof mysqlImpl.list;
+export declare const create: typeof mysqlImpl.create;
+export declare const update: typeof mysqlImpl.update;
+export declare const remove: typeof mysqlImpl.remove;
 //# sourceMappingURL=shelfLocationController.d.ts.map
