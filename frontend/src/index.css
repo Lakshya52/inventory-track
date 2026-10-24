@@ -80,6 +80,8 @@
     @apply bg-surface-50 text-surface-800 font-sans;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    min-width: 320px;
+    overflow-x: hidden;
   }
 
   ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -89,11 +91,11 @@
 
 @layer components {
   .page-container {
-    @apply p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto;
+    @apply mx-auto w-full max-w-7xl min-w-0 p-4 sm:p-6 lg:p-8;
   }
 
   .page-header {
-    @apply flex items-center justify-between mb-6 flex-wrap gap-3;
+    @apply mb-6 flex min-w-0 flex-wrap items-center justify-between gap-3;
   }
 
   .page-title {
@@ -137,7 +139,7 @@
   }
 
   .table-wrap {
-    @apply overflow-x-auto;
+    @apply w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain;
   }
 
   .table-wrap table {
@@ -226,11 +228,11 @@
   }
 
   .modal-overlay {
-    @apply fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm;
+    @apply fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-black/40 backdrop-blur-sm;
   }
 
   .modal-content {
-    @apply bg-white rounded-2xl shadow-modal w-full max-w-lg max-h-[90vh] overflow-y-auto mx-2 sm:mx-0;
+    @apply my-auto w-full max-w-lg max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-2xl bg-white shadow-modal sm:max-h-[90vh];
   }
 
   .modal-header {
@@ -282,7 +284,7 @@
   }
 
   .form-grid {
-    @apply grid grid-cols-1 md:grid-cols-2 gap-4;
+    @apply grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2;
   }
 
   .form-section {
@@ -291,5 +293,66 @@
 
   .btn-xs {
     @apply px-2 py-1 text-xs rounded-lg;
+  }
+
+  .page-container > *,
+  .card,
+  .stat-card {
+    min-width: 0;
+  }
+
+  @media (max-width: 639px) {
+    .page-header {
+      align-items: stretch;
+    }
+
+    .page-header > * {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .page-header > :last-child {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .page-title {
+      font-size: 1.25rem;
+      line-height: 1.75rem;
+    }
+
+    .card-header {
+      @apply px-4 py-3;
+    }
+
+    .card-body {
+      @apply p-4;
+    }
+
+    .page-container .card.p-6 {
+      padding: 1rem;
+    }
+
+    .modal-header {
+      @apply px-4 py-3;
+    }
+
+    .modal-body {
+      @apply p-4;
+    }
+
+    .modal-footer {
+      @apply flex-wrap px-4 py-3;
+    }
+
+    .modal-footer > button {
+      flex: 1 1 auto;
+    }
+
+    .table-wrap table {
+      min-width: 640px;
+    }
   }
 }

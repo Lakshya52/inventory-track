@@ -169,7 +169,7 @@ export function AppLayout() {
   );
 
   return (
-    <div className="flex h-screen bg-surface-50">
+    <div className="min-h-screen w-full bg-surface-50">
       {mobileOpen && (
         <div className="fixed inset-0 z-30 bg-black/40 lg:hidden" onClick={() => setMobileOpen(false)} />
       )}
@@ -178,7 +178,7 @@ export function AppLayout() {
         {sidebar}
       </aside>
 
-      <div className={`flex-1 flex flex-col min-h-screen transition-all duration-300 ${collapsed ? 'lg:ml-16' : 'lg:ml-60'}`}>
+      <div className={`flex min-w-0 w-full flex-1 flex-col transition-all duration-300 ${collapsed ? 'lg:ml-16' : 'lg:ml-60'}`}>
         <header className="h-16 flex items-center justify-between px-4 lg:px-8 bg-white/80 backdrop-blur-md border-b border-surface-200 sticky top-0 z-20 shrink-0">
           <div className="flex items-center gap-3">
             <button className="lg:hidden p-1.5 rounded-lg hover:bg-surface-100 text-surface-500" onClick={() => setMobileOpen(true)}>
@@ -193,7 +193,7 @@ export function AppLayout() {
             </span>
           </div>
         </header>
-        <main className="flex-1">
+        <main className="min-w-0 flex-1">
           <Outlet />
         </main>
       </div>
