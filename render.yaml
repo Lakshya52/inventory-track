@@ -6,10 +6,6 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     healthCheckPath: /api/health
-    disk:
-      name: dispatch-uploads
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
@@ -21,5 +17,3 @@ services:
         generateValue: true
       - key: CORS_ORIGIN
         sync: false
-      - key: UPLOAD_DIR
-        value: /var/data/uploads

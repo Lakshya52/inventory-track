@@ -41,7 +41,6 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const compression_1 = __importDefault(require("compression"));
 const helmet_1 = __importDefault(require("helmet"));
-const path_1 = __importDefault(require("path"));
 const crypto_1 = require("crypto");
 const auth_1 = __importDefault(require("./routes/auth"));
 const products_1 = __importDefault(require("./routes/products"));
@@ -61,6 +60,7 @@ const errorHandler_1 = require("./middleware/errorHandler");
 const rateLimit_1 = require("./middleware/rateLimit");
 const schema_1 = require("./config/schema");
 const database_1 = require("./config/database");
+const uploadController_1 = require("./controllers/uploadController");
 const app = (0, express_1.default)();
 const PORT = Number(process.env.PORT) || 3001;
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
@@ -106,10 +106,7 @@ app.use('/api', (0, rateLimit_1.rateLimit)({
     windowMs: 60_000,
     max: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 600,
 }));
-app.use('/uploads', express_1.default.static(path_1.default.join(__dirname, '../uploads'), {
-    maxAge: '7d',
-    immutable: false,
-}));
+app.get('/uploads/:filename', (req, res) => { void (0, uploadController_1.getUpload)(req, res); });
 app.use('/api/auth/login', (0, rateLimit_1.rateLimit)({
     windowMs: 60_000,
     max: Number(process.env.LOGIN_RATE_LIMIT_PER_MINUTE) || 20,

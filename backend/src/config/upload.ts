@@ -1,28 +1,65 @@
 import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
+import { GridFSBucket, ObjectId } from 'mongodb';
+import { pipeline } from 'stream';
+import { getDb } from './database.mongo';
 
-const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+class MongoGridFsStorage implements multer.StorageEngine {
+  _handleFile(
+    _req: Express.Request,
+    file: Express.Multer.File,
+    callback: (error?: Error | null, info?: Partial<Express.Multer.File>) => void
+  ): void {
+    const id = new ObjectId();
+    void getDb()
+      .then((db) => {
+        const bucket = new GridFSBucket(db, { bucketName: 'uploads' });
+        const stream = bucket.openUploadStreamWithId(id, file.originalname, {
+          metadata: { contentType: file.mimetype },
+        });
+
+        pipeline(file.stream, stream, (error) => {
+          if (error) {
+            void bucket.delete(id).catch((cleanupError: unknown) => {
+              console.error('Could not clean up an incomplete MongoDB upload', cleanupError);
+            });
+            callback(error);
+            return;
+          }
+          callback(null, {
+            filename: id.toHexString(),
+            size: stream.length,
+          });
+        });
+      })
+      .catch(callback);
+  }
+
+  _removeFile(
+    _req: Express.Request,
+    file: Express.Multer.File,
+    callback: (error: Error | null) => void
+  ): void {
+    if (!/^[a-f\d]{24}$/i.test(file.filename || '')) {
+      callback(new Error('Invalid MongoDB upload identifier'));
+      return;
+    }
+    void getDb()
+      .then((db) => new GridFSBucket(db, { bucketName: 'uploads' }).delete(new ObjectId(file.filename)))
+      .then(() => callback(null))
+      .catch(callback);
+  }
 }
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (_req, file, cb) => {
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname) || '.jpg';
-    cb(null, `${unique}${ext}`);
+export const upload = multer({
+  storage: new MongoGridFsStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (file.mimetype.startsWith('image/')) callback(null, true);
+    else callback(new Error('Only image files are allowed'));
   },
 });
 
-export const upload = multer({
-  storage,
+export const importUpload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files are allowed'));
-  },
 });

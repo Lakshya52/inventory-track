@@ -3,7 +3,6 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
-import path from 'path';
 import { randomUUID } from 'crypto';
 import authRoutes from './routes/auth';
 import productRoutes from './routes/products';
@@ -23,6 +22,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { rateLimit } from './middleware/rateLimit';
 import { ensureAdminSchema } from './config/schema';
 import { checkDatabase, closePool } from './config/database';
+import { getUpload } from './controllers/uploadController';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -71,10 +71,7 @@ app.use('/api', rateLimit({
   max: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 600,
 }));
 
-app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
-  maxAge: '7d',
-  immutable: false,
-}));
+app.get('/uploads/:filename', (req, res) => { void getUpload(req, res); });
 
 app.use('/api/auth/login', rateLimit({
   windowMs: 60_000,

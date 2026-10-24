@@ -1,14 +1,7 @@
 import { Request, Response } from 'express';
 import { getContext, isDuplicateKey } from '../config/database';
 import XLSX from 'xlsx';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
-
-const uploadDir = path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const upload = multer({ dest: uploadDir });
+import { importUpload as upload } from '../config/upload';
 
 const VALID_GRADES = ['Technical', 'AR (Analytical Reagent)', 'GR (Guaranteed Reagent)', 'HPLC', 'LR (Laboratory Reagent)', 'GC (Gas Chromatography)', 'ACS', 'Spectroscopic Grade', 'Molecular Biology Grade', 'Biotechnology Grade', 'Cell Culture Grade', 'USP', 'Ph Eur', 'BP', 'EP', 'JP', 'IP (Indian Pharmacopoeia)', 'NF', 'FCC', 'Food Grade', 'Extra Pure', 'Synthesis Grade', 'Electronic Grade', 'Semiconductor Grade', 'ReagentPlus', 'BioXtra', 'Puriss', 'Purum', 'Pract', 'Anhydrous', 'Deuterated'];
 
@@ -23,7 +16,7 @@ export async function importProducts(req: Request, res: Response): Promise<void>
     return;
   }
   try {
-    const workbook = XLSX.readFile(file.path);
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
@@ -114,8 +107,6 @@ export async function importProducts(req: Request, res: Response): Promise<void>
   } catch (err: any) {
     console.error('Import error:', err);
     res.status(500).json({ error: err.message || 'Import failed' });
-  } finally {
-    try { fs.unlinkSync(file.path); } catch {}
   }
 }
 

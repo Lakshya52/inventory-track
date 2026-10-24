@@ -23,10 +23,11 @@ Create a Render Blueprint from this repository and deploy the `inventory-track-a
 web service defined in `render.yaml`. The service builds with `npm ci && npm run
 build`, starts with `npm run start`, and checks `/api/health`.
 
-The blueprint provisions a 1 GB persistent disk at `/var/data` for uploaded
-dispatch/QC images. Keep `UPLOAD_DIR=/var/data/uploads`; persistent disks require
-a Render plan that supports disks. Without persistent storage, uploaded files
-on an ephemeral filesystem can disappear when the service restarts or deploys.
+Dispatch and QC image uploads are stored in MongoDB GridFS, so the backend
+does not need an uploads directory or a Render persistent disk. Excel imports
+are processed in memory and are not retained after processing.
+Remove any previously configured `UPLOAD_DIR` variable and disk mount from the
+Render service; they are no longer used.
 
 After deployment, copy the Render service URL, for example
 `https://inventory-track-api.onrender.com`.
@@ -53,12 +54,14 @@ In the Render service's Environment settings, set:
 | `MONGO_URI` | Your MongoDB Atlas connection string. Required with the blueprint's `DB_CLIENT=mongo`. |
 | `CORS_ORIGIN` | The exact Vercel site origin, e.g. `https://your-project.vercel.app`; add custom domains as comma-separated origins. |
 | `JWT_SECRET` | Render generates a secret through the blueprint. Keep it private and do not change it after launch unless you intend to invalidate existing sessions. |
-| `UPLOAD_DIR` | Keep `/var/data/uploads` to store uploaded images on the Render disk. |
 | `DB_CLIENT` | Keep `mongo` for Atlas. For MySQL, switch to `mysql` and supply all `DB_*` connection settings. |
 
 Render supplies `PORT` automatically. `MONGO_DB_NAME` is optional when the
 database name is included in `MONGO_URI`. Do not put backend secrets in Vercel
 or commit them to the repository.
+
+MongoDB is also required for GridFS file storage, including when the primary
+application data backend is configured as MySQL.
 
 When using a custom Vercel domain, include its origin in `CORS_ORIGIN` and
 redeploy/restart the Render service. If using Vercel preview deployments, add
