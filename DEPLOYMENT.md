@@ -21,7 +21,7 @@ and `DB_NAME` in Render instead of `MONGO_URI`.
 
 Create a Render Blueprint from this repository and deploy the `inventory-track-api`
 web service defined in `render.yaml`. The service builds with `npm ci && npm run
-build`, starts with `npm start`, and checks `/api/health`.
+build`, starts with `npm run start`, and checks `/api/health`.
 
 The blueprint provisions a 1 GB persistent disk at `/var/data` for uploaded
 dispatch/QC images. Keep `UPLOAD_DIR=/var/data/uploads`; persistent disks require
