@@ -8,6 +8,8 @@ import { SyncProvider } from '../sync/SyncContext';
 import { initDatabase } from '../db/database';
 import { Button, LoadingView, Screen } from '../components/ui';
 import { colors, radius, spacing } from '../theme';
+import { useFonts, Inter_400Regular } from '@expo-google-fonts/inter';
+import { LinearGradient } from 'expo-linear-gradient';
 
 type BootstrapState = 'loading' | 'ready' | 'error';
 
@@ -27,10 +29,21 @@ function DatabaseGate({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Load Inter font before rendering the app
+  const [fontsLoaded] = useFonts({ Inter_400Regular });
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- open the local database once after mount
     void start();
   }, [start]);
+
+  if (!fontsLoaded) {
+    return (
+      <Screen edges={['top', 'bottom']}>
+        <LoadingView label="Loading fonts..." />
+      </Screen>
+    );
+  }
 
   if (state === 'loading') {
     return (

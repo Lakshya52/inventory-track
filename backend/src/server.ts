@@ -20,6 +20,7 @@ import vendorRoutes from './routes/vendors';
 import masterRoutes from './routes/masters';
 import reportRoutes from './routes/reports';
 import syncRoutes from './routes/sync';
+import productionRoutes from './routes/production';
 import { errorHandler } from './middleware/errorHandler';
 import { rateLimit } from './middleware/rateLimit';
 import { ensureAdminSchema } from './config/schema';
@@ -97,6 +98,7 @@ app.use('/api/vendors', vendorRoutes);
 app.use('/api/masters', masterRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/sync', syncRoutes);
+app.use('/api/production', productionRoutes);
 
 app.get('/api/health', async (_req, res) => {
   const db = await checkDatabase();

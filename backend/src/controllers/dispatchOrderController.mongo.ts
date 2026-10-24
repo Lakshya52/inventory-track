@@ -274,9 +274,17 @@ export async function reject(req: Request, res: Response): Promise<void> {
 export async function getPackingList(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const ctx = await getContext();
+  const queryFilter: Record<string, any> = {
+    id,
+    status: 'APPROVED',
+    dispatched_at: { $ne: null },
+  };
+  if (req.user!.role !== 'ADMIN') {
+    queryFilter.raised_by = req.user!.userId;
+  }
   const order = await ctx.findOne(
     'dispatch_orders',
-    { id, raised_by: req.user!.userId, status: 'APPROVED', dispatched_at: { $ne: null } },
+    queryFilter,
     { projection: { _id: 0 } }
   );
   if (!order) {

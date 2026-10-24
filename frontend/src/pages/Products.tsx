@@ -97,13 +97,38 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
           </button>
           <label className="btn-secondary btn-sm cursor-pointer">
             <Upload size={14} /> Import
-            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (f) { try { await api.products.importExcel(f); api.products.list().then(setProducts); } catch (err: any) { alert(err.message); } } }} />
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              onChange={async e => {
+                const f = e.target.files?.[0];
+                if (f) {
+                  try {
+                    await api.products.importExcel(f);
+                    const list = await api.products.list();
+                    setProducts(list);
+                    setError('');
+                  } catch (err: any) {
+                    setError(err.message || 'Import failed');
+                  } finally {
+                    e.target.value = '';
+                  }
+                }
+              }}
+            />
           </label>
           <button onClick={openCreateForm} className="btn-primary">
             <Plus size={16} /> Add Product
           </button>
         </div>}
       </div>
+      {error && !showForm && (
+        <div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="text-rose-500 hover:text-rose-700"><X size={15} /></button>
+        </div>
+      )}
 
       {canManage && showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>

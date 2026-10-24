@@ -18,5 +18,5 @@ router.get('/all', authorize('ADMIN', 'QC'), listAll);
 router.get('/mine', authorize('DISPATCH'), listMine);
 router.post('/:id/approve', authorize('ADMIN', 'QC'), approve);
 router.post('/:id/reject', authorize('ADMIN', 'QC'), reject);
-router.get('/:id/packing-list', authorize('DISPATCH'), getPackingList);
+router.get('/:id/packing-list', authorize('ADMIN', 'DISPATCH'), getPackingList);
 export default router;

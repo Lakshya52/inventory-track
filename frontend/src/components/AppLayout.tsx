@@ -47,9 +47,8 @@ const navSections: { title: string; items: NavItem[] }[] = [
     items: [
       { label: 'Dispatch Dashboard', path: '/dispatch-dashboard', icon: <BarChart3 size={18} />, roles: ['DISPATCH'] },
       { label: 'Dispatch Group Scan', path: '/dispatch', icon: <Camera size={18} />, roles: ['DISPATCH'] },
-      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['DISPATCH'] },
+      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['ADMIN', 'QC', 'DISPATCH'] },
       { label: 'Packing List', path: '/packing-list', icon: <FileText size={18} />, roles: ['DISPATCH'] },
-      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: <ClipboardList size={18} />, roles: ['ADMIN', 'QC'] },
     ],
   },
   {

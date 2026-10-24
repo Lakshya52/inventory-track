@@ -188,7 +188,7 @@ export default function PackingList() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Bags</th><th>Bag Content</th><th>Location</th></tr></thead>
+              <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Bags</th><th>Bag Content</th><th>Location</th><th>Barcode</th></tr></thead>
               <tbody>
                 {packingData.items.map((item: any, i: number) => (
                   <tr key={i}>
@@ -201,6 +201,7 @@ export default function PackingList() {
                     <td className="text-sm">{item.quantity} bags</td>
                     <td className="text-sm">{[item.bag_quantity, item.bag_quantity_unit].filter(Boolean).join(' ') || '-'}</td>
                     <td className="text-sm">{itemLocation(item)}</td>
+                    <td className="font-mono text-xs text-surface-500">{itemBarcode(item, packingData)}</td>
                   </tr>
                 ))}
               </tbody>

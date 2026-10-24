@@ -30,6 +30,9 @@
     "react-native-web": "^0.21.4"
   },
   "devDependencies": {
+    "@expo-google-fonts/inter": "~0.3.0",
+    "expo-linear-gradient": "~12.0.0",
+
     "@types/react": "~19.3.0",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~58.0.4",

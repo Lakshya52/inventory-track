@@ -380,18 +380,22 @@ export default function QCScan() {
             onChange={(event) => setQueueSearch(event.target.value)}
           />
 
-          <div className="max-h-52 overflow-y-auto rounded-xl border border-surface-100 divide-y divide-surface-100">
+          <div className="max-h-52 overflow-y-auto rounded-xl border border-surface-200 divide-y divide-surface-100 bg-white">
             {filteredQueue.slice(0, 12).map((batch) => (
-              <div key={batch.id} className="flex items-center gap-3 p-2.5">
+              <div key={batch.id} className="flex items-center justify-between gap-3 p-3 hover:bg-surface-50 transition-colors">
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-surface-800 truncate">{batch.product_name}</div>
-                  <div className="text-[10px] text-surface-400 truncate">
-                    {batch.batch_number} · {batch.product_sku} · {batch.quantity} {batch.uom || ''}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-semibold text-surface-900 truncate">{batch.product_name}</span>
+                    <span className="font-mono text-xs bg-surface-100 px-1.5 py-0.5 rounded text-surface-700">{batch.batch_number}</span>
+                    <span className="badge badge-warning text-[10px]">Waiting QC</span>
+                  </div>
+                  <div className="text-xs text-surface-400 mt-0.5">
+                    SKU: {batch.product_sku} · {batch.quantity} {batch.uom || 'units'}
                   </div>
                 </div>
                 {Number(batch.qr_count) === 0
-                  ? <button className="btn-secondary btn-xs" onClick={() => void addBatch(batch.barcode_value)}>Add QC lot</button>
-                  : <span className="text-xs text-surface-400">Scan {expectedQrCount(batch)} labels</span>}
+                  ? <button className="btn-primary btn-xs shrink-0" onClick={() => void addBatch(batch.barcode_value)}>Add QC lot</button>
+                  : <span className="text-xs font-medium text-brand-600 bg-brand-50 px-2 py-1 rounded-lg shrink-0">Scan {expectedQrCount(batch)} labels</span>}
               </div>
             ))}
             {filteredQueue.length === 0 && (

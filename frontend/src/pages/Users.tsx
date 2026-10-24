@@ -69,7 +69,7 @@ export default function Users() {
   const activeCount = users.filter(u => u.is_active === 1).length;
   const adminCount = users.filter(u => u.role === 'ADMIN').length;
 
-  const isSelf = (u: User) => u.role === currentUser?.role && u.id === currentUser?.id;
+  const isSelf = (u: User) => u.role === currentUser?.role && Number(u.id) === Number(currentUser?.id);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();

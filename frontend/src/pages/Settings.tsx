@@ -4,7 +4,7 @@ import { api } from '../services/api';
 import { User, ShieldCheck, Save, KeyRound } from 'lucide-react';
 
 export default function Settings() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [name, setName] = useState(user?.name || '');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -32,6 +32,7 @@ export default function Settings() {
         currentPassword: currentPassword || undefined,
         newPassword: newPassword || undefined,
       });
+      await refreshUser();
       setMessage('Profile updated successfully');
       setCurrentPassword('');
       setNewPassword('');

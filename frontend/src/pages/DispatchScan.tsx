@@ -468,18 +468,38 @@ export default function DispatchScan() {
             ))}
           </select>
 
-          <div className="max-h-52 overflow-y-auto rounded-xl border border-surface-100 divide-y divide-surface-100">
-            {filteredQueue.slice(0, 12).map((batch) => (
-              <button key={batch.order_id} type="button" onClick={() => setSelectedOrderId(String(batch.order_id))} disabled={scanned.length > 0} className={`flex w-full items-center gap-3 p-2.5 text-left ${String(batch.order_id) === selectedOrderId ? 'bg-brand-50' : 'hover:bg-surface-50'}`}>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-surface-800 truncate">{batch.product_name}</div>
-                  <div className="text-[10px] text-surface-400 truncate">
-                    Order #{batch.order_id} · {batch.client_name} · {batch.grade_name || batch.product_grade || '-'} · {batch.batch_number} · {batch.container_number || '-'} · {batch.quantity} bags
+          <div className="max-h-52 overflow-y-auto rounded-xl border border-surface-200 divide-y divide-surface-100 bg-white">
+            {filteredQueue.slice(0, 12).map((batch) => {
+              const isSelected = String(batch.order_id) === selectedOrderId;
+              return (
+                <button
+                  key={batch.order_id}
+                  type="button"
+                  onClick={() => setSelectedOrderId(String(batch.order_id))}
+                  disabled={scanned.length > 0}
+                  className={`flex w-full items-center justify-between gap-3 p-3 text-left transition-colors ${
+                    isSelected ? 'bg-brand-50 border-l-4 border-l-brand-600' : 'hover:bg-surface-50'
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-surface-900 truncate">{batch.product_name}</span>
+                      <span className="badge badge-info text-[10px]">Order #{batch.order_id}</span>
+                      <span className="font-mono text-xs bg-surface-100 px-1.5 py-0.5 rounded text-surface-700">{batch.batch_number}</span>
+                    </div>
+                    <div className="text-xs text-surface-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <span>Client: <strong>{batch.client_name || 'Party'}</strong></span>
+                      <span>Grade: {batch.grade_name || batch.product_grade || '-'}</span>
+                      <span>Container: {batch.container_number || '-'}</span>
+                      <span>Qty: {batch.quantity} bags</span>
+                    </div>
                   </div>
-                </div>
-                <span className="text-xs text-surface-400">Scan {expectedQrCount(batch)} labels</span>
-              </button>
-            ))}
+                  <span className="text-xs font-medium text-brand-600 bg-brand-50 px-2 py-1 rounded-lg shrink-0">
+                    {expectedQrCount(batch)} labels
+                  </span>
+                </button>
+              );
+            })}
             {filteredQueue.length === 0 && (
               <div className="p-4 text-center text-xs text-surface-400">
                 {queueLoading ? 'Loading approved orders...' : queueSearch ? 'No approved orders match that filter.' : 'No approved dispatch orders are waiting.'}

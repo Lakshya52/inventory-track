@@ -133,7 +133,7 @@ export default function Dashboard() {
                   </tr>
                 ))}
                 {data.pendingRequests.length === 0 && (
-                  <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title">No pending requests</div><div className="empty-desc">Dispatch requests will appear here for approval</div></div></td></tr>
+                  <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title text-sm">No pending requests</div><div className="empty-desc text-xs">Dispatch requests will appear here for approval</div></div></td></tr>
                 )}
               </tbody>
             </table>

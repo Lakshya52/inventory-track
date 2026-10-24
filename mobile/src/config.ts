@@ -14,6 +14,10 @@ function resolveApiUrl(): string {
     Constants.expoConfig?.hostUri ||
     (Constants as any).expoGoConfig?.debuggerHost ||
     (Constants as any).manifest2?.extra?.expoGo?.debuggerHost;
+  // Prefer explicit API URL from environment variable
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL.replace(/\/+$/, '');
+  }
   if (__DEV__ && typeof hostUri === 'string' && hostUri) {
     // The Metro dev server proxies /api and /uploads to the backend (see
     // metro.config.js). Using the same reachable host/port as the JS bundle

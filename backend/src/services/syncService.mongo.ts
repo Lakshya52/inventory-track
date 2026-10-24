@@ -1013,23 +1013,34 @@ export async function registerDevice(
   return { device_uuid: deviceUuid };
 }
 
+
 export async function touchDeviceSync(
   deviceUuid: string | null,
   kind: 'pull' | 'push',
   error?: string | null
 ): Promise<void> {
   if (!deviceUuid || !DEVICE_ID_PATTERN.test(deviceUuid)) return;
+
   const ctx = await getContext();
   const column = kind === 'pull' ? 'last_pull_at' : 'last_push_at';
-  await ctx.updateOne('device_sync_state', { device_uuid: deviceUuid }, {
-    $set: {
-      [column]: now(),
-      last_error: error || null,
-      updated_at: now(),
+  const timestamp = now();
+
+  await ctx.updateOne(
+    'device_sync_state',
+    { device_uuid: deviceUuid },
+    {
+      $set: {
+        [column]: timestamp,
+        last_error: error || null,
+        updated_at: timestamp,
+      },
+      $setOnInsert: {
+        device_uuid: deviceUuid,
+        ...(kind === 'push'
+          ? { last_pull_at: null }
+          : { last_push_at: null }),
+      },
     },
-    $setOnInsert: {
-      last_pull_at: kind === 'pull' ? now() : null,
-      last_push_at: kind === 'push' ? now() : null,
-    },
-  }, { upsert: true });
+    { upsert: true }
+  );
 }

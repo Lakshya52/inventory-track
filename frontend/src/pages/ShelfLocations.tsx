@@ -13,8 +13,11 @@ export default function ShelfLocations() {
   const [rack, setRack] = useState('');
   const [shelf, setShelf] = useState('');
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
 
-  useEffect(() => { api.shelfLocations.list().then(setLocations); }, []);
+  useEffect(() => {
+    api.shelfLocations.list().then(setLocations).catch(err => setError(err.message || 'Could not load shelf locations'));
+  }, []);
 
   const resetForm = () => { setCode(''); setDesc(''); setWarehouse(''); setRack(''); setShelf(''); setError(''); setEditId(null); };
 
@@ -38,8 +41,10 @@ export default function ShelfLocations() {
 
   const handleDelete = async (id: number) => {
     if (!window.confirm('Delete this location?')) return;
-    await api.shelfLocations.delete(id);
-    api.shelfLocations.list().then(setLocations);
+    try {
+      await api.shelfLocations.delete(id);
+      api.shelfLocations.list().then(setLocations);
+    } catch (err: any) { setError(err.message); }
   };
 
   const handleToggle = async (loc: ShelfLocation) => {
@@ -60,6 +65,15 @@ export default function ShelfLocations() {
     }
   };
 
+  const filteredLocations = locations.filter(l =>
+    !search ||
+    l.location_code.toLowerCase().includes(search.toLowerCase()) ||
+    (l.description || '').toLowerCase().includes(search.toLowerCase()) ||
+    (l.warehouse || '').toLowerCase().includes(search.toLowerCase()) ||
+    (l.rack || '').toLowerCase().includes(search.toLowerCase()) ||
+    (l.shelf || '').toLowerCase().includes(search.toLowerCase())
+  );
+
   return (
     <div className="page-container">
       <div className="page-header">
@@ -70,6 +84,25 @@ export default function ShelfLocations() {
         <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
           <Plus size={16} /> Add Location
         </button>
+      </div>
+
+      {error && !showForm && (
+        <div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="text-rose-500 hover:text-rose-700"><X size={15} /></button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 mb-4">
+        <div className="relative flex-1 max-w-full sm:max-w-xs">
+          <input
+            className="input"
+            placeholder="Search locations..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+        {search && <button onClick={() => setSearch('')} className="btn-ghost btn-sm shrink-0"><X size={14} /> Clear</button>}
       </div>
 
       {showForm && (
@@ -106,7 +139,7 @@ export default function ShelfLocations() {
               <tr><th>Code</th><th>Description</th><th>Warehouse</th><th>Rack</th><th>Shelf</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {locations.map(l => (
+              {filteredLocations.map(l => (
                 <tr key={l.id}>
                   <td><span className="font-mono text-sm font-semibold text-surface-800">{l.location_code}</span></td>
                   <td className="text-sm">{l.description || '-'}</td>
@@ -129,8 +162,8 @@ export default function ShelfLocations() {
                   </td>
                 </tr>
               ))}
-              {locations.length === 0 && (
-                <tr><td colSpan={7}><div className="empty-state"><div className="empty-icon"><MapPin size={24} className="text-surface-400" /></div><div className="empty-title">No locations defined</div><div className="empty-desc">Add your first storage location</div></div></td></tr>
+              {filteredLocations.length === 0 && (
+                <tr><td colSpan={7}><div className="empty-state"><div className="empty-icon"><MapPin size={24} className="text-surface-400" /></div><div className="empty-title">{search ? 'No matching locations found' : 'No locations defined'}</div><div className="empty-desc">{search ? 'Try a different search term' : 'Add your first storage location'}</div></div></td></tr>
               )}
             </tbody>
           </table>

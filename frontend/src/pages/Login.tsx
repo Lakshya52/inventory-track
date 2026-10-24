@@ -18,7 +18,17 @@ export default function Login() {
     setLoading(true);
     try {
       await login(email, password);
-      navigate('/');
+      const token = localStorage.getItem('token');
+      let role = 'ADMIN';
+      if (token) {
+        try {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          role = payload.role || 'ADMIN';
+        } catch {}
+      }
+      if (role === 'QC') navigate('/qc-dashboard');
+      else if (role === 'DISPATCH') navigate('/dispatch-dashboard');
+      else navigate('/');
     } catch (err: any) {
       setError(err.message);
     }

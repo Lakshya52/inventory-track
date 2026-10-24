@@ -15,8 +15,8 @@ export default function ProductionDashboard() {
   useEffect(() => { fetchData(); }, []);
 
   const fetchData = () => {
-    api.production.batches().then(setBatches);
-    api.production.fixRecords().then(setFixRecords);
+    api.production.batches().then(setBatches).catch(err => setMessage(`Error: ${err.message}`));
+    api.production.fixRecords().then(setFixRecords).catch(() => {});
   };
 
   const handleFix = async () => {
@@ -52,6 +52,17 @@ export default function ProductionDashboard() {
           <button onClick={() => setTab('fixes')} className={`btn-sm ${tab === 'fixes' ? 'btn-primary' : 'btn-secondary'}`}><Wrench size={14} /> Fix Records</button>
         </div>
       </div>
+
+      {message && !selectedBatch && (
+        <div className={`mb-4 p-3 rounded-xl text-sm flex items-center justify-between ${
+          message.includes('Error')
+            ? 'bg-rose-50 text-rose-700 border border-rose-200'
+            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+        }`}>
+          <span>{message}</span>
+          <button onClick={() => setMessage('')} className="text-surface-400 hover:text-surface-600">✕</button>
+        </div>
+      )}
 
       {tab === 'batches' && (
         <>
@@ -125,7 +136,7 @@ export default function ProductionDashboard() {
                         b.status === 'DISPATCH_ORDER_RAISED' ? 'badge-warning' :
                         b.status === 'DISPATCH_APPROVED' ? 'badge-info' :
                         b.status === 'DISPATCH_REJECTED' ? 'badge-danger' :
-                        'badge-primary'
+                        'badge-neutral'
                       }`}>{b.status}</span></td>
                       <td>
                         <div className="flex gap-1">

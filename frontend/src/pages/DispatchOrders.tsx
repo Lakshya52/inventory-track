@@ -180,20 +180,81 @@ export default function DispatchOrders() {
         <div className="card p-6 mb-6 space-y-4">
           <h2 className="text-sm font-semibold text-surface-800 flex items-center gap-2"><Plus size={16} /> Raise Dispatch Order</h2>
           <p className="text-xs text-surface-400">Select one or more QC-passed finished-goods batches. Each batch becomes an order for the same party and container; QC must approve before scanning.</p>
-          <label className="input-label">Batches *</label>
-          <select multiple className="input min-h-32" value={selectedBatchIds} onChange={(event) => setSelectedBatchIds(Array.from(event.target.selectedOptions, option => option.value))}>
-            {qcPassedBatches.map((batch: any) => (
-              <option key={batch.id} value={batch.id}>
-                {batch.product_name} ({batch.product_sku}) - {batch.batch_number} · {batch.grade_name || batch.product_grade || 'Grade missing'} · {batch.quantity} bags · {batch.bag_quantity_name || 'Bag qty missing'} · {batch.location_code || batch.storage_location || 'Location not set'} [{batch.status}]
-              </option>
-            ))}
-          </select>
-          {qcPassedBatches.length === 0 && <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-xl">No QC-passed batches are available right now.</p>}
-          <label className="input-label">Client *</label>
-          <select className="input" value={clientId} onChange={(event) => setClientId(event.target.value)}>
-            <option value="">-- Select a client --</option>
-            {clients.map(client => <option key={client.id} value={client.id}>{client.name}{client.gst_number ? ` · ${client.gst_number}` : ''}</option>)}
-          </select>
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="input-label mb-0">Select Batches * ({selectedBatchIds.length} selected)</label>
+              {qcPassedBatches.length > 0 && (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBatchIds(qcPassedBatches.map(b => String(b.id)))}
+                    className="text-xs text-brand-600 hover:text-brand-700 font-medium"
+                  >
+                    Select All
+                  </button>
+                  <span className="text-surface-300">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBatchIds([])}
+                    className="text-xs text-surface-500 hover:text-surface-700 font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+            {qcPassedBatches.length === 0 ? (
+              <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 p-3 rounded-xl">No QC-passed batches are currently available for dispatch.</p>
+            ) : (
+              <div className="max-h-56 overflow-y-auto rounded-xl border border-surface-200 divide-y divide-surface-100 bg-white">
+                {qcPassedBatches.map((batch: any) => {
+                  const isChecked = selectedBatchIds.includes(String(batch.id));
+                  return (
+                    <label
+                      key={batch.id}
+                      className={`flex items-start gap-3 p-3 cursor-pointer transition-colors ${
+                        isChecked ? 'bg-brand-50/60' : 'hover:bg-surface-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          const idStr = String(batch.id);
+                          if (e.target.checked) {
+                            setSelectedBatchIds(prev => [...prev, idStr]);
+                          } else {
+                            setSelectedBatchIds(prev => prev.filter(id => id !== idStr));
+                          }
+                        }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm text-surface-900">{batch.product_name}</span>
+                          <span className="font-mono text-xs bg-surface-100 text-surface-700 px-1.5 py-0.5 rounded">
+                            {batch.batch_number}
+                          </span>
+                          <span className="badge badge-success text-[10px]">{batch.grade_name || batch.product_grade || 'Standard'}</span>
+                        </div>
+                        <div className="text-xs text-surface-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                          <span>Qty: <strong>{batch.quantity} bags</strong> ({batch.bag_quantity_name || 'Standard size'})</span>
+                          <span>Location: {batch.location_code || batch.storage_location || 'Not set'}</span>
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="input-label">Client / Destination Party *</label>
+            <select className="select" value={clientId} onChange={(event) => setClientId(event.target.value)}>
+              <option value="">-- Select a client --</option>
+              {clients.map(client => <option key={client.id} value={client.id}>{client.name}{client.gst_number ? ` · GST: ${client.gst_number}` : ''}</option>)}
+            </select>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div><label className="input-label">Driver Name *</label><input className="input" value={driverName} onChange={(event) => setDriverName(event.target.value)} maxLength={150} /></div>
             <div><label className="input-label">Vehicle Number *</label><input className="input" value={vehicleNumber} onChange={(event) => setVehicleNumber(event.target.value)} maxLength={50} /></div>

@@ -1,11 +1,18 @@
-import { API_URL, REQUEST_TIMEOUT_MS } from '../config';
+import { API_URL, REQUEST_TIMEOUT_MS } from "../config";
+import { File } from "expo-file-system";
+
+// Log resolved API URL for debugging sync issues
+if (__DEV__) {
+  console.log("✅ [Sync] Resolved API_URL:", API_URL);
+}
+
 import type {
   AuthSession,
   Batch,
   SyncPullResponse,
   SyncPushResponse,
   User,
-} from '../types';
+} from "../types";
 
 export class ApiError extends Error {
   status: number;
@@ -13,21 +20,23 @@ export class ApiError extends Error {
 
   constructor(message: string, status = 0, body: any = null) {
     super(message);
-    this.name = 'ApiError';
+    this.name = "ApiError";
     this.status = status;
     this.body = body;
   }
 }
 
 let currentSession: AuthSession | null = null;
-let sessionUpdateHandler: ((session: AuthSession) => Promise<void> | void) | null = null;
+let sessionUpdateHandler:
+  | ((session: AuthSession) => Promise<void> | void)
+  | null = null;
 
 export function setApiSession(session: AuthSession | null): void {
   currentSession = session;
 }
 
 export function setSessionUpdateHandler(
-  handler: ((session: AuthSession) => Promise<void> | void) | null
+  handler: ((session: AuthSession) => Promise<void> | void) | null,
 ): void {
   sessionUpdateHandler = handler;
 }
@@ -45,13 +54,14 @@ async function parseResponse(response: Response): Promise<any> {
 async function rawRequest(
   path: string,
   options: RequestInit = {},
-  token?: string | null
+  token?: string | null,
 ): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
-    ...(isFormData ? {} : { 'content-type': 'application/json' }),
+    ...(isFormData ? {} : { "content-type": "application/json" }),
     ...(options.headers as Record<string, string> | undefined),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -65,18 +75,42 @@ async function rawRequest(
     const body = await parseResponse(response);
     if (!response.ok) {
       const message =
-        (body && typeof body === 'object' && (body.error || body.message)) ||
-        (typeof body === 'string' && body) ||
+        (body && typeof body === "object" && (body.error || body.message)) ||
+        (typeof body === "string" && body) ||
         `Request failed (${response.status})`;
       throw new ApiError(String(message), response.status, body);
+      console.log("[API] Error message:", message);
+      console.log("[API] Status:", response.status);
+      console.log("[API] Response body:", body);
+
+      throw new ApiError(message, response.status, body);
     }
     return body;
+    // } catch (error) {
+    //   if (error instanceof ApiError) throw error;
+    //   if ((error as any)?.name === 'AbortError') {
+    //     throw new ApiError('The server took too long to respond. Your work is saved offline.', 0);
+    //   }
+    //   throw new ApiError('Server unreachable. Your work is saved offline and will sync later.', 0);
+    // } finally {
+    //   clearTimeout(timer);
+    // }
   } catch (error) {
+    console.error("[API] Failed URL:", `${API_URL}${path}`);
+    console.error("[API] Original error:", error);
+
     if (error instanceof ApiError) throw error;
-    if ((error as any)?.name === 'AbortError') {
-      throw new ApiError('The server took too long to respond. Your work is saved offline.', 0);
+
+    if ((error as any)?.name === "AbortError") {
+      throw new ApiError("Request timed out. Your work is saved offline.", 0);
     }
-    throw new ApiError('Server unreachable. Your work is saved offline and will sync later.', 0);
+
+    throw new ApiError(
+      `Network error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      0,
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -84,10 +118,10 @@ async function rawRequest(
 
 async function refreshSession(): Promise<AuthSession> {
   if (!currentSession?.refreshToken) {
-    throw new ApiError('Session expired. Please sign in again.', 401);
+    throw new ApiError("Session expired. Please sign in again.", 401);
   }
-  const body = await rawRequest('/api/auth/refresh', {
-    method: 'POST',
+  const body = await rawRequest("/api/auth/refresh", {
+    method: "POST",
     body: JSON.stringify({ refreshToken: currentSession.refreshToken }),
   });
   const next: AuthSession = {
@@ -105,7 +139,7 @@ async function refreshSession(): Promise<AuthSession> {
 async function request<T>(
   path: string,
   options: RequestInit = {},
-  retryOnUnauthorized = true
+  retryOnUnauthorized = true,
 ): Promise<T> {
   try {
     return (await rawRequest(path, options, currentSession?.token)) as T;
@@ -124,9 +158,13 @@ async function request<T>(
 }
 
 export const api = {
-  async login(email: string, password: string, deviceUuid: string): Promise<AuthSession> {
-    const body = await rawRequest('/api/auth/login', {
-      method: 'POST',
+  async login(
+    email: string,
+    password: string,
+    deviceUuid: string,
+  ): Promise<AuthSession> {
+    const body = await rawRequest("/api/auth/login", {
+      method: "POST",
       body: JSON.stringify({ email, password, device_uuid: deviceUuid }),
     });
     const session: AuthSession = {
@@ -140,13 +178,13 @@ export const api = {
   },
 
   async me(): Promise<User & { is_active: number }> {
-    return request<User & { is_active: number }>('/api/auth/me');
+    return request<User & { is_active: number }>("/api/auth/me");
   },
 
   async logout(): Promise<void> {
     try {
-      await request('/api/auth/logout', {
-        method: 'POST',
+      await request("/api/auth/logout", {
+        method: "POST",
         body: JSON.stringify({ refreshToken: currentSession?.refreshToken }),
       });
     } catch {
@@ -155,54 +193,72 @@ export const api = {
   },
 
   async registerDevice(deviceUuid: string): Promise<void> {
-    await request('/api/sync/register', {
-      method: 'POST',
+    await request("/api/sync/register", {
+      method: "POST",
       body: JSON.stringify({
         device_uuid: deviceUuid,
-        platform: 'mobile',
-        app_version: '1.0.0',
+        platform: "mobile",
+        app_version: "1.0.0",
       }),
     });
   },
 
   async push(
     deviceUuid: string,
-    operations: { operation_id: string; type: string; payload: any; client_timestamp: string }[]
+    operations: {
+      operation_id: string;
+      type: string;
+      payload: any;
+      client_timestamp: string;
+    }[],
   ): Promise<SyncPushResponse> {
-    return request<SyncPushResponse>('/api/sync/push', {
-      method: 'POST',
+    return request<SyncPushResponse>("/api/sync/push", {
+      method: "POST",
       body: JSON.stringify({ device_uuid: deviceUuid, operations }),
     });
   },
 
-  async pull(since: number, deviceUuid: string, limit = 500): Promise<SyncPullResponse> {
+  async pull(
+    since: number,
+    deviceUuid: string,
+    limit = 500,
+  ): Promise<SyncPullResponse> {
     return request<SyncPullResponse>(
-      `/api/sync/pull?since=${encodeURIComponent(String(since))}&limit=${limit}&device_uuid=${encodeURIComponent(deviceUuid)}`
+      `/api/sync/pull?since=${encodeURIComponent(String(since))}&limit=${limit}&device_uuid=${encodeURIComponent(deviceUuid)}`,
     );
   },
 
   async uploadAttachments(uris: string[]): Promise<string[]> {
     if (uris.length === 0) return [];
+
     const form = new FormData();
+
     uris.forEach((uri, index) => {
-      const name = uri.split('/').pop() || `photo-${Date.now()}-${index}.jpg`;
-      const lower = name.toLowerCase();
-      const type = lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      form.append('images', { uri, name, type } as any);
+      const name = uri.split("/").pop() || `photo-${Date.now()}-${index}.jpg`;
+
+      const file = new File(uri);
+
+      form.append("images", file, name);
     });
 
-    const body = await request<{ files?: { filename: string }[] }>('/api/sync/attachments', {
-      method: 'POST',
-      body: form,
-    });
+    const body = await request<{ files?: { filename: string }[] }>(
+      "/api/sync/attachments",
+      {
+        method: "POST",
+        body: form,
+      },
+    );
+
     return (body.files || []).map((file) => String(file.filename));
   },
 
   async batchByBarcode(barcode: string): Promise<Batch> {
-    return request<Batch>(`/api/batches/barcode/${encodeURIComponent(barcode)}`);
+    return request<Batch>(
+      `/api/batches/barcode/${encodeURIComponent(barcode)}`,
+    );
   },
 
   async health(): Promise<{ status: string; database: string }> {
-    return rawRequest('/api/health');
+    return rawRequest("/api/health");
   },
 };

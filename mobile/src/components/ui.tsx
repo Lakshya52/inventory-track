@@ -9,9 +9,11 @@ import {
   TextInputProps,
   View,
   ViewStyle,
+  Animated,
 } from 'react-native';
 import { SafeAreaView, type Edges } from 'react-native-safe-area-context';
 import { colors, radius, shadows, spacing, statusColors } from '../theme';
+import { LinearGradient } from 'expo-linear-gradient';
 
 export function Screen({
   children,
@@ -198,19 +200,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  // Simplified Card: minimal border, no shadow, reduced padding
   card: {
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    ...shadows.card,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    // removed border and shadow for cleaner look
   },
+  // Simplified SectionHeader: compact layout, no extra spacing
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
+    // removed gap and marginBottom for tighter spacing
   },
   sectionTitle: {
     fontSize: 16,
@@ -222,20 +223,19 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
   },
+  // Simplified Button: flat design, consistent height, primary accent only
   button: {
-    minHeight: 46,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    paddingHorizontal: spacing.lg,
-    flexDirection: 'row',
+    minHeight: 44,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
   buttonSmall: {
-    minHeight: 34,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.sm,
+    minHeight: 36,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.xs,
   },
   buttonText: {
     fontSize: 14,
@@ -254,15 +254,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  // Simplified StatCard: flat design, no border or shadow, compact padding
   statCard: {
     flex: 1,
     minWidth: '44%',
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-    overflow: 'hidden',
-    ...shadows.card,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    // removed border and shadow for cleaner look
   },
   statIcon: {
     width: 34,

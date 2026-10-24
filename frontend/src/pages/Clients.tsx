@@ -14,8 +14,11 @@ export default function Clients() {
   const [address, setAddress] = useState('');
   const [gst, setGst] = useState('');
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
 
-  useEffect(() => { api.clients.list().then(setClients); }, []);
+  useEffect(() => {
+    api.clients.list().then(setClients).catch(err => setError(err.message || 'Could not load clients'));
+  }, []);
 
   const resetForm = () => { setName(''); setContact(''); setEmail(''); setPhone(''); setAddress(''); setGst(''); setError(''); setEditId(null); };
 
@@ -36,9 +39,19 @@ export default function Clients() {
 
   const handleDelete = async (id: number) => {
     if (!window.confirm('Delete this client?')) return;
-    await api.clients.delete(id);
-    api.clients.list().then(setClients);
+    try {
+      await api.clients.delete(id);
+      api.clients.list().then(setClients);
+    } catch (err: any) { setError(err.message); }
   };
+
+  const filteredClients = clients.filter(c =>
+    !search ||
+    c.name.toLowerCase().includes(search.toLowerCase()) ||
+    (c.contact_person || '').toLowerCase().includes(search.toLowerCase()) ||
+    (c.gst_number || '').toLowerCase().includes(search.toLowerCase()) ||
+    (c.email || '').toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
     <div className="page-container">
@@ -48,6 +61,25 @@ export default function Clients() {
           <p className="page-subtitle">Manage your client and customer relationships</p>
         </div>
         <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
+      </div>
+
+      {error && !showForm && (
+        <div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="text-rose-500 hover:text-rose-700"><X size={15} /></button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 mb-4">
+        <div className="relative flex-1 max-w-full sm:max-w-xs">
+          <input
+            className="input"
+            placeholder="Search clients..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+        {search && <button onClick={() => setSearch('')} className="btn-ghost btn-sm shrink-0"><X size={14} /> Clear</button>}
       </div>
 
       {showForm && (
@@ -85,7 +117,7 @@ export default function Clients() {
               <tr><th>Name</th><th>Contact</th><th>Email</th><th>Phone</th><th>GST</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {clients.map(c => (
+              {filteredClients.map(c => (
                 <tr key={c.id}>
                   <td><div className="font-medium text-surface-800">{c.name}</div></td>
                   <td className="text-sm">{c.contact_person || '-'}</td>
@@ -95,14 +127,14 @@ export default function Clients() {
                   <td>{c.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-danger">Inactive</span>}</td>
                   <td>
                     <div className="flex gap-1">
-                      <button onClick={() => handleEdit(c)} className="btn-ghost btn-sm"><Pencil size={14} /></button>
-                      <button onClick={() => handleDelete(c.id)} className="btn-ghost btn-sm text-rose-500"><Trash2 size={14} /></button>
+                      <button onClick={() => handleEdit(c)} className="btn-ghost btn-sm" title="Edit client"><Pencil size={14} /></button>
+                      <button onClick={() => handleDelete(c.id)} className="btn-ghost btn-sm text-rose-500" title="Delete client"><Trash2 size={14} /></button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {clients.length === 0 && (
-                <tr><td colSpan={7}><div className="empty-state"><div className="empty-icon"><Handshake size={24} className="text-surface-400" /></div><div className="empty-title">No clients added</div><div className="empty-desc">Add your first client to get started</div></div></td></tr>
+              {filteredClients.length === 0 && (
+                <tr><td colSpan={7}><div className="empty-state"><div className="empty-icon"><Handshake size={24} className="text-surface-400" /></div><div className="empty-title">{search ? 'No matching clients found' : 'No clients added'}</div><div className="empty-desc">{search ? 'Try a different search term' : 'Add your first client to get started'}</div></div></td></tr>
               )}
             </tbody>
           </table>

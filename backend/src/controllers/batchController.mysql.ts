@@ -148,8 +148,8 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     if (products.length === 0) return { status: 404 as const, error: 'Product not found' };
     const [jobInsert] = await conn.execute<any>(
       `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
-       VALUES (?, ?, ?, ?, 'ADMIN')`,
-      [jobCode, batch.product_id, batch.quantity, req.user!.userId]
+       VALUES (?, ?, ?, ?, ?)`,
+      [jobCode, batch.product_id, batch.quantity, req.user!.userId, req.user!.role]
     );
     const jobId = Number(jobInsert.insertId);
     const labels: Array<Record<string, unknown>> = [];

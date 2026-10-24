@@ -282,8 +282,8 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
      LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
      LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
      LEFT JOIN clients c ON c.id = d.client_id
-     WHERE d.id = ? AND d.raised_by = ? AND d.status = 'APPROVED' AND d.dispatched_at IS NOT NULL`,
-    [id, req.user!.userId]
+     WHERE d.id = ? AND (? = 'ADMIN' OR d.raised_by = ?) AND d.status = 'APPROVED' AND d.dispatched_at IS NOT NULL`,
+    [id, req.user!.role, req.user!.userId]
   );
   if (orders.length === 0) {
     res.status(404).json({ error: 'Dispatch order not found' });

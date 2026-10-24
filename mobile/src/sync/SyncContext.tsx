@@ -63,9 +63,12 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     syncingRef.current = true;
     setSyncing(true);
     setError(null);
+    console.log('🔄 Sync started');
     try {
       await syncNow(session);
+      console.log('✅ Sync completed');
     } catch (err: any) {
+      console.error('❌ Sync error:', err);
       setError(err?.message || 'Sync failed. Your work remains queued on this device.');
     } finally {
       syncingRef.current = false;
