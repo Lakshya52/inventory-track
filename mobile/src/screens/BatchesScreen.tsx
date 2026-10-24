@@ -166,14 +166,25 @@ async function createdBatchLabelSets(
   }));
 }
 
-async function downloadLabelSets(sets: { job: QrPrintJob; labels: QrLabel[] }[]): Promise<void> {
+async function downloadLabelSets(
+  sets: { job: QrPrintJob; labels: QrLabel[] }[]
+): Promise<'shared' | 'printed'> {
   const html = await labelSetsHtml(sets);
   const file = await Print.printToFileAsync({ html });
-  await Sharing.shareAsync(file.uri, {
-    mimeType: 'application/pdf',
-    dialogTitle: 'Save QR labels PDF',
-    UTI: 'com.adobe.pdf',
-  });
+  try {
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(file.uri, {
+        mimeType: 'application/pdf',
+        dialogTitle: 'Save QR labels PDF',
+        UTI: 'com.adobe.pdf',
+      });
+      return 'shared';
+    }
+  } catch (error) {
+    console.warn('Could not share QR label PDF; opening the print dialog instead.', error);
+  }
+  await Print.printAsync({ uri: file.uri });
+  return 'printed';
 }
 
 function SelectField({
@@ -432,13 +443,15 @@ export default function BatchesScreen() {
       });
       setCreateVisible(false);
       resetCreateForm();
-      setNotice(`${created.message} Choose where to save or share the QR PDF.`);
+      setNotice(`${created.message} Preparing the QR labels PDF...`);
       try {
         const labelSets = await createdBatchLabelSets(created);
-        await downloadLabelSets(labelSets);
-        setNotice(`${created.batches.length} batch${created.batches.length === 1 ? '' : 'es'} created. QR PDF opened for saving or sharing.`);
+        const output = await downloadLabelSets(labelSets);
+        setNotice(output === 'shared'
+          ? `${created.batches.length} batch${created.batches.length === 1 ? '' : 'es'} created. QR PDF opened for saving or sharing.`
+          : `${created.batches.length} batch${created.batches.length === 1 ? '' : 'es'} created. Save the QR PDF from the print dialog.`);
       } catch (err: any) {
-        qrDownloadError = `Batches were created, but the QR PDF could not be opened: ${err?.message || 'File sharing is unavailable.'}`;
+        qrDownloadError = `Batches were created, but the QR PDF could not be opened: ${err?.message || 'The print dialog is unavailable.'}`;
       }
       try {
         await sync();
@@ -504,8 +517,10 @@ export default function BatchesScreen() {
         batch.qr_job_id,
         detail.labels.map((label) => label.id)
       );
-      await downloadLabelSets([{ job: reprinted.job, labels: reprinted.labels }]);
-      setNotice(`${reprinted.labels.length} QR labels opened as a PDF for saving or sharing.`);
+      const output = await downloadLabelSets([{ job: reprinted.job, labels: reprinted.labels }]);
+      setNotice(output === 'shared'
+        ? `${reprinted.labels.length} QR labels opened as a PDF for saving or sharing.`
+        : `${reprinted.labels.length} QR labels opened in the print dialog. Choose Save as PDF to download them.`);
       await load();
     } catch (err: any) {
       setError(err?.message || 'Could not reprint this batch’s QR labels.');
@@ -535,12 +550,14 @@ export default function BatchesScreen() {
           detail.labels.map((label) => label.id)
         );
       }));
-      await downloadLabelSets(labelSets.map((detail) => ({
+      const output = await downloadLabelSets(labelSets.map((detail) => ({
         job: detail.job,
         labels: detail.labels,
       })));
       const labelCount = labelSets.reduce((total, detail) => total + detail.labels.length, 0);
-      setNotice(`${labelCount} QR labels across ${labelSets.length} batches opened as a PDF for saving or sharing.`);
+      setNotice(output === 'shared'
+        ? `${labelCount} QR labels across ${labelSets.length} batches opened as a PDF for saving or sharing.`
+        : `${labelCount} QR labels across ${labelSets.length} batches opened in the print dialog. Choose Save as PDF to download them.`);
       await load();
     } catch (err: any) {
       setError(err?.message || 'Could not print this batch group.');
