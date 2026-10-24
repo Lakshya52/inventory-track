@@ -44,6 +44,15 @@ function safeFileName(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'batches';
 }
 
+function hasUsableMasterId(row: any): boolean {
+  const id = Number(row?.id);
+  return Number.isSafeInteger(id) && id > 0;
+}
+
+function isActiveMaster(row: any): boolean {
+  return row?.is_active == null || row.is_active === true || Number(row.is_active) === 1;
+}
+
 export default function Batches() {
   const { user } = useAuth();
   const canManageBatches = user?.role === 'QC';
@@ -72,6 +81,11 @@ export default function Batches() {
   const [expiryDate, setExpiryDate] = useState('');
   const [shelfLocationId, setShelfLocationId] = useState('');
   const [notes, setNotes] = useState('');
+  const [finishGoodsSelection, setFinishGoodsSelection] = useState({
+    vendorId: '',
+    gradeId: '',
+    bagQuantityId: '',
+  });
 
   useEffect(() => {
     Promise.all([
@@ -86,9 +100,9 @@ export default function Batches() {
         setProducts(productRows);
         setBatches(batchRows);
         setLocations(locationRows.filter((location: any) => location.is_active));
-        setVendors(vendorRows.filter((vendor: any) => vendor.is_active !== 0));
-        setGrades(gradeRows.filter((grade: any) => grade.is_active !== 0));
-        setBagQuantities(bagQuantityRows.filter((value: any) => value.is_active !== 0));
+        setVendors(vendorRows.filter((vendor: any) => hasUsableMasterId(vendor) && isActiveMaster(vendor)));
+        setGrades(gradeRows.filter((grade: any) => hasUsableMasterId(grade) && isActiveMaster(grade)));
+        setBagQuantities(bagQuantityRows.filter((value: any) => hasUsableMasterId(value) && isActiveMaster(value)));
       })
       .catch((err: Error) => setError(err.message));
   }, []);
@@ -153,12 +167,19 @@ export default function Batches() {
 
   const handleFinishGoods = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const vendorId = Number(formData.get('vendor_id'));
-    const gradeId = Number(formData.get('grade_id'));
-    const bagQuantityId = Number(formData.get('bag_quantity_id'));
-    if (!finishBatch || ![vendorId, gradeId, bagQuantityId].every(value => Number.isInteger(value) && value > 0)) {
-      setError('Choose a supplier, grade, and bag quantity from each dropdown.');
+    const vendorId = Number(finishGoodsSelection.vendorId);
+    const gradeId = Number(finishGoodsSelection.gradeId);
+    const bagQuantityId = Number(finishGoodsSelection.bagQuantityId);
+    const isValidSelection = (id: number, rows: any[]) =>
+      Number.isSafeInteger(id) && id > 0 &&
+      rows.some(row => Number(row.id) === id && isActiveMaster(row));
+    if (!finishBatch) return;
+    if (
+      !isValidSelection(vendorId, vendors) ||
+      !isValidSelection(gradeId, grades) ||
+      !isValidSelection(bagQuantityId, bagQuantities)
+    ) {
+      setError('One or more selected supplier, grade, or bag-size records are no longer available. Refresh the page and select active values again.');
       return;
     }
     setError('');
@@ -180,6 +201,7 @@ export default function Batches() {
       }
       setFinishBatch(null);
       setShelfLocationId('');
+      setFinishGoodsSelection({ vendorId: '', gradeId: '', bagQuantityId: '' });
       setBatches(await api.batches.list());
     } catch (err: any) {
       setError(err.message || 'Could not complete finished-goods details');
@@ -375,13 +397,31 @@ export default function Batches() {
               </div>
               <div className="modal-body space-y-4">
                 <p className="text-sm text-surface-500">QC has passed. Select the finished-goods master values; individual bag QR labels will be generated when you submit.</p>
+                {(!vendors.length || !grades.length || !bagQuantities.length) && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    Some required dropdowns have no active records with valid IDs.
+                    {!vendors.length && ' Add or activate a supplier.'}
+                    {!grades.length && ' Add or activate a grade.'}
+                    {!bagQuantities.length && ' Add or activate a bag quantity.'}
+                  </div>
+                )}
                 <div className="form-grid">
                   <div className="space-y-1.5">
                     <label className="input-label" htmlFor="finish-vendor">Supplier *</label>
-                    <select id="finish-vendor" name="vendor_id" className="select" defaultValue="" required>
+                    <select
+                      id="finish-vendor"
+                      name="vendor_id"
+                      className="select"
+                      value={finishGoodsSelection.vendorId}
+                      onChange={event => {
+                        setFinishGoodsSelection(current => ({ ...current, vendorId: event.target.value }));
+                        setError('');
+                      }}
+                      required
+                    >
                       <option value="">-- Select supplier --</option>
                       {vendors.map(vendor => (
-                        <option key={vendor.id} value={vendor.id}>
+                        <option key={vendor.id} value={String(Number(vendor.id))}>
                           {vendor.vendor_code === 'SELF' ? 'Self (Manufacturing Plant)' : vendor.name}
                         </option>
                       ))}
@@ -389,16 +429,40 @@ export default function Batches() {
                   </div>
                   <div className="space-y-1.5">
                     <label className="input-label" htmlFor="finish-grade">Grade *</label>
-                    <select id="finish-grade" name="grade_id" className="select" defaultValue="" required>
+                    <select
+                      id="finish-grade"
+                      name="grade_id"
+                      className="select"
+                      value={finishGoodsSelection.gradeId}
+                      onChange={event => {
+                        setFinishGoodsSelection(current => ({ ...current, gradeId: event.target.value }));
+                        setError('');
+                      }}
+                      required
+                    >
                       <option value="">-- Select grade --</option>
-                      {grades.map(grade => <option key={grade.id} value={grade.id}>{grade.name}</option>)}
+                      {grades.map(grade => (
+                        <option key={grade.id} value={String(Number(grade.id))}>{grade.name}</option>
+                      ))}
                     </select>
                   </div>
                   <div className="space-y-1.5">
                     <label className="input-label" htmlFor="finish-bag-quantity">Bag quantity *</label>
-                    <select id="finish-bag-quantity" name="bag_quantity_id" className="select" defaultValue="" required>
+                    <select
+                      id="finish-bag-quantity"
+                      name="bag_quantity_id"
+                      className="select"
+                      value={finishGoodsSelection.bagQuantityId}
+                      onChange={event => {
+                        setFinishGoodsSelection(current => ({ ...current, bagQuantityId: event.target.value }));
+                        setError('');
+                      }}
+                      required
+                    >
                       <option value="">-- Select bag quantity --</option>
-                      {bagQuantities.map(value => <option key={value.id} value={value.id}>{value.quantity} {value.unit}</option>)}
+                      {bagQuantities.map(value => (
+                        <option key={value.id} value={String(Number(value.id))}>{value.quantity} {value.unit}</option>
+                      ))}
                     </select>
                   </div>
                   <div className="space-y-1.5">
@@ -470,7 +534,12 @@ export default function Batches() {
                             </span>
                           ))}
                       {canManageBatches && b.status === 'QC_PASSED' && !b.fg_details_completed_at && !b.qr_job_id && (
-                            <button onClick={() => { setFinishBatch(b); setShelfLocationId(''); setError(''); }} className="btn-primary btn-xs">
+                            <button onClick={() => {
+                              setFinishGoodsSelection({ vendorId: '', gradeId: '', bagQuantityId: '' });
+                              setFinishBatch(b);
+                              setShelfLocationId('');
+                              setError('');
+                            }} className="btn-primary btn-xs">
                           <PackageCheck size={13} /> Finish goods + QR
                         </button>
                       )}
