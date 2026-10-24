@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import {
   Microscope, CheckCircle, XCircle, Clock, TrendingUp, RefreshCw, Search,
   ChevronLeft, ChevronRight, ArrowRight, Image as ImageIcon, AlertTriangle, QrCode,
+  Tags,
 } from 'lucide-react';
 
 type PageData = { items: any[]; total: number; page: number; limit: number; pages: number };
@@ -135,8 +136,8 @@ export default function QCDashboard() {
           <button className="btn-secondary btn-sm" onClick={() => loadAll(true)} disabled={refreshing}>
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> Refresh
           </button>
-          <Link to="/qc/qr-codes" className="btn-secondary btn-sm">
-            <QrCode size={14} /> Generate QR Codes
+          <Link to="/batches" className="btn-secondary btn-sm">
+            <Tags size={14} /> Manage Batches
           </Link>
           <Link to="/qc" className="btn-primary btn-sm">
             <Microscope size={14} /> Start QC Group Scan
@@ -149,6 +150,25 @@ export default function QCDashboard() {
           <AlertTriangle size={16} /> {error}
         </div>
       )}
+
+      <div className="card mb-6 border border-brand-100 bg-brand-50/60 p-4 sm:p-5">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-brand-600 shadow-sm">
+            <QrCode size={18} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-surface-900">When are product QR labels generated?</h2>
+            <p className="mt-1 text-sm leading-6 text-surface-600">
+              QC manages batches from creation through QC decisions and finished-goods details. After a batch passes,
+              complete its details from <strong>Batches</strong> to generate one product QR label per unit.
+              QR labels can then be downloaded by Admin or reviewed and reprinted by QC from the QR Labels page.
+            </p>
+            <Link to="/qc/qr-codes" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 hover:text-brand-800">
+              Review QR Labels <ArrowRight size={13} />
+            </Link>
+          </div>
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         {cards.map((card) => (

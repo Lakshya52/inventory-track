@@ -204,6 +204,7 @@ export default function Vendors() {
                   <td>
                     <div className="font-medium text-surface-800">{vendor.name}</div>
                     <div className="font-mono text-xs text-surface-400">{vendor.vendor_code}</div>
+                    {vendor.vendor_code === 'SELF' && <span className="badge badge-info mt-1">Built-in plant supplier</span>}
                   </td>
                   <td className="text-sm">{vendor.contact_person || '-'}</td>
                   <td>
@@ -219,15 +220,19 @@ export default function Vendors() {
                   </td>
                   <td>
                     <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => openEdit(vendor)} className="btn-ghost btn-sm" title="Edit vendor"><Pencil size={14} /></button>
-                      <button
-                        onClick={() => handleToggle(vendor)}
-                        className={`btn-ghost btn-sm ${vendor.is_active === 1 ? 'text-amber-600' : 'text-emerald-600'}`}
-                        title={vendor.is_active === 1 ? 'Deactivate vendor' : 'Activate vendor'}
-                      >
-                        <Power size={14} />
-                      </button>
-                      <button onClick={() => handleDelete(vendor)} className="btn-ghost btn-sm text-rose-500 hover:text-rose-600" title="Delete vendor"><Trash2 size={14} /></button>
+                      {vendor.vendor_code === 'SELF'
+                        ? <span className="text-xs text-surface-400">Always available</span>
+                        : <>
+                          <button onClick={() => openEdit(vendor)} className="btn-ghost btn-sm" title="Edit vendor"><Pencil size={14} /></button>
+                          <button
+                            onClick={() => handleToggle(vendor)}
+                            className={`btn-ghost btn-sm ${vendor.is_active === 1 ? 'text-amber-600' : 'text-emerald-600'}`}
+                            title={vendor.is_active === 1 ? 'Deactivate vendor' : 'Activate vendor'}
+                          >
+                            <Power size={14} />
+                          </button>
+                          <button onClick={() => handleDelete(vendor)} className="btn-ghost btn-sm text-rose-500 hover:text-rose-600" title="Delete vendor"><Trash2 size={14} /></button>
+                        </>}
                     </div>
                   </td>
                 </tr>

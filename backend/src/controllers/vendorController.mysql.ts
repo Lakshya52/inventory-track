@@ -95,6 +95,13 @@ export async function update(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  const existing = await query<RowDataPacket[]>('SELECT vendor_code FROM vendors WHERE id = ?', [id]);
+  if (existing.length === 0) { res.status(404).json({ error: 'Vendor not found' }); return; }
+  if (existing[0].vendor_code === 'SELF') {
+    res.status(400).json({ error: 'The built-in Self supplier cannot be edited' });
+    return;
+  }
+
   const result = await execute(
     `UPDATE vendors SET
        name = ?, contact_person = ?, email = ?, phone = ?, address = ?, gst_number = ?,
@@ -123,6 +130,12 @@ export async function update(req: Request, res: Response): Promise<void> {
 export async function setStatus(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
   const active = req.body.is_active === true || req.body.is_active === 1 || req.body.is_active === '1';
+  const existing = await query<RowDataPacket[]>('SELECT vendor_code FROM vendors WHERE id = ?', [id]);
+  if (existing.length === 0) { res.status(404).json({ error: 'Vendor not found' }); return; }
+  if (existing[0].vendor_code === 'SELF' && !active) {
+    res.status(400).json({ error: 'The built-in Self supplier cannot be deactivated' });
+    return;
+  }
   const result = await execute('UPDATE vendors SET is_active = ? WHERE id = ?', [active ? 1 : 0, id]);
   if (result.affectedRows === 0) { res.status(404).json({ error: 'Vendor not found' }); return; }
 
@@ -132,8 +145,12 @@ export async function setStatus(req: Request, res: Response): Promise<void> {
 
 export async function remove(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const vendors = await query<RowDataPacket[]>('SELECT name FROM vendors WHERE id = ?', [id]);
+  const vendors = await query<RowDataPacket[]>('SELECT name, vendor_code FROM vendors WHERE id = ?', [id]);
   if (vendors.length === 0) { res.status(404).json({ error: 'Vendor not found' }); return; }
+  if (vendors[0].vendor_code === 'SELF') {
+    res.status(400).json({ error: 'The built-in Self supplier cannot be deleted' });
+    return;
+  }
 
   await execute('DELETE FROM vendors WHERE id = ?', [id]);
   await logActivity(req, 'VENDOR_DELETED', `Vendor "${vendors[0].name}" deleted`);

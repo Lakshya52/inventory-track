@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { Product, Batch } from '../types';
 import { Layers, Plus, Search, X, Printer, QrCode, PackageCheck, Download } from 'lucide-react';
 import { createQrPdfBlob, downloadQrPdf } from '../utils/qrPdf';
+import { useAuth } from '../contexts/AuthContext';
 
 const statusColors: Record<string, string> = {
   CREATED: 'badge-neutral',
@@ -44,6 +45,9 @@ function safeFileName(value: string): string {
 }
 
 export default function Batches() {
+  const { user } = useAuth();
+  const canManageBatches = user?.role === 'QC';
+  const canDownloadQr = user?.role === 'ADMIN' || canManageBatches;
   const [products, setProducts] = useState<Product[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
@@ -67,9 +71,6 @@ export default function Batches() {
   const [manufacturingDate, setManufacturingDate] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [shelfLocationId, setShelfLocationId] = useState('');
-  const [vendorId, setVendorId] = useState('');
-  const [gradeId, setGradeId] = useState('');
-  const [bagQuantityId, setBagQuantityId] = useState('');
   const [notes, setNotes] = useState('');
 
   useEffect(() => {
@@ -150,17 +151,22 @@ export default function Batches() {
     } catch (err: any) { setError(err.message); }
   };
 
-  const handleFinishGoods = async () => {
-    if (!finishBatch || !vendorId || !gradeId || !bagQuantityId) {
-      setError('Select supplier, grade, and bag quantity.');
+  const handleFinishGoods = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const vendorId = Number(formData.get('vendor_id'));
+    const gradeId = Number(formData.get('grade_id'));
+    const bagQuantityId = Number(formData.get('bag_quantity_id'));
+    if (!finishBatch || ![vendorId, gradeId, bagQuantityId].every(value => Number.isInteger(value) && value > 0)) {
+      setError('Choose a supplier, grade, and bag quantity from each dropdown.');
       return;
     }
     setError('');
     try {
       const result = await api.batches.finishGoods(finishBatch.id, {
-        vendor_id: Number(vendorId),
-        grade_id: Number(gradeId),
-        bag_quantity_id: Number(bagQuantityId),
+        vendor_id: vendorId,
+        grade_id: gradeId,
+        bag_quantity_id: bagQuantityId,
         shelf_location_id: shelfLocationId ? Number(shelfLocationId) : undefined,
       });
       const group = finishBatch.batch_group_id
@@ -173,9 +179,6 @@ export default function Batches() {
         setSuccess(`QR labels downloaded for ${finishBatch.batch_number}.`);
       }
       setFinishBatch(null);
-      setVendorId('');
-      setGradeId('');
-      setBagQuantityId('');
       setShelfLocationId('');
       setBatches(await api.batches.list());
     } catch (err: any) {
@@ -249,11 +252,17 @@ export default function Batches() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Batches</h1>
-          <p className="page-subtitle">Create one or more QC batches, then download a separate QR PDF for each batch as a ZIP.</p>
+          <p className="page-subtitle">
+            {canManageBatches
+              ? 'Create batches, manage QC outcomes, complete finished-goods details, and generate or reprint product QR labels.'
+              : 'Read-only overview of batches. Batch reports are available in Reports & Logs.'}
+          </p>
         </div>
-        <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
-          <Plus size={16} /> New Batch
-        </button>
+        {canManageBatches && (
+          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+            <Plus size={16} /> New Batch
+          </button>
+        )}
       </div>
 
       {success && (
@@ -263,7 +272,7 @@ export default function Batches() {
         </div>
       )}
 
-      {showForm && (
+      {canManageBatches && showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
           <div className="modal-content max-w-2xl" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
@@ -359,50 +368,56 @@ export default function Batches() {
       {finishBatch && (
         <div className="modal-overlay" onClick={() => setFinishBatch(null)}>
           <div className="modal-content max-w-2xl" onClick={event => event.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="text-base font-semibold text-surface-900">Finished-goods details — {finishBatch.batch_number}</h2>
-              <button onClick={() => setFinishBatch(null)} className="btn-ghost btn-sm"><X size={16} /></button>
-            </div>
-            <div className="modal-body space-y-4">
-              <p className="text-sm text-surface-500">QC has passed. Select the finished-goods master values; individual bag QR labels will be generated when you submit.</p>
-              <div className="form-grid">
-                <div className="space-y-1.5">
-                  <label className="input-label">Supplier *</label>
-                  <select className="select" value={vendorId} onChange={event => setVendorId(event.target.value)} required>
-                    <option value="">-- Select supplier --</option>
-                    {vendors.map(vendor => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="input-label">Grade *</label>
-                  <select className="select" value={gradeId} onChange={event => setGradeId(event.target.value)} required>
-                    <option value="">-- Select grade --</option>
-                    {grades.map(grade => <option key={grade.id} value={grade.id}>{grade.name}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="input-label">Bag quantity *</label>
-                  <select className="select" value={bagQuantityId} onChange={event => setBagQuantityId(event.target.value)} required>
-                    <option value="">-- Select bag quantity --</option>
-                    {bagQuantities.map(value => <option key={value.id} value={value.id}>{value.quantity} {value.unit}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="input-label">Godown / shelf location</label>
-                  <select className="select" value={shelfLocationId} onChange={event => setShelfLocationId(event.target.value)}>
-                    <option value="">-- Select location --</option>
-                    {locations.map(location => <option key={location.id} value={location.id}>{location.location_code}</option>)}
-                  </select>
-                </div>
+            <form onSubmit={handleFinishGoods}>
+              <div className="modal-header">
+                <h2 className="text-base font-semibold text-surface-900">Finished-goods details — {finishBatch.batch_number}</h2>
+                <button type="button" onClick={() => setFinishBatch(null)} className="btn-ghost btn-sm"><X size={16} /></button>
               </div>
-              {error && <div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">{error}</div>}
-            </div>
-            <div className="modal-footer">
-              <button onClick={() => setFinishBatch(null)} className="btn-secondary">Cancel</button>
-              <button onClick={() => void handleFinishGoods()} className="btn-primary">
-                <PackageCheck size={15} /> Save details & print bag labels
-              </button>
-            </div>
+              <div className="modal-body space-y-4">
+                <p className="text-sm text-surface-500">QC has passed. Select the finished-goods master values; individual bag QR labels will be generated when you submit.</p>
+                <div className="form-grid">
+                  <div className="space-y-1.5">
+                    <label className="input-label" htmlFor="finish-vendor">Supplier *</label>
+                    <select id="finish-vendor" name="vendor_id" className="select" defaultValue="" required>
+                      <option value="">-- Select supplier --</option>
+                      {vendors.map(vendor => (
+                        <option key={vendor.id} value={vendor.id}>
+                          {vendor.vendor_code === 'SELF' ? 'Self (Manufacturing Plant)' : vendor.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="input-label" htmlFor="finish-grade">Grade *</label>
+                    <select id="finish-grade" name="grade_id" className="select" defaultValue="" required>
+                      <option value="">-- Select grade --</option>
+                      {grades.map(grade => <option key={grade.id} value={grade.id}>{grade.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="input-label" htmlFor="finish-bag-quantity">Bag quantity *</label>
+                    <select id="finish-bag-quantity" name="bag_quantity_id" className="select" defaultValue="" required>
+                      <option value="">-- Select bag quantity --</option>
+                      {bagQuantities.map(value => <option key={value.id} value={value.id}>{value.quantity} {value.unit}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="input-label" htmlFor="finish-location">Godown / shelf location</label>
+                    <select id="finish-location" className="select" value={shelfLocationId} onChange={event => setShelfLocationId(event.target.value)}>
+                      <option value="">-- Select location --</option>
+                      {locations.map(location => <option key={location.id} value={location.id}>{location.location_code}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {error && <div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">{error}</div>}
+              </div>
+              <div className="modal-footer">
+                <button type="button" onClick={() => setFinishBatch(null)} className="btn-secondary">Cancel</button>
+                <button type="submit" className="btn-primary">
+                  <PackageCheck size={15} /> Save details & print bag labels
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -419,7 +434,7 @@ export default function Batches() {
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Product</th><th>Lot #</th><th>Products / contents</th><th>Supplier / grade</th><th>MFG</th><th>Expiry</th><th>Location</th><th>Status</th><th>Actions</th><th>Created</th></tr>
+              <tr><th>Product</th><th>Lot #</th><th>Products / contents</th><th>Supplier / grade</th><th>MFG</th><th>Expiry</th><th>Location</th><th>Status</th>{canDownloadQr && <th>Actions</th>}<th>Created</th></tr>
             </thead>
             <tbody>
               {filteredBatches.map(b => {
@@ -436,7 +451,7 @@ export default function Batches() {
                   <td className="text-xs text-surface-500">{b.expiry_date ? new Date(b.expiry_date).toLocaleDateString() : '-'}</td>
                   <td className="text-xs">{b.location_code || b.storage_location || '-'}</td>
                   <td><span className={`badge ${statusColors[b.status] || 'badge-neutral'}`}>{statusLabels[b.status] || b.status}</span></td>
-                  <td>
+                  {canDownloadQr && <td>
                     <div className="flex items-center gap-1">
                       {b.qr_job_id && <button onClick={() => handlePrintQR(b)} className="btn-ghost btn-sm" title="Download QR labels"><Printer size={14} /></button>}
                       {batchGroup && batchGroup.length > 1 && isFirstInGroup &&
@@ -454,22 +469,22 @@ export default function Batches() {
                               QR {readyCount}/{batchGroup.length}
                             </span>
                           ))}
-                      {b.status === 'QC_PASSED' && !b.fg_details_completed_at && !b.qr_job_id && (
-                        <button onClick={() => { setFinishBatch(b); setVendorId(''); setGradeId(''); setBagQuantityId(''); setShelfLocationId(''); setError(''); }} className="btn-primary btn-xs">
-                          <PackageCheck size={13} /> Finish goods
+                      {canManageBatches && b.status === 'QC_PASSED' && !b.fg_details_completed_at && !b.qr_job_id && (
+                            <button onClick={() => { setFinishBatch(b); setShelfLocationId(''); setError(''); }} className="btn-primary btn-xs">
+                          <PackageCheck size={13} /> Finish goods + QR
                         </button>
                       )}
-                      {b.status === 'QC_FAILED' && (
+                      {canManageBatches && b.status === 'QC_FAILED' && (
                         <button onClick={() => sendForQcAgain(b)} className="btn-secondary btn-xs">Send for re-QC</button>
                       )}
                     </div>
-                  </td>
+                  </td>}
                   <td className="text-xs text-surface-400">{new Date(b.created_at).toLocaleDateString()}</td>
                 </tr>
                 );
               })}
               {filteredBatches.length === 0 && (
-                <tr><td colSpan={10}><div className="empty-state"><div className="empty-icon"><Layers size={24} className="text-surface-400" /></div><div className="empty-title">No batches found</div><div className="empty-desc">{searchQuery ? 'Try a different search term' : 'Create your first batch'}</div></div></td></tr>
+                <tr><td colSpan={canDownloadQr ? 10 : 9}><div className="empty-state"><div className="empty-icon"><Layers size={24} className="text-surface-400" /></div><div className="empty-title">No batches found</div><div className="empty-desc">{searchQuery ? 'Try a different search term' : canManageBatches ? 'Create your first batch' : 'Batches created by QC will appear here'}</div></div></td></tr>
               )}
             </tbody>
           </table>

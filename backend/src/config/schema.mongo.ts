@@ -142,6 +142,26 @@ export async function ensureAdminSchema(): Promise<void> {
   const ctx = await getContext();
   await ensureIndexes(ctx);
   await syncCounters(ctx, COLLECTIONS);
+  const selfVendor = await ctx.findOne('vendors', { vendor_code: 'SELF' }, { projection: { _id: 0, id: 1 } });
+  if (selfVendor) {
+    await ctx.updateOne('vendors', { id: Number(selfVendor.id) }, {
+      $set: { name: 'Self', category: 'Internal', is_active: 1 },
+    });
+  } else {
+    try {
+      await ctx.insert('vendors', {
+        vendor_code: 'SELF',
+        name: 'Self',
+        category: 'Internal',
+        is_active: 1,
+      });
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+      await ctx.updateOne('vendors', { vendor_code: 'SELF' }, {
+        $set: { name: 'Self', category: 'Internal', is_active: 1 },
+      });
+    }
+  }
   const products = await ctx.find(
     'products',
     { grade: { $type: 'string', $ne: '' } },

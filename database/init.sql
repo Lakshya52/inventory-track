@@ -101,6 +101,10 @@ CREATE TABLE IF NOT EXISTS vendors (
     KEY idx_vendors_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+INSERT INTO vendors (vendor_code, name, category, is_active)
+VALUES ('SELF', 'Self', 'Internal', 1)
+ON DUPLICATE KEY UPDATE name = 'Self', category = 'Internal', is_active = 1;
+
 CREATE TABLE IF NOT EXISTS grades (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,

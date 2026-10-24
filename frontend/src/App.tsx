@@ -59,12 +59,12 @@ export default function App() {
         <Route path="/clients" element={<ProtectedRoute roles={['ADMIN']}><Clients /></ProtectedRoute>} />
         <Route path="/vendors" element={<ProtectedRoute roles={['ADMIN']}><Vendors /></ProtectedRoute>} />
         <Route path="/masters" element={<ProtectedRoute roles={['ADMIN']}><Masters /></ProtectedRoute>} />
-        <Route path="/batches" element={<ProtectedRoute roles={['ADMIN']}><Batches /></ProtectedRoute>} />
+        <Route path="/batches" element={<ProtectedRoute roles={['ADMIN', 'QC']}><Batches /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute roles={['ADMIN', 'QC']}><Products readOnly={user?.role !== 'ADMIN'} /></ProtectedRoute>} />
 
         {/* QC */}
         <Route path="/qc" element={<ProtectedRoute roles={['QC']}><QCScan /></ProtectedRoute>} />
-        <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN']}><QRLabels /></ProtectedRoute>} />
+        <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QRLabels /></ProtectedRoute>} />
         <Route path="/qc-dashboard" element={<ProtectedRoute roles={['QC']}><QCDashboard /></ProtectedRoute>} />
 
         {/* Dispatch */}

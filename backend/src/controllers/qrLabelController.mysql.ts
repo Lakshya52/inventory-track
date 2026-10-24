@@ -29,7 +29,7 @@ async function jobDetail(id: number): Promise<{ job: any; labels: any[] } | null
 
 export async function create(req: Request, res: Response): Promise<void> {
   res.status(410).json({
-    error: 'QR labels are generated automatically when an administrator creates a batch.',
+    error: 'QR labels are generated automatically when QC completes finished-goods details for a passed batch.',
   });
 }
 

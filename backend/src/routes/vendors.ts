@@ -4,10 +4,10 @@ import { authenticate, authorize } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.get('/', authorize('ADMIN', 'QC'), list);
+router.get('/:id', authorize('ADMIN'), getById);
 router.use(authorize('ADMIN'));
 
-router.get('/', list);
-router.get('/:id', getById);
 router.post('/', create);
 router.put('/:id', update);
 router.patch('/:id/status', setStatus);

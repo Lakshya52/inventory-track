@@ -97,6 +97,12 @@ export async function update(req: Request, res: Response): Promise<void> {
   }
 
   const ctx = await getContext();
+  const existing = await ctx.findOne('vendors', { id }, { projection: { _id: 0, vendor_code: 1 } });
+  if (!existing) { res.status(404).json({ error: 'Vendor not found' }); return; }
+  if (existing.vendor_code === 'SELF') {
+    res.status(400).json({ error: 'The built-in Self supplier cannot be edited' });
+    return;
+  }
   const result = await ctx.updateOne('vendors', { id }, {
     $set: {
       name: String(name).trim(),
@@ -121,6 +127,12 @@ export async function setStatus(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const active = req.body.is_active === true || req.body.is_active === 1 || req.body.is_active === '1';
   const ctx = await getContext();
+  const existing = await ctx.findOne('vendors', { id }, { projection: { _id: 0, vendor_code: 1 } });
+  if (!existing) { res.status(404).json({ error: 'Vendor not found' }); return; }
+  if (existing.vendor_code === 'SELF' && !active) {
+    res.status(400).json({ error: 'The built-in Self supplier cannot be deactivated' });
+    return;
+  }
   const result = await ctx.updateOne('vendors', { id }, { $set: { is_active: active ? 1 : 0 } });
   if (result.matchedCount === 0) { res.status(404).json({ error: 'Vendor not found' }); return; }
 
@@ -131,8 +143,12 @@ export async function setStatus(req: Request, res: Response): Promise<void> {
 export async function remove(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const ctx = await getContext();
-  const vendor = await ctx.findOne('vendors', { id }, { projection: { name: 1 } });
+  const vendor = await ctx.findOne('vendors', { id }, { projection: { name: 1, vendor_code: 1 } });
   if (!vendor) { res.status(404).json({ error: 'Vendor not found' }); return; }
+  if (vendor.vendor_code === 'SELF') {
+    res.status(400).json({ error: 'The built-in Self supplier cannot be deleted' });
+    return;
+  }
 
   await ctx.deleteOne('vendors', { id });
   await logActivity(req, 'VENDOR_DELETED', `Vendor "${vendor.name}" deleted`);

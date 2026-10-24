@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle, Download, FileText, History, Loader2, Package,
-  Printer, QrCode, RefreshCw, Search, X,
+  AlertTriangle, CheckCircle, Download, History, Loader2, Package,
+  Printer, RefreshCw, Search, X,
 } from 'lucide-react';
 import { api } from '../services/api';
-import { Product } from '../types';
+import { useAuth } from '../contexts/AuthContext';
 import { downloadQrPdf, printQrLabels, QrJob, QrLabel } from '../utils/qrPdf';
 
 type QrJobRow = QrJob & {
@@ -22,28 +22,20 @@ function formatDate(value?: string | null): string {
 }
 
 export default function QRLabels() {
-  const [products, setProducts] = useState<Product[]>([]);
+  const { user } = useAuth();
+  const canReprint = user?.role === 'QC';
   const [jobs, setJobs] = useState<QrJobRow[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [productId, setProductId] = useState('');
-  const [quantity, setQuantity] = useState('10');
-  const [generating, setGenerating] = useState(false);
-  const [activeJob, setActiveJob] = useState<{ job: QrJobRow; labels: QrLabel[] } | null>(null);
   const [reprintJob, setReprintJob] = useState<QrJobRow | null>(null);
   const [reprintLabels, setReprintLabels] = useState<QrLabel[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [reprintQty, setReprintQty] = useState('1');
   const [reprintLoading, setReprintLoading] = useState(false);
   const [reprinting, setReprinting] = useState(false);
-
-  const selectedProduct = useMemo(
-    () => products.find((product) => product.id === Number(productId)),
-    [productId, products]
-  );
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
@@ -73,32 +65,6 @@ export default function QRLabels() {
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
-
-  const handleGenerate = async () => {
-    setError('');
-    setSuccess('');
-    if (!productId) {
-      setError('Select a product first');
-      return;
-    }
-    const count = Number(quantity);
-    if (!Number.isInteger(count) || count < 1 || count > 1000) {
-      setError('Enter a whole-number quantity between 1 and 1000');
-      return;
-    }
-    setGenerating(true);
-    try {
-      const result = await api.qc.qrJobs.create({ product_id: Number(productId), quantity: count });
-      setActiveJob(result);
-      setSuccess(`${count} unique QR label${count === 1 ? '' : 's'} generated. The PDF contains exactly ${count} label${count === 1 ? '' : 's'}.`);
-      await downloadQrPdf(result.labels, result.job);
-      await load();
-    } catch (err: any) {
-      setError(err.message || 'Could not generate QR labels');
-    } finally {
-      setGenerating(false);
-    }
-  };
 
   const openReprint = async (job: QrJobRow) => {
     setError('');
@@ -182,7 +148,12 @@ export default function QRLabels() {
       <div className="page-header">
         <div>
           <h1 className="page-title">QR Code Labels</h1>
-          <p className="page-subtitle">Generate, print, and reprint exactly the QR labels QC needs</p>
+          <p className="page-subtitle">
+            {canReprint
+              ? 'Review, download, and reprint product labels generated from QC-managed batches.'
+              : 'View and download QR labels generated for batches managed by QC.'}
+            {' '}New labels are created when QC completes finished-goods details for a passed batch.
+          </p>
         </div>
         <button className="btn-secondary btn-sm" onClick={() => load(true)} disabled={refreshing}>
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> Refresh
@@ -233,15 +204,17 @@ export default function QRLabels() {
                         <button className="btn-secondary btn-xs" onClick={() => downloadJob(job)}>
                           <Download size={13} /> PDF
                         </button>
-                        <button className="btn-primary btn-xs" onClick={() => openReprint(job)}>
-                          <Printer size={13} /> Reprint
-                        </button>
+                        {canReprint && (
+                          <button className="btn-primary btn-xs" onClick={() => openReprint(job)}>
+                            <Printer size={13} /> Reprint
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
                 ))}
                 {jobs.length === 0 && (
-                  <tr><td colSpan={6}><div className="empty-state"><div className="empty-icon"><Package size={24} className="text-surface-400" /></div><div className="empty-title">No QR labels generated yet</div><div className="empty-desc">Create a batch to generate one label per unit.</div></div></td></tr>
+                  <tr><td colSpan={6}><div className="empty-state"><div className="empty-icon"><Package size={24} className="text-surface-400" /></div><div className="empty-title">No QR labels generated yet</div><div className="empty-desc">In Batches, finish goods for a QC-passed batch. The system then creates one product label per unit.</div></div></td></tr>
                 )}
               </tbody>
             </table>
@@ -249,7 +222,7 @@ export default function QRLabels() {
         </div>
       </div>
 
-      {reprintJob && (
+      {canReprint && reprintJob && (
         <div className="modal-overlay" onClick={() => !reprinting && setReprintJob(null)}>
           <div className="modal-content max-w-3xl" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">

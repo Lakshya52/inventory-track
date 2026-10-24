@@ -27,7 +27,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
     items: [
       { label: 'Products', path: '/products', icon: <Package size={18} />, roles: ['ADMIN', 'QC'] },
       { label: 'Shelf Locations', path: '/shelf-locations', icon: <MapPin size={18} />, roles: ['ADMIN'] },
-      { label: 'Batches', path: '/batches', icon: <Tags size={18} />, roles: ['ADMIN'] },
+      { label: 'Batches', path: '/batches', icon: <Tags size={18} />, roles: ['ADMIN', 'QC'] },
       { label: 'Clients', path: '/clients', icon: <Handshake size={18} />, roles: ['ADMIN'] },
       { label: 'Vendors', path: '/vendors', icon: <Handshake size={18} />, roles: ['ADMIN'] },
       { label: 'Masters', path: '/masters', icon: <Settings2 size={18} />, roles: ['ADMIN'] },
@@ -39,7 +39,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
     items: [
       { label: 'QC Dashboard', path: '/qc-dashboard', icon: <BarChart3 size={18} />, roles: ['QC'] },
       { label: 'QC Group Scan', path: '/qc', icon: <Microscope size={18} />, roles: ['QC'] },
-      { label: 'QR Labels', path: '/qc/qr-codes', icon: <QrCode size={18} />, roles: ['ADMIN'] },
+      { label: 'QR Labels', path: '/qc/qr-codes', icon: <QrCode size={18} />, roles: ['ADMIN', 'QC'] },
     ],
   },
   {
