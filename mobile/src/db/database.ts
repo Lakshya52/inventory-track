@@ -487,8 +487,14 @@ export async function searchBatches(query: string, statuses?: string[], limit = 
   );
 }
 
-export async function getQcRecords(limit = 50, offset = 0): Promise<QcRecord[]> {
+export async function getQcRecords(limit = 50, offset = 0, testerId?: number): Promise<QcRecord[]> {
   const db = await getDb();
+  if (testerId !== undefined) {
+    return db.getAllAsync<QcRecord>(
+      'SELECT * FROM qc_records WHERE tester_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+      [testerId, limit, offset]
+    );
+  }
   return db.getAllAsync<QcRecord>(
     'SELECT * FROM qc_records ORDER BY created_at DESC LIMIT ? OFFSET ?',
     [limit, offset]

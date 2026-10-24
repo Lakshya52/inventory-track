@@ -262,15 +262,34 @@ async function getBatchesForUpdate(
     batchIds
   );
   const scannedCounts = new Map<number, number>();
+  const scannedCodes = new Map<number, Set<string>>();
   for (const barcode of barcodes) {
     const batchId = codeToBatch.get(barcode)!;
     scannedCounts.set(batchId, (scannedCounts.get(batchId) || 0) + 1);
+    const codes = scannedCodes.get(batchId) || new Set<string>();
+    codes.add(barcode);
+    scannedCodes.set(batchId, codes);
+  }
+  const [expectedLabelRows] = await conn.query<RowDataPacket[]>(
+    `SELECT batch_id, qr_value
+     FROM qr_labels
+     WHERE batch_id IN (${batchPlaceholders})`,
+    batchIds
+  );
+  const expectedCodes = new Map<number, Set<string>>();
+  for (const row of expectedLabelRows) {
+    const batchId = Number(row.batch_id);
+    const codes = expectedCodes.get(batchId) || new Set<string>();
+    codes.add(String(row.qr_value));
+    expectedCodes.set(batchId, codes);
   }
   const incomplete = batches.filter((batch) =>
-    Number(batch.quantity) > 1 &&
     Number(batch.qr_count) > 0 &&
     (Number(batch.qr_count) !== Number(batch.quantity) ||
-      scannedCounts.get(Number(batch.id)) !== Number(batch.qr_count))
+      scannedCounts.get(Number(batch.id)) !== Number(batch.qr_count) ||
+      [...(expectedCodes.get(Number(batch.id)) || [])].some(
+        (code) => !scannedCodes.get(Number(batch.id))?.has(code)
+      ))
   );
   if (incomplete.length > 0) {
     throw new SyncConflictError('Scan every unit QR code in each batch before submitting this group', {
@@ -343,7 +362,7 @@ async function applyQcSubmit(
   const images = imageList(payload);
 
   const batch = await getBatchForUpdate(conn, payload);
-  if (Number(batch.quantity) > 1 && Number(batch.qr_count) > 0) {
+  if (Number(batch.qr_count) > 0) {
     throw new SyncConflictError('Scan every unit QR code in the batch before submitting QC', {
       batch_id: batch.id,
       batch_number: batch.batch_number,

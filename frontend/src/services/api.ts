@@ -1,5 +1,7 @@
 // In local development API_URL is unset and Vite proxies /api to the backend.
 // On Vercel, set API_URL to the Render service origin.
+import type { QrJob, QrLabel } from '../utils/qrPdf';
+
 const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '');
 const BASE_URL = `${API_ORIGIN}/api`;
 
@@ -170,8 +172,19 @@ export const api = {
       manufacturing_date?: string;
       expiry_date?: string;
       notes?: string;
-    }) =>
-      request<any>('/batches', { method: 'POST', body: JSON.stringify(data) }),
+    }): Promise<{
+      batch_group_id: string;
+      batch_count: number;
+      batches: Array<{
+        id: number;
+        batch_number: string;
+        barcode_value: string;
+        qr_job: QrJob;
+        labels: QrLabel[];
+      }>;
+      message: string;
+    }> =>
+      request('/batches', { method: 'POST', body: JSON.stringify(data) }),
     finishGoods: (id: number, data: { vendor_id: number; grade_id: number; bag_quantity_id: number; shelf_location_id?: number }) =>
       request<any>(`/batches/${id}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
     getByBarcode: (barcode: string) =>

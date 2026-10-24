@@ -3,21 +3,14 @@ import { Tabs } from 'expo-router/js-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/AuthContext';
-import { useSync } from '../../sync/SyncContext';
 import { colors } from '../../theme';
 
 export default function TabsLayout() {
   const { session } = useAuth();
-  const { pendingCount, conflictCount } = useSync();
   const insets = useSafeAreaInsets();
   const bottomPadding = Math.max(insets.bottom, 8);
 
   if (!session) return null;
-
-  const role = session.user.role;
-  const isFieldRole = role === 'QC' || role === 'DISPATCH';
-  const badgeCount = pendingCount + conflictCount;
-  const scanTitle = role === 'QC' ? 'QC Scan' : 'Dispatch';
 
   return (
     <Tabs
@@ -47,17 +40,25 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Dashboard',
+          title: 'Home',
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons name={focused ? 'home' : 'home-outline'} size={size} color={color as string} />
           ),
         }}
       />
       <Tabs.Screen
+        name="batches"
+        options={{
+          title: 'Batches',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons name={focused ? 'albums' : 'albums-outline'} size={size} color={color as string} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="scan"
         options={{
-          title: scanTitle,
-          href: isFieldRole ? undefined : null,
+          title: 'QR Code',
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons name={focused ? 'qr-code' : 'qr-code-outline'} size={size} color={color as string} />
           ),
@@ -67,7 +68,6 @@ export default function TabsLayout() {
         name="history"
         options={{
           title: 'History',
-          href: isFieldRole ? undefined : null,
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons name={focused ? 'time' : 'time-outline'} size={size} color={color as string} />
           ),
@@ -76,15 +76,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="sync"
         options={{
-          title: 'Sync',
-          tabBarBadge: badgeCount > 0 ? (badgeCount > 99 ? '99+' : badgeCount) : undefined,
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons
-              name={focused ? 'cloud-upload' : 'cloud-upload-outline'}
-              size={size}
-              color={color as string}
-            />
-          ),
+          href: null,
         }}
       />
       <Tabs.Screen

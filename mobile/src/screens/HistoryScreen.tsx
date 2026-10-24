@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
@@ -17,17 +17,25 @@ export default function HistoryScreen() {
   const [qcRecords, setQcRecords] = useState<QcRecord[]>([]);
   const [dispatchRecords, setDispatchRecords] = useState<DispatchRecord[]>([]);
   const [search, setSearch] = useState('');
+  const [resultFilter, setResultFilter] = useState<'ALL' | 'PASS' | 'FAIL'>('ALL');
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const role = session?.user.role;
+  const userId = session?.user.id;
 
   const load = useCallback(async () => {
-    if (role === 'QC') {
-      setQcRecords(await getQcRecords(150));
-    } else if (role === 'DISPATCH') {
-      setDispatchRecords(await getDispatchRecords(150));
+    setLoadError('');
+    try {
+      if (role === 'QC' && userId) {
+        setQcRecords(await getQcRecords(150, 0, userId));
+      } else if (role === 'DISPATCH') {
+        setDispatchRecords(await getDispatchRecords(150));
+      }
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not load history from this device.');
     }
-  }, [role]);
+  }, [role, userId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -40,6 +48,8 @@ export default function HistoryScreen() {
     try {
       await sync();
       await load();
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not refresh history.');
     } finally {
       setRefreshing(false);
     }
@@ -47,13 +57,14 @@ export default function HistoryScreen() {
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    if (!needle) return role === 'QC' ? qcRecords : dispatchRecords;
-    return (role === 'QC' ? qcRecords : dispatchRecords).filter((item: any) =>
-      [item.product_name, item.product_sku, item.batch_number]
+    return (role === 'QC' ? qcRecords : dispatchRecords).filter((item: any) => {
+      const matchesSearch = !needle || [item.product_name, item.product_sku, item.batch_number]
         .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(needle))
-    );
-  }, [dispatchRecords, qcRecords, role, search]);
+        .some((value) => String(value).toLowerCase().includes(needle));
+      const matchesResult = role !== 'QC' || resultFilter === 'ALL' || item.result === resultFilter;
+      return matchesSearch && matchesResult;
+    });
+  }, [dispatchRecords, qcRecords, role, search, resultFilter]);
 
   if (role === 'ADMIN' || !role) {
     return <LimitedAccessScreen />;
@@ -79,6 +90,13 @@ export default function HistoryScreen() {
           </View>
         </View>
 
+        {loadError ? (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle-outline" size={17} color={colors.danger} />
+            <Text style={styles.errorText}>{loadError}</Text>
+          </View>
+        ) : null}
+
         <Card style={{ gap: spacing.md }}>
           <SectionHeader
             title="All records"
@@ -91,6 +109,26 @@ export default function HistoryScreen() {
             placeholder="Search product, SKU, or batch"
             autoCapitalize="none"
           />
+          {role === 'QC' ? (
+            <View style={styles.filterRow}>
+              {(['ALL', 'PASS', 'FAIL'] as const).map((filter) => {
+                const selected = resultFilter === filter;
+                return (
+                  <Pressable
+                    key={filter}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => setResultFilter(filter)}
+                    style={[styles.filterChip, selected && styles.filterChipSelected]}
+                  >
+                    <Text style={[styles.filterText, selected && styles.filterTextSelected]}>
+                      {filter === 'ALL' ? 'All results' : filter}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
 
           {filtered.length === 0 ? (
             <EmptyState
@@ -114,6 +152,11 @@ export default function HistoryScreen() {
                   </Text>
                   {record.remarks ? (
                     <Text style={styles.recordRemarks} numberOfLines={2}>{record.remarks}</Text>
+                  ) : null}
+                  {record.images && photoCount(record.images) > 0 ? (
+                    <Text style={styles.recordPhotoCount}>
+                      {photoCount(record.images)} photo{photoCount(record.images) === 1 ? '' : 's'}
+                    </Text>
                   ) : null}
                 </View>
                 <Badge status={record.result === 'PASS' ? 'QC_PASSED' : 'QC_FAILED'} label={record.result} />
@@ -142,6 +185,15 @@ export default function HistoryScreen() {
       </ScrollView>
     </Screen>
   );
+}
+
+function photoCount(images: string): number {
+  try {
+    const parsed = JSON.parse(images);
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 const styles = StyleSheet.create({
@@ -177,4 +229,26 @@ const styles = StyleSheet.create({
   recordTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
   recordMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   recordRemarks: { fontSize: 11, color: colors.textFaint, marginTop: 3, lineHeight: 15 },
+  filterRow: { flexDirection: 'row', gap: spacing.sm },
+  filterChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.surface,
+  },
+  filterChipSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  filterText: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
+  filterTextSelected: { color: colors.primaryDark },
+  recordPhotoCount: { fontSize: 11, color: colors.info, marginTop: 3 },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: 12,
+    backgroundColor: colors.dangerSoft,
+  },
+  errorText: { flex: 1, fontSize: 12, color: colors.danger },
 });

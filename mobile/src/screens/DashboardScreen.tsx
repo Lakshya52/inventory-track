@@ -7,14 +7,15 @@ import { useSync } from '../sync/SyncContext';
 import {
   getDispatchLocalStats,
   getDispatchRecords,
+  getBatchesByStatus,
   getQcLocalStats,
   getQcRecords,
 } from '../db/database';
-import { Badge, Button, Card, EmptyState, Screen, SectionHeader, StatCard } from '../components/ui';
+import { Badge, Button, Card, EmptyState, Field, Screen, SectionHeader, StatCard } from '../components/ui';
 import LimitedAccessScreen from './LimitedAccessScreen';
 import { colors, spacing } from '../theme';
-import { formatDate, formatTime } from '../utils/format';
-import type { DispatchRecord, QcRecord } from '../types';
+import { formatAge, formatDate, formatTime } from '../utils/format';
+import type { Batch, DispatchRecord, QcRecord } from '../types';
 
 export default function DashboardScreen() {
   const { session } = useAuth();
@@ -22,27 +23,37 @@ export default function DashboardScreen() {
   const router = useRouter();
   const [stats, setStats] = useState<any>(null);
   const [recent, setRecent] = useState<(QcRecord | DispatchRecord)[]>([]);
+  const [pendingBatches, setPendingBatches] = useState<Batch[]>([]);
+  const [pendingSearch, setPendingSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const role = session?.user.role;
   const userId = session?.user.id || 0;
 
   const load = useCallback(async () => {
     if (!role || role === 'ADMIN') return;
-    if (role === 'QC') {
-      const [localStats, records] = await Promise.all([
-        getQcLocalStats(userId),
-        getQcRecords(5),
-      ]);
-      setStats(localStats);
-      setRecent(records);
-    } else {
-      const [localStats, records] = await Promise.all([
-        getDispatchLocalStats(userId),
-        getDispatchRecords(5),
-      ]);
-      setStats(localStats);
-      setRecent(records);
+    setLoadError('');
+    try {
+      if (role === 'QC') {
+        const [localStats, records, batches] = await Promise.all([
+          getQcLocalStats(userId),
+          getQcRecords(5, 0, userId),
+          getBatchesByStatus(['CREATED'], 200),
+        ]);
+        setStats(localStats);
+        setRecent(records);
+        setPendingBatches(batches);
+      } else {
+        const [localStats, records] = await Promise.all([
+          getDispatchLocalStats(userId),
+          getDispatchRecords(5),
+        ]);
+        setStats(localStats);
+        setRecent(records);
+      }
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not load the dashboard from this device.');
     }
   }, [role, userId]);
 
@@ -61,16 +72,22 @@ export default function DashboardScreen() {
     try {
       await sync();
       await load();
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not refresh the dashboard.');
     } finally {
       setRefreshing(false);
     }
   };
 
+  const passRate = stats?.total
+    ? Math.round((stats.passed / stats.total) * 100)
+    : 0;
   const qcCards = [
-    { label: 'Pending QC', value: stats?.pending ?? 0, icon: 'time-outline' as const, accent: colors.purple, soft: colors.purpleSoft },
     { label: 'My Tests Today', value: stats?.today ?? 0, icon: 'flask-outline' as const, accent: colors.info, soft: colors.infoSoft },
-    { label: 'Passed', value: stats?.passed ?? 0, icon: 'checkmark-circle-outline' as const, accent: colors.success, soft: colors.successSoft },
-    { label: 'Failed', value: stats?.failed ?? 0, icon: 'close-circle-outline' as const, accent: colors.danger, soft: colors.dangerSoft },
+    { label: 'My Tests This Week', value: stats?.week ?? 0, icon: 'trending-up-outline' as const, accent: colors.purple, soft: colors.purpleSoft },
+    { label: 'My Pass Rate', value: `${passRate}%`, icon: 'checkmark-circle-outline' as const, accent: passRate >= 80 ? colors.success : colors.warning, soft: passRate >= 80 ? colors.successSoft : colors.warningSoft },
+    { label: 'Pending QC', value: stats?.pending ?? 0, icon: 'time-outline' as const, accent: colors.purple, soft: colors.purpleSoft },
+    { label: 'My Total Tests', value: stats?.total ?? 0, icon: 'stats-chart-outline' as const, accent: colors.textMuted, soft: colors.surfaceAlt },
   ];
 
   const dispatchCards = [
@@ -81,6 +98,14 @@ export default function DashboardScreen() {
   ];
 
   const cards = role === 'QC' ? qcCards : dispatchCards;
+  const needle = pendingSearch.trim().toLowerCase();
+  const filteredPending = !needle
+    ? pendingBatches
+    : pendingBatches.filter((batch) =>
+        [batch.batch_number, batch.product_name, batch.product_sku, batch.barcode_value]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(needle))
+      );
 
   return (
     <Screen>
@@ -105,6 +130,13 @@ export default function DashboardScreen() {
             />
           </View>
         </View>
+
+        {loadError ? (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle-outline" size={17} color={colors.danger} />
+            <Text style={styles.errorText}>{loadError}</Text>
+          </View>
+        ) : null}
 
         <Card style={styles.syncCard}>
           <View style={styles.syncRow}>
@@ -194,6 +226,53 @@ export default function DashboardScreen() {
             </View>
           )}
         </Card>
+
+        {role === 'QC' ? (
+          <Card style={{ gap: spacing.md }}>
+            <SectionHeader
+              title="Pending QC queue"
+              subtitle={`${pendingBatches.length} batch${pendingBatches.length === 1 ? '' : 'es'} waiting on this device`}
+              right={<Badge status="CREATED" label="Created" />}
+            />
+            <Field
+              value={pendingSearch}
+              onChangeText={setPendingSearch}
+              placeholder="Search batch, product, or SKU"
+              autoCapitalize="none"
+            />
+            {filteredPending.length === 0 ? (
+              <EmptyState
+                title={pendingSearch ? 'No matching batches' : 'No batches waiting for QC'}
+                message={pendingSearch ? 'Try another batch number, product, or SKU.' : 'Pull to refresh or sync to download the latest QC queue.'}
+              />
+            ) : (
+              <View style={{ gap: spacing.sm }}>
+                {filteredPending.slice(0, 8).map((batch) => (
+                  <View key={batch.id} style={styles.pendingRow}>
+                    <View style={styles.activityIcon}>
+                      <Ionicons name="cube-outline" size={17} color={colors.purple} />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.activityTitle} numberOfLines={1}>{batch.product_name}</Text>
+                      <Text style={styles.activityMeta} numberOfLines={1}>
+                        {batch.batch_number} · {batch.quantity} {batch.uom || 'units'}
+                      </Text>
+                      <Text style={styles.activityMeta} numberOfLines={1}>
+                        {batch.location_code || batch.storage_location || 'Location not set'} · waiting {formatAge(batch.age_minutes)}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+                {filteredPending.length > 8 ? (
+                  <Text style={styles.moreHint}>
+                    Showing 8 of {filteredPending.length}. Search to narrow the queue or open QC Scan.
+                  </Text>
+                ) : null}
+                <Button title="Open QC group scan" variant="secondary" onPress={() => router.push('/scan')} />
+              </View>
+            )}
+          </Card>
+        ) : null}
       </ScrollView>
     </Screen>
   );
@@ -225,4 +304,15 @@ const styles = StyleSheet.create({
   activityTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
   activityMeta: { fontSize: 11, color: colors.textFaint, marginTop: 1 },
   activityTime: { fontSize: 11, color: colors.textFaint },
+  pendingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs },
+  moreHint: { fontSize: 11, color: colors.textMuted, textAlign: 'center' },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: 12,
+    backgroundColor: colors.dangerSoft,
+  },
+  errorText: { flex: 1, fontSize: 12, color: colors.danger },
 });

@@ -61,7 +61,13 @@ export async function create(req: Request, res: Response): Promise<void> {
 
   const batchGroupId = randomUUID();
   const result = await withTransaction(async (conn) => {
-    const createdBatches: Array<{ id: number; batch_number: string; barcode_value: string }> = [];
+    const createdBatches: Array<{
+      id: number;
+      batch_number: string;
+      barcode_value: string;
+      qr_job: { id: number; job_code: string; product_name: string; product_sku: string; quantity: number };
+      labels: Array<{ id: number; qr_value: string; serial_no: number; batch_number: string; print_count: number }>;
+    }> = [];
     for (const number of batchNumbers) {
       const qcBarcode = `QC:${randomUUID()}`;
       const [batchInsert] = await conn.execute<any>(
@@ -76,7 +82,50 @@ export async function create(req: Request, res: Response): Promise<void> {
         ]
       );
       const batchId = Number(batchInsert.insertId);
-      createdBatches.push({ id: batchId, batch_number: number, barcode_value: qcBarcode });
+      const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
+      const [jobInsert] = await conn.execute<any>(
+        `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
+         VALUES (?, ?, ?, ?, ?)`,
+        [jobCode, productId, bagCount, req.user!.userId, req.user!.role]
+      );
+      const jobId = Number(jobInsert.insertId);
+      const labelRows = Array.from({ length: bagCount }, (_, index) => ({
+        qr_value: `QR:${randomUUID()}`,
+        serial_no: index + 1,
+      }));
+      const labelPlaceholders = labelRows.map(() => '(?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))').join(', ');
+      await conn.execute(
+        `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
+         VALUES ${labelPlaceholders}`,
+        labelRows.flatMap((label) => [jobId, batchId, label.qr_value, label.serial_no])
+      );
+      const [insertedLabels] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, qr_value, serial_no, print_count
+         FROM qr_labels
+         WHERE print_job_id = ?
+         ORDER BY serial_no ASC`,
+        [jobId]
+      );
+      const labels = insertedLabels.map((label) => ({
+        id: Number(label.id),
+        qr_value: String(label.qr_value),
+        serial_no: Number(label.serial_no),
+        batch_number: number,
+        print_count: Number(label.print_count),
+      }));
+      createdBatches.push({
+        id: batchId,
+        batch_number: number,
+        barcode_value: qcBarcode,
+        qr_job: {
+          id: jobId,
+          job_code: jobCode,
+          product_name: product.name,
+          product_sku: product.sku,
+          quantity: bagCount,
+        },
+        labels,
+      });
       await conn.execute(
         `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
          VALUES (?, ?, ?, 'BATCH_CREATED', ?)`,
@@ -93,7 +142,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     batches: result,
     product_name: product.name,
     product_sku: product.sku,
-    message: `${batchCount} QC batch${batchCount === 1 ? '' : 'es'} created. Finished-goods details and bag labels are available after QC passes.`,
+    message: `${batchCount} QC batch${batchCount === 1 ? '' : 'es'} created with ${batchCount * bagCount} unit QR labels ready to download. Finished-goods details can be completed after QC passes.`,
   });
 }
 
@@ -117,12 +166,8 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     if (batch.status !== 'QC_PASSED') {
       return { status: 409 as const, error: 'Finished-goods details can only be entered after QC passes' };
     }
-    const [existingLabels] = await conn.execute<RowDataPacket[]>(
-      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ?',
-      [id]
-    );
-    if (batch.fg_details_completed_at || Number(existingLabels[0]?.count) > 0) {
-      return { status: 409 as const, error: 'Finished-goods details and QR labels already exist for this batch' };
+    if (batch.fg_details_completed_at) {
+      return { status: 409 as const, error: 'Finished-goods details already exist for this batch' };
     }
     const [masters] = await conn.execute<RowDataPacket[]>(
       `SELECT
@@ -140,35 +185,68 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     ) {
       return { status: 400 as const, error: 'Select active supplier, grade, bag quantity, and shelf location values' };
     }
-    const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
     const [products] = await conn.execute<RowDataPacket[]>(
       'SELECT id, name, sku FROM products WHERE id = ?',
       [batch.product_id]
     );
     if (products.length === 0) return { status: 404 as const, error: 'Product not found' };
-    const [jobInsert] = await conn.execute<any>(
-      `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
-       VALUES (?, ?, ?, ?, ?)`,
-      [jobCode, batch.product_id, batch.quantity, req.user!.userId, req.user!.role]
+    const [existingLabels] = await conn.execute<RowDataPacket[]>(
+      `SELECT l.id, l.print_job_id, l.qr_value, l.serial_no, l.print_count,
+              j.job_code
+       FROM qr_labels l
+       JOIN qr_print_jobs j ON j.id = l.print_job_id
+       WHERE l.batch_id = ?
+       ORDER BY l.serial_no ASC
+       FOR UPDATE`,
+      [id]
     );
-    const jobId = Number(jobInsert.insertId);
+    if (
+      existingLabels.length > 0 &&
+      (existingLabels.length !== Number(batch.quantity) ||
+        existingLabels.some((label) => Number(label.print_job_id) !== Number(existingLabels[0].print_job_id)))
+    ) {
+      return { status: 409 as const, error: 'This batch has an incomplete or inconsistent set of QR labels' };
+    }
     const labels: Array<Record<string, unknown>> = [];
-    let firstBarcode = '';
-    for (let serial = 1; serial <= Number(batch.quantity); serial += 1) {
-      const qrValue = `QR:${randomUUID()}`;
-      if (serial === 1) firstBarcode = qrValue;
-      const [labelInsert] = await conn.execute<any>(
-        `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
-         VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`,
-        [jobId, id, qrValue, serial]
-      );
-      labels.push({
-        id: Number(labelInsert.insertId),
-        qr_value: qrValue,
-        serial_no: serial,
+    let jobId: number;
+    let jobCode: string;
+    let firstBarcode: string;
+    if (existingLabels.length > 0) {
+      jobId = Number(existingLabels[0].print_job_id);
+      jobCode = String(existingLabels[0].job_code);
+      firstBarcode = String(existingLabels[0].qr_value);
+      labels.push(...existingLabels.map((label) => ({
+        id: Number(label.id),
+        qr_value: label.qr_value,
+        serial_no: Number(label.serial_no),
         batch_number: batch.batch_number,
-        print_count: 1,
-      });
+        print_count: Number(label.print_count),
+      })));
+    } else {
+      jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
+      const [jobInsert] = await conn.execute<any>(
+        `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
+         VALUES (?, ?, ?, ?, ?)`,
+        [jobCode, batch.product_id, batch.quantity, req.user!.userId, req.user!.role]
+      );
+      jobId = Number(jobInsert.insertId);
+      firstBarcode = '';
+      for (let serial = 1; serial <= Number(batch.quantity); serial += 1) {
+        const qrValue = `QR:${randomUUID()}`;
+        if (serial === 1) firstBarcode = qrValue;
+        const [labelInsert] = await conn.execute<any>(
+          `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
+           VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`,
+          [jobId, id, qrValue, serial]
+        );
+        labels.push({
+          id: Number(labelInsert.insertId),
+          qr_value: qrValue,
+          serial_no: serial,
+          batch_number: batch.batch_number,
+          print_count: 1,
+        });
+      }
     }
     const [update] = await conn.execute(
       `UPDATE batches
@@ -181,7 +259,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     await conn.execute(
       `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
        VALUES (?, ?, ?, 'FINISHED_GOODS_COMPLETED', ?)`,
-      [req.user!.userId, req.user!.name, req.user!.role, `Finished-goods details completed for batch ${batch.batch_number}; ${labels.length} bag QR labels generated`]
+      [req.user!.userId, req.user!.name, req.user!.role, `Finished-goods details completed for batch ${batch.batch_number}; ${labels.length} bag QR labels available`]
     );
     return {
       status: 201 as const,

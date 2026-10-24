@@ -9,6 +9,14 @@ if (__DEV__) {
 import type {
   AuthSession,
   Batch,
+  CreateBatchesResponse,
+  MobileMasterOption,
+  MobileProduct,
+  MobileShelfLocation,
+  MobileVendor,
+  QrLabel,
+  QrJobDetails,
+  QrPrintJob,
   SyncPullResponse,
   SyncPushResponse,
   User,
@@ -250,6 +258,76 @@ export const api = {
     );
 
     return (body.files || []).map((file) => String(file.filename));
+  },
+
+  async listProducts(): Promise<MobileProduct[]> {
+    return request<MobileProduct[]>("/api/products");
+  },
+
+  async listVendors(): Promise<MobileVendor[]> {
+    return request<MobileVendor[]>("/api/vendors?status=active");
+  },
+
+  async listMasterOptions(kind: "grades" | "bag-quantities"): Promise<MobileMasterOption[]> {
+    return request<MobileMasterOption[]>(`/api/masters/${kind}`);
+  },
+
+  async listShelfLocations(): Promise<MobileShelfLocation[]> {
+    return request<MobileShelfLocation[]>("/api/shelf-locations");
+  },
+
+  async listBatches(): Promise<Batch[]> {
+    return request<Batch[]>("/api/batches");
+  },
+
+  async createBatches(data: {
+    product_id: number;
+    batch_number: string;
+    quantity: number;
+    batch_count: number;
+    unit_price: number;
+    manufacturing_date: string;
+    expiry_date: string;
+    notes?: string;
+    shelf_location_id?: number;
+  }): Promise<CreateBatchesResponse> {
+    return request<CreateBatchesResponse>("/api/batches", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  async finishGoods(
+    id: number,
+    data: {
+      vendor_id: number;
+      grade_id: number;
+      bag_quantity_id: number;
+      shelf_location_id?: number;
+    },
+  ): Promise<{ qr_job: QrPrintJob; labels: QrLabel[] }> {
+    return request(`/api/batches/${id}/finish-goods`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  async reopenFailedBatch(id: number, reason: string): Promise<void> {
+    await request(`/api/qc/batches/${id}/reopen`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  async getQrJob(id: number): Promise<QrJobDetails> {
+    return request<QrJobDetails>(`/api/qc/qr-jobs/${id}`);
+  },
+
+  async reprintQrLabels(id: number, labelIds: number[]): Promise<QrJobDetails> {
+    return request<QrJobDetails>(`/api/qc/qr-jobs/${id}/reprint`, {
+      method: "POST",
+      body: JSON.stringify({ label_ids: labelIds }),
+    });
   },
 
   async batchByBarcode(barcode: string): Promise<Batch> {

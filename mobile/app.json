@@ -58,7 +58,9 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-sharing"
     ],
     "extra": {
       "router": {

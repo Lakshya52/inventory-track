@@ -106,10 +106,10 @@ export default function QCScan() {
       }
       return false;
     }
-    if (Number(found.quantity) > 1 && Number(found.qr_count) > 0 && !found.scanned_qr) {
+    if (Number(found.qr_count) > 0 && !found.scanned_qr) {
       if (!silent) {
         setMessageKind('info');
-        setMessage('Scan every individual QR label on this batch. The queue shortcut cannot replace a unit scan.');
+        setMessage('Scan every individual unit QR label on this batch. The queue shortcut cannot replace a unit scan.');
       }
       return false;
     }

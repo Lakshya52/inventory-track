@@ -2,8 +2,8 @@ import { useEffect, useState, FormEvent, useRef, useMemo } from 'react';
 import JSZip from 'jszip';
 import { api } from '../services/api';
 import { Product, Batch } from '../types';
-import { Layers, Plus, Search, X, Printer, QrCode, PackageCheck, Download } from 'lucide-react';
-import { createQrPdfBlob, downloadQrPdf } from '../utils/qrPdf';
+import { Layers, Plus, Search, X, PackageCheck, Download } from 'lucide-react';
+import { createQrPdfBlob, downloadQrPdf, type QrJob, type QrLabel } from '../utils/qrPdf';
 import { useAuth } from '../contexts/AuthContext';
 
 const statusColors: Record<string, string> = {
@@ -42,6 +42,33 @@ function generateBatchNumber(sku: string, existingBatches: Batch[]): string {
 
 function safeFileName(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'batches';
+}
+
+async function downloadCreatedQrPdfs(
+  batches: { batch_number: string; qr_job: QrJob; labels: QrLabel[] }[]
+): Promise<void> {
+  if (batches.length === 0) throw new Error('The server returned no QR labels for the created batches.');
+  for (const batch of batches) {
+    if (batch.labels.length !== Number(batch.qr_job.quantity)) {
+      throw new Error(`Batch ${batch.batch_number} has ${batch.labels.length} QR labels; expected ${batch.qr_job.quantity}.`);
+    }
+  }
+  if (batches.length === 1) {
+    await downloadQrPdf(batches[0].labels, batches[0].qr_job);
+    return;
+  }
+
+  const zip = new JSZip();
+  for (const batch of batches) {
+    zip.file(`${safeFileName(batch.batch_number)}.pdf`, await createQrPdfBlob(batch.labels, batch.qr_job));
+  }
+  const archive = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(archive);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `QR-${safeFileName(batches[0].qr_job.product_sku || batches[0].qr_job.product_name)}-batches.zip`;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function hasUsableMasterId(row: any): boolean {
@@ -152,7 +179,7 @@ export default function Batches() {
         setError('A single generation can contain no more than 10,000 products.');
         return;
       }
-      await api.batches.create({
+      const created = await api.batches.create({
         product_id: Number(productId), batch_number: batchNumber, quantity: Number(quantity),
         batch_count: batchTotal,
         uom: uom || undefined, unit_price: Number(unitPrice) || 0,
@@ -160,8 +187,22 @@ export default function Batches() {
         notes: notes || undefined,
       });
       setShowForm(false); resetForm();
-      setSuccess(`Created ${batchTotal} independent QC batch${batchTotal === 1 ? '' : 'es'} with ${Number(quantity)} product${Number(quantity) === 1 ? '' : 's'} each.`);
-      setBatches(await api.batches.list());
+      setSuccess(`Created ${batchTotal} QC batch${batchTotal === 1 ? '' : 'es'} with ${batchTotal * Number(quantity)} unit QR labels.`);
+      try {
+        await downloadCreatedQrPdfs(created.batches);
+        setSuccess(batchTotal === 1
+          ? `Batch ${created.batches[0].batch_number} created and its QR PDF downloaded.`
+          : `${batchTotal} batches created and their QR PDFs downloaded as a ZIP.`);
+      } catch (downloadError: any) {
+        setError(`Batches were created, but the QR download could not be completed: ${downloadError.message || 'QR PDF unavailable.'}`);
+      }
+      try {
+        setBatches(await api.batches.list());
+      } catch (refreshError: any) {
+        setError((current) => current
+          ? `${current} Batch list could not be refreshed: ${refreshError.message || 'Request failed.'}`
+          : `Batches were created, but the list could not be refreshed: ${refreshError.message || 'Request failed.'}`);
+      }
     } catch (err: any) { setError(err.message); }
   };
 
@@ -190,15 +231,7 @@ export default function Batches() {
         bag_quantity_id: bagQuantityId,
         shelf_location_id: shelfLocationId ? Number(shelfLocationId) : undefined,
       });
-      const group = finishBatch.batch_group_id
-        ? batchesByGroup.get(finishBatch.batch_group_id)
-        : undefined;
-      if (group && group.length > 1) {
-        setSuccess(`QR labels generated for ${finishBatch.batch_number}. The group ZIP will be available after all ${group.length} batches have finished QC and goods details.`);
-      } else {
-        await downloadQrPdf(result.labels, result.qr_job);
-        setSuccess(`QR labels downloaded for ${finishBatch.batch_number}.`);
-      }
+      setSuccess(`Finished-goods details saved for ${finishBatch.batch_number}. Its ${result.labels.length} QR labels remain available to download.`);
       setFinishBatch(null);
       setShelfLocationId('');
       setFinishGoodsSelection({ vendorId: '', gradeId: '', bagQuantityId: '' });
@@ -211,7 +244,7 @@ export default function Batches() {
   const handleDownloadGroupZip = async (group: Batch[]) => {
     const groupId = group[0]?.batch_group_id;
     if (!groupId || group.some(batch => !batch.qr_job_id)) {
-      setError('Complete QC and finished-goods details for every batch in this group before downloading its ZIP.');
+      setError('QR labels are missing for one or more batches in this group. Finish-goods details for passed legacy batches to generate their labels.');
       return;
     }
     setError('');
@@ -220,7 +253,12 @@ export default function Batches() {
     try {
       const zip = new JSZip();
       const orderedBatches = [...group].sort((a, b) => a.batch_number.localeCompare(b.batch_number, undefined, { numeric: true }));
-      const details = await Promise.all(orderedBatches.map(batch => api.qc.qrJobs.get(Number(batch.qr_job_id))));
+      const details = await Promise.all(orderedBatches.map(async (batch) => {
+        const detail = await api.qc.qrJobs.get(Number(batch.qr_job_id));
+        return api.qc.qrJobs.reprint(Number(batch.qr_job_id), {
+          label_ids: detail.labels.map((label: QrLabel) => label.id),
+        });
+      }));
       for (let index = 0; index < orderedBatches.length; index += 1) {
         const batch = orderedBatches[index];
         const detail = details[index];
@@ -252,7 +290,11 @@ export default function Batches() {
     }
     try {
       const detail = await api.qc.qrJobs.get(Number(batch.qr_job_id));
-      await downloadQrPdf(detail.labels, detail.job);
+      const reprinted = await api.qc.qrJobs.reprint(Number(batch.qr_job_id), {
+        label_ids: detail.labels.map((label: QrLabel) => label.id),
+      });
+      await downloadQrPdf(reprinted.labels, reprinted.job);
+      setSuccess(`Downloaded ${reprinted.labels.length} QR labels for ${batch.batch_number}.`);
     } catch (err: any) {
       setError(err.message || 'Could not download batch QR labels');
     }
@@ -276,7 +318,7 @@ export default function Batches() {
           <h1 className="page-title">Batches</h1>
           <p className="page-subtitle">
             {canManageBatches
-              ? 'Create batches, manage QC outcomes, complete finished-goods details, and generate or reprint product QR labels.'
+              ? 'Create batches with downloadable unit QR labels, manage QC outcomes, and complete finished-goods details.'
               : 'Read-only overview of batches. Batch reports are available in Reports & Logs.'}
           </p>
         </div>
@@ -291,6 +333,12 @@ export default function Batches() {
         <div className="mb-4 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
           <span>{success}</span>
           <button onClick={() => setSuccess('')} className="text-emerald-700" aria-label="Dismiss message"><X size={15} /></button>
+        </div>
+      )}
+      {error && !showForm && !finishBatch && (
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="text-rose-700" aria-label="Dismiss error"><X size={15} /></button>
         </div>
       )}
 
@@ -343,8 +391,8 @@ export default function Batches() {
                     <input className="input" type="number" step="1" min="1" max="1000" value={quantity} onChange={e => setQuantity(e.target.value)} required />
                     <p className="text-xs text-surface-400">
                       {Number(batchCount) > 0 && Number(quantity) > 0
-                        ? `${Number(batchCount) * Number(quantity)} total products / QR labels`
-                        : 'QR labels are created after each batch passes QC.'}
+                        ? `${Number(batchCount) * Number(quantity)} total products / QR labels ready when created`
+                        : 'QR labels are ready to download as soon as batches are created.'}
                     </p>
                   </div>
 
@@ -375,7 +423,7 @@ export default function Batches() {
                 </div>
                 {error && <div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">{error}</div>}
                 <p className="text-xs text-surface-500">
-                  Each generated batch is QC-tracked separately. Its QR labels are created after QC passes and finished-goods details are saved.
+                  Each batch is QC-tracked separately, and unit QR labels are ready to download as soon as it is created. Finished-goods details can be completed after QC passes.
                 </p>
               </div>
               <div className="modal-footer">
@@ -396,7 +444,7 @@ export default function Batches() {
                 <button type="button" onClick={() => setFinishBatch(null)} className="btn-ghost btn-sm"><X size={16} /></button>
               </div>
               <div className="modal-body space-y-4">
-                <p className="text-sm text-surface-500">QC has passed. Select the finished-goods master values; individual bag QR labels will be generated when you submit.</p>
+                <p className="text-sm text-surface-500">QC has passed. Select the finished-goods master values; this updates the batch without creating duplicate QR labels.</p>
                 {(!vendors.length || !grades.length || !bagQuantities.length) && (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                     Some required dropdowns have no active records with valid IDs.
@@ -478,7 +526,7 @@ export default function Batches() {
               <div className="modal-footer">
                 <button type="button" onClick={() => setFinishBatch(null)} className="btn-secondary">Cancel</button>
                 <button type="submit" className="btn-primary">
-                  <PackageCheck size={15} /> Save details & print bag labels
+                  <PackageCheck size={15} /> Save finished-goods details
                 </button>
               </div>
             </form>
@@ -517,7 +565,7 @@ export default function Batches() {
                   <td><span className={`badge ${statusColors[b.status] || 'badge-neutral'}`}>{statusLabels[b.status] || b.status}</span></td>
                   {canDownloadQr && <td>
                     <div className="flex items-center gap-1">
-                      {b.qr_job_id && <button onClick={() => handlePrintQR(b)} className="btn-ghost btn-sm" title="Download QR labels"><Printer size={14} /></button>}
+                      {b.qr_job_id && <button onClick={() => handlePrintQR(b)} className="btn-ghost btn-sm" title="Download QR labels"><Download size={14} /></button>}
                       {batchGroup && batchGroup.length > 1 && isFirstInGroup &&
                         (readyCount === batchGroup.length ? (
                             <button
@@ -529,18 +577,18 @@ export default function Batches() {
                               <Download size={13} /> {downloadingGroupId === b.batch_group_id ? 'Building ZIP…' : `QR ZIP (${batchGroup.length})`}
                             </button>
                           ) : (
-                            <span className="whitespace-nowrap text-xs text-surface-400" title="ZIP becomes available when every batch has QR labels">
+                            <span className="whitespace-nowrap text-xs text-surface-400" title="QR labels are generated at batch creation; legacy batches may need finished-goods completion">
                               QR {readyCount}/{batchGroup.length}
                             </span>
                           ))}
-                      {canManageBatches && b.status === 'QC_PASSED' && !b.fg_details_completed_at && !b.qr_job_id && (
+                      {canManageBatches && b.status === 'QC_PASSED' && !b.fg_details_completed_at && (
                             <button onClick={() => {
                               setFinishGoodsSelection({ vendorId: '', gradeId: '', bagQuantityId: '' });
                               setFinishBatch(b);
                               setShelfLocationId('');
                               setError('');
                             }} className="btn-primary btn-xs">
-                          <PackageCheck size={13} /> Finish goods + QR
+                          <PackageCheck size={13} /> Finish goods details
                         </button>
                       )}
                       {canManageBatches && b.status === 'QC_FAILED' && (

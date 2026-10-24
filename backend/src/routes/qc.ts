@@ -16,6 +16,6 @@ router.get('/records', records);
 router.post('/qr-jobs', authorize('QC'), create);
 router.get('/qr-jobs', authorize('ADMIN', 'QC'), list);
 router.get('/qr-jobs/:id', authorize('ADMIN', 'QC'), getById);
-router.post('/qr-jobs/:id/reprint', authorize('QC'), reprint);
+router.post('/qr-jobs/:id/reprint', authorize('ADMIN', 'QC'), reprint);
 
 export default router;

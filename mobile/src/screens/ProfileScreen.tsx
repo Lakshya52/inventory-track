@@ -108,7 +108,7 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.actionRow}>
             <Button
-              title="Open sync center"
+              title="Sync details"
               variant="secondary"
               onPress={() => router.push('/sync')}
               style={{ flex: 1 }}
