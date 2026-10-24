@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { jsPDF } from 'jspdf';
-import { api } from '../services/api';
+import { api, uploadUrl } from '../services/api';
 import {
   FileBarChart, Microscope, Truck, ClipboardList, Boxes, Layers,
   Activity, Download, Search, CheckCircle, XCircle, Eye, X, Calendar,
@@ -777,8 +777,8 @@ export default function Reports() {
             </div>
             <div className="modal-body grid grid-cols-1 sm:grid-cols-2 gap-4">
               {imageViewer.images.map((image, index) => (
-                <a key={`${image}-${index}`} href={`/uploads/${image}`} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-surface-200 hover:border-brand-300">
-                  <img src={`/uploads/${image}`} alt={`Evidence ${index + 1}`} className="w-full h-48 object-cover" />
+                <a key={`${image}-${index}`} href={uploadUrl(image)} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-surface-200 hover:border-brand-300">
+                  <img src={uploadUrl(image)} alt={`Evidence ${index + 1}`} className="w-full h-48 object-cover" />
                 </a>
               ))}
             </div>

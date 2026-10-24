@@ -1,0 +1,138 @@
+import { getContext, DbContext } from './database';
+
+async function ensureIndexes(ctx: DbContext): Promise<void> {
+  const unique = { unique: true } as const;
+  const sparseUnique = { unique: true, partialFilterExpression: { client_operation_id: { $type: 'string' } } } as const;
+
+  await Promise.all([
+    ctx.collection('admins').createIndex({ email: 1 }, unique),
+    ctx.collection('qc_users').createIndex({ email: 1 }, unique),
+    ctx.collection('dispatch_users').createIndex({ email: 1 }, unique),
+
+    ctx.collection('products').createIndex({ sku: 1 }, unique),
+    ctx.collection('products').createIndex({ updated_at: 1 }),
+    ctx.collection('products').createIndex({ name: 1 }),
+
+    ctx.collection('shelf_locations').createIndex({ location_code: 1 }, unique),
+    ctx.collection('shelf_locations').createIndex({ updated_at: 1 }),
+
+    ctx.collection('clients').createIndex({ is_active: 1, name: 1 }),
+    ctx.collection('clients').createIndex({ updated_at: 1 }),
+
+    ctx.collection('vendors').createIndex({ vendor_code: 1 }, unique),
+    ctx.collection('vendors').createIndex({ name: 1 }),
+    ctx.collection('vendors').createIndex({ is_active: 1 }),
+
+    ctx.collection('batches').createIndex({ barcode_value: 1 }, unique),
+    ctx.collection('batches').createIndex({ batch_number: 1 }),
+    ctx.collection('batches').createIndex({ product_id: 1, created_at: -1 }),
+    ctx.collection('batches').createIndex({ status: 1, updated_at: 1 }),
+    ctx.collection('batches').createIndex({ updated_at: 1 }),
+    ctx.collection('batches').createIndex({ shelf_location_id: 1 }),
+
+    ctx.collection('qr_print_jobs').createIndex({ job_code: 1 }, unique),
+    ctx.collection('qr_print_jobs').createIndex({ product_id: 1, created_at: -1 }),
+    ctx.collection('qr_print_jobs').createIndex({ created_at: -1 }),
+
+    ctx.collection('qr_labels').createIndex({ qr_value: 1 }, unique),
+    ctx.collection('qr_labels').createIndex({ print_job_id: 1, serial_no: 1 }, unique),
+    ctx.collection('qr_labels').createIndex({ batch_id: 1 }),
+    ctx.collection('qr_labels').createIndex({ print_job_id: 1 }),
+
+    ctx.collection('qc_records').createIndex({ client_operation_id: 1 }, sparseUnique),
+    ctx.collection('qc_records').createIndex({ tester_id: 1, created_at: -1 }),
+    ctx.collection('qc_records').createIndex({ batch_id: 1, created_at: -1 }),
+    ctx.collection('qc_records').createIndex({ created_at: -1 }),
+    ctx.collection('qc_records').createIndex({ group_operation_id: 1 }),
+    ctx.collection('qc_records').createIndex({ result: 1 }),
+
+    ctx.collection('dispatch_orders').createIndex({ client_operation_id: 1 }, sparseUnique),
+    ctx.collection('dispatch_orders').createIndex({ status: 1, created_at: -1 }),
+    ctx.collection('dispatch_orders').createIndex({ raised_by: 1, created_at: -1 }),
+    ctx.collection('dispatch_orders').createIndex({ batch_id: 1, status: 1 }),
+    ctx.collection('dispatch_orders').createIndex({ updated_at: 1 }),
+
+    ctx.collection('dispatch_records').createIndex({ client_operation_id: 1 }, sparseUnique),
+    ctx.collection('dispatch_records').createIndex({ dispatcher_id: 1, created_at: -1 }),
+    ctx.collection('dispatch_records').createIndex({ batch_id: 1, created_at: -1 }),
+    ctx.collection('dispatch_records').createIndex({ created_at: -1 }),
+    ctx.collection('dispatch_records').createIndex({ dispatch_order_id: 1 }),
+    ctx.collection('dispatch_records').createIndex({ group_operation_id: 1 }),
+
+    ctx.collection('fix_records').createIndex({ batch_id: 1 }),
+    ctx.collection('fix_records').createIndex({ created_at: -1 }),
+
+    ctx.collection('packing_list_items').createIndex({ dispatch_order_id: 1 }),
+    ctx.collection('packing_list_items').createIndex({ batch_id: 1 }),
+
+    ctx.collection('activity_logs').createIndex({ created_at: -1 }),
+    ctx.collection('activity_logs').createIndex({ user_role: 1, user_id: 1, created_at: -1 }),
+
+    ctx.collection('devices').createIndex({ device_uuid: 1 }, unique),
+    ctx.collection('devices').createIndex({ user_role: 1, user_id: 1 }),
+    ctx.collection('devices').createIndex({ last_seen_at: 1 }),
+
+    ctx.collection('device_sync_state').createIndex({ device_uuid: 1 }, unique),
+
+    ctx.collection('sync_operations').createIndex({ operation_id: 1 }, unique),
+    ctx.collection('sync_operations').createIndex({ user_role: 1, user_id: 1, server_timestamp: -1 }),
+    ctx.collection('sync_operations').createIndex({ device_uuid: 1, server_timestamp: -1 }),
+    ctx.collection('sync_operations').createIndex({ status: 1, server_timestamp: -1 }),
+
+    ctx.collection('refresh_tokens').createIndex({ token_hash: 1 }, unique),
+    ctx.collection('refresh_tokens').createIndex({ user_role: 1, user_id: 1 }),
+    ctx.collection('refresh_tokens').createIndex({ expires_at: 1 }),
+  ]);
+}
+
+/**
+ * Bring the counters collection in line with any documents that were created
+ * outside of this process (for example a restored backup). Existing counters
+ * are only ever increased, never reset.
+ */
+async function syncCounters(ctx: DbContext, collections: string[]): Promise<void> {
+  for (const name of collections) {
+    const last = await ctx.collection(name).find({}, { sort: { id: -1 }, limit: 1, projection: { id: 1 } }).toArray();
+    const maxId = Number(last[0]?.id || 0);
+    if (!Number.isFinite(maxId) || maxId <= 0) continue;
+    await ctx.collection<{ _id: string; seq: number }>('counters').updateOne(
+      { _id: name },
+      { $max: { seq: maxId } },
+      { upsert: true }
+    );
+  }
+}
+
+const COLLECTIONS = [
+  'admins',
+  'qc_users',
+  'dispatch_users',
+  'products',
+  'shelf_locations',
+  'clients',
+  'vendors',
+  'batches',
+  'qr_print_jobs',
+  'qr_labels',
+  'qc_records',
+  'dispatch_orders',
+  'dispatch_records',
+  'fix_records',
+  'packing_list_items',
+  'activity_logs',
+  'devices',
+  'device_sync_state',
+  'sync_operations',
+  'refresh_tokens',
+];
+
+/**
+ * Idempotent startup migration. MongoDB creates collections on first write,
+ * so this only creates indexes and repairs the numeric ID counters that keep
+ * the existing REST API contract stable.
+ */
+export async function ensureAdminSchema(): Promise<void> {
+  const ctx = await getContext();
+  await ensureIndexes(ctx);
+  await syncCounters(ctx, COLLECTIONS);
+}

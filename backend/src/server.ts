@@ -27,13 +27,35 @@ import { checkDatabase, closePool } from './config/database';
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+function isOriginAllowed(origin: string): boolean {
+  return allowedOrigins.some((allowed) => {
+    if (allowed === '*') return true;
+    if (!allowed.includes('*')) return origin === allowed;
+    const [prefix, suffix] = allowed.split('*');
+    return origin.startsWith(prefix) && origin.endsWith(suffix);
+  });
+}
+
 app.set('trust proxy', 1);
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 app.use(compression());
 app.use(cors({
-  origin: true,
+  origin: allowedOrigins.length === 0
+    ? true
+    : (origin, callback) => {
+        if (!origin || isOriginAllowed(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error(`Origin ${origin} is not allowed by CORS`));
+      },
   credentials: true,
   exposedHeaders: ['RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset', 'X-Request-Id'],
 }));

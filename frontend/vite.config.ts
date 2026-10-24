@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
 export default defineConfig({
+  envPrefix: ['VITE_', 'API_URL'],
   plugins: [tailwindcss(), react(), basicSsl()],
   server: {
     host: '0.0.0.0',

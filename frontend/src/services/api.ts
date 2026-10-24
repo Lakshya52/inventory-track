@@ -1,4 +1,11 @@
-const BASE_URL = '/api';
+// In local development API_URL is unset and Vite proxies /api to the backend.
+// On Vercel, set API_URL to the Render service origin.
+const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '');
+const BASE_URL = `${API_ORIGIN}/api`;
+
+export function uploadUrl(filename: string): string {
+  return `${API_ORIGIN}/uploads/${filename}`;
+}
 
 function token(): string | null {
   return localStorage.getItem('token');

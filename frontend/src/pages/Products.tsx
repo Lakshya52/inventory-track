@@ -2,7 +2,16 @@ import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { Product } from '../types';
 import { useAuth } from '../contexts/AuthContext';
-import { Package, Plus, Search, Download, Upload, Pencil, Trash2, X } from 'lucide-react';
+import { Package, Plus, Search, Download, Upload, Pencil, Trash2, X, RefreshCw } from 'lucide-react';
+
+function nextSku(products: Product[]): string {
+  let max = 0;
+  for (const product of products) {
+    const match = /^CHM-(\d+)$/i.exec((product.sku || '').trim());
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `CHM-${String(max + 1).padStart(3, '0')}`;
+}
 
 export default function Products({ readOnly = false }: { readOnly?: boolean }) {
   const { user } = useAuth();
@@ -24,6 +33,13 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
 
   const resetForm = () => { setForm(initForm); setError(''); setEditId(null); };
 
+  const openCreateForm = () => {
+    setForm({ ...initForm, sku: nextSku(products) });
+    setError('');
+    setEditId(null);
+    setShowForm(true);
+  };
+
   const handleEdit = (p: Product) => {
     setForm({
       name: p.name, description: p.description || '', sku: p.sku, price: String(p.price),
@@ -38,14 +54,15 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault(); setError('');
     try {
-      const data = { ...form, price: Number(form.price) || 0, quantity: Number(form.quantity) || 0 };
+      const data = { ...form, sku: form.sku.trim(), price: Number(form.price) || 0, quantity: Number(form.quantity) || 0 };
       if (editId) {
         await api.products.update(editId, data);
       } else {
         await api.products.create(data);
       }
+      const list = await api.products.list().catch(() => null);
+      if (list) setProducts(list);
       setShowForm(false); resetForm();
-      api.products.list().then(setProducts);
     } catch (err: any) { setError(err.message); }
   };
 
@@ -70,7 +87,7 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
             <Upload size={14} /> Import
             <input type="file" accept=".xlsx,.xls" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (f) { try { await api.products.importExcel(f); api.products.list().then(setProducts); } catch (err: any) { alert(err.message); } } }} />
           </label>
-          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+          <button onClick={openCreateForm} className="btn-primary">
             <Plus size={16} /> Add Product
           </button>
         </div>}
@@ -87,7 +104,22 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
               <div className="modal-body space-y-4">
                 <div className="form-grid">
                   <div className="space-y-1.5"><label className="input-label">Name *</label><input className="input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
-                  <div className="space-y-1.5"><label className="input-label">SKU *</label><input className="input" value={form.sku} onChange={e => setForm({...form, sku: e.target.value})} required /></div>
+                  <div className="space-y-1.5">
+                    <label className="input-label">SKU *</label>
+                    <div className="relative">
+                      <input className="input pr-10 font-mono" value={form.sku} onChange={e => setForm({ ...form, sku: e.target.value })} required />
+                      <button
+                        type="button"
+                        onClick={() => setForm({ ...form, sku: nextSku(products) })}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-surface-400 hover:bg-brand-50 hover:text-brand-600"
+                        title="Generate next SKU"
+                        aria-label="Generate next SKU"
+                      >
+                        <RefreshCw size={14} />
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-surface-400">Auto-generated. You can edit it.</p>
+                  </div>
                   <div className="space-y-1.5"><label className="input-label">Price (₹)</label><input className="input" type="number" step="0.01" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
                   <div className="space-y-1.5"><label className="input-label">Quantity</label><input className="input" type="number" step="0.001" value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} /></div>
                   <div className="space-y-1.5"><label className="input-label">CAS Number</label><input className="input" value={form.cas_number} onChange={e => setForm({...form, cas_number: e.target.value})} /></div>

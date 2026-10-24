@@ -1,91 +1,45 @@
-import mysql, { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-
-let pool: Pool;
-
-/**
- * A single pool is shared by the whole Node process. In production each API
- * instance gets its own pool; the database remains the source of truth.
- */
-export async function getPool(): Promise<Pool> {
-  if (!pool) {
-    const connectionLimit = Number(process.env.DB_POOL_SIZE) || 20;
-    pool = mysql.createPool({
-      host: process.env.DB_HOST || 'localhost',
-      port: Number(process.env.DB_PORT) || 3306,
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'factory_inventory',
-      waitForConnections: true,
-      connectionLimit,
-      maxIdle: connectionLimit,
-      idleTimeout: 60_000,
-      queueLimit: Number(process.env.DB_QUEUE_LIMIT) || 0,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 0,
-      connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS) || 10_000,
-      timezone: 'Z',
-      decimalNumbers: true,
-    });
-  }
-  return pool;
-}
-
-export async function query<T extends RowDataPacket[]>(
-  sql: string,
-  params?: any[]
-): Promise<T> {
-  const p = await getPool();
-  const [rows] = await p.query<T>(sql, params);
-  return rows;
-}
-
-export async function execute(
-  sql: string,
-  params?: any[]
-): Promise<ResultSetHeader> {
-  const p = await getPool();
-  const [result] = await p.execute<ResultSetHeader>(sql, params);
-  return result;
-}
+import * as mysql from './database.mysql';
+import * as mongo from './database.mongo';
 
 /**
- * Runs a unit of work in a single transaction. Callers must use the provided
- * connection for every statement that belongs to the transaction.
+ * Database switch. MySQL remains the production default; set
+ * DB_CLIENT=mongo to run the same API on MongoDB (for example on Vercel).
  */
-export async function withTransaction<T>(
-  fn: (conn: PoolConnection) => Promise<T>
-): Promise<T> {
-  const p = await getPool();
-  const conn = await p.getConnection();
-  try {
-    await conn.beginTransaction();
-    const result = await fn(conn);
-    await conn.commit();
-    return result;
-  } catch (error) {
-    try {
-      await conn.rollback();
-    } catch {
-      // The original error is more useful than a rollback failure.
-    }
-    throw error;
-  } finally {
-    conn.release();
-  }
+export const useMongo = (process.env.DB_CLIENT || 'mysql').toLowerCase() === 'mongo';
+
+// --- MySQL (default / production) -----------------------------------------
+export const getPool = mysql.getPool;
+export const query = mysql.query;
+export const execute = mysql.execute;
+
+// --- MongoDB --------------------------------------------------------------
+export const getClient = mongo.getClient;
+export const getDb = mongo.getDb;
+export const getContext = mongo.getContext;
+export { DbContext } from './database.mongo';
+export const now = mongo.now;
+export const stripId = mongo.stripId;
+export const stripIds = mongo.stripIds;
+export const isDuplicateKey = mongo.isDuplicateKey;
+export const parseDateValue = mongo.parseDateValue;
+export const startOfDay = mongo.startOfDay;
+export const endOfDay = mongo.endOfDay;
+export const startOfWeek = mongo.startOfWeek;
+export const daysAgo = mongo.daysAgo;
+export const ageMinutes = mongo.ageMinutes;
+export const dayKey = mongo.dayKey;
+
+// --- Shared API -----------------------------------------------------------
+export function withTransaction<T>(fn: (client: any) => Promise<T>): Promise<T> {
+  return useMongo
+    ? mongo.withTransaction(fn)
+    : mysql.withTransaction(fn as any);
 }
 
-export async function checkDatabase(): Promise<boolean> {
-  try {
-    const rows = await query<RowDataPacket[]>('SELECT 1 AS ok');
-    return Number(rows[0]?.ok) === 1;
-  } catch {
-    return false;
-  }
+export function checkDatabase(): Promise<boolean> {
+  return useMongo ? mongo.checkDatabase() : mysql.checkDatabase();
 }
 
-export async function closePool(): Promise<void> {
-  if (pool) {
-    await pool.end();
-    pool = undefined as unknown as Pool;
-  }
+export function closePool(): Promise<void> {
+  return useMongo ? mongo.closePool() : mysql.closePool();
 }

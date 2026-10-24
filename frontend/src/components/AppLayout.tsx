@@ -25,11 +25,11 @@ const navSections: { title: string; items: NavItem[] }[] = [
   {
     title: 'Management',
     items: [
-      { label: 'Clients', path: '/clients', icon: <Handshake size={18} />, roles: ['ADMIN'] },
-      { label: 'Users', path: '/users', icon: <Users size={18} />, roles: ['ADMIN'] },
       { label: 'Products', path: '/products', icon: <Package size={18} />, roles: ['ADMIN', 'QC'] },
       { label: 'Shelf Locations', path: '/shelf-locations', icon: <MapPin size={18} />, roles: ['ADMIN'] },
       { label: 'Batches', path: '/batches', icon: <Tags size={18} />, roles: ['ADMIN'] },
+      { label: 'Clients', path: '/clients', icon: <Handshake size={18} />, roles: ['ADMIN'] },
+      { label: 'Users', path: '/users', icon: <Users size={18} />, roles: ['ADMIN'] },
     ],
   },
   {
