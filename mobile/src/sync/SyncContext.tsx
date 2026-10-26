@@ -30,15 +30,16 @@ interface SyncContextValue {
 const SyncContext = createContext<SyncContextValue | null>(null);
 
 function isOnline(state: NetInfoState): boolean {
-  // The backend can live on the local network, so internet reachability is
-  // not required. As long as the device has a network connection, let the
-  // request determine whether the server is reachable.
-  return state.isConnected !== false;
+  // This app syncs with a hosted backend. A connected Wi-Fi network without
+  // internet access is still offline for sync purposes.
+  return state.isConnected === true && state.isInternetReachable !== false;
 }
 
 export function SyncProvider({ children }: { children: React.ReactNode }) {
   const { session } = useAuth();
-  const [online, setOnline] = useState(true);
+  // Wait for NetInfo's first result before starting API calls. Otherwise a
+  // cold launch in airplane mode starts a sync that only fails after timeout.
+  const [online, setOnline] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [pendingCount, setPendingCount] = useState(0);

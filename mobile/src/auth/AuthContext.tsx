@@ -56,6 +56,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!storedOwner) await setMeta('local_owner', sessionOwner(stored));
         setApiSession(stored);
         setSession(stored);
+        // A cached session is enough to enter the offline-capable app. Keep
+        // server validation in the background so a lost connection cannot
+        // hold the whole app behind the restoring overlay for the fetch timeout.
+        if (mounted) setInitializing(false);
         try {
           const me = await api.me();
           if (Number(me.is_active) !== 1) {

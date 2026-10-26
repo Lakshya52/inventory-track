@@ -136,6 +136,7 @@ export default function SyncScreen() {
       <ScrollView
         style={styles.screen}
         contentContainerStyle={styles.content}
+        alwaysBounceVertical
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       >
         <View style={styles.hero}>
@@ -143,7 +144,7 @@ export default function SyncScreen() {
             <Text style={styles.eyebrow}>SYNC CENTER</Text>
             <Text style={styles.title}>Your work, safely queued</Text>
             <Text style={styles.subtitle}>
-              Everything is saved locally first. The app sends it automatically when a connection is available.
+              QC checks, dispatch confirmations, and dispatch requests are saved on this device and sent when internet returns.
             </Text>
           </View>
           <View style={[styles.heroIcon, { backgroundColor: online ? colors.successSoft : colors.warningSoft }]}>
@@ -296,9 +297,9 @@ export default function SyncScreen() {
         <View style={styles.tipCard}>
           <Ionicons name="shield-checkmark-outline" size={20} color={colors.primary} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.tipTitle}>Offline-first by design</Text>
+            <Text style={styles.tipTitle}>Field work stays on this device</Text>
             <Text style={styles.tipText}>
-              A QC or dispatch group is sent as one atomic operation. If the server rejects any code, the entire group is stopped and shown here for review.
+              A QC or dispatch group is sent as one atomic operation. If the server rejects it, the batch returns to its previous status and the operation stays here for review.
             </Text>
           </View>
         </View>
@@ -309,7 +310,7 @@ export default function SyncScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 48 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.lg, paddingBottom: 48 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4, color: colors.primary },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },

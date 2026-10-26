@@ -60,7 +60,7 @@ export default function LoginScreen() {
                 color={online ? colors.success : colors.warning}
               />
               <Text style={[styles.offlineText, { color: online ? colors.success : colors.warning }]}>
-                {online ? 'Connected' : 'Offline — work will sync later'}
+                {online ? 'Connected' : 'Offline — sign-in needs internet'}
               </Text>
             </View>
 
@@ -91,7 +91,7 @@ export default function LoginScreen() {
               </View>
             ) : null}
 
-            <Button title="Sign in" onPress={() => void submit()} loading={busy} />
+            <Button title="Sign in" onPress={() => void submit()} loading={busy} disabled={!online} />
 
             <Text style={styles.hint}>
               After the first successful sign-in, the app can be used without a connection. Queued

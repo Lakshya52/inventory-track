@@ -38,6 +38,11 @@ export default function DashboardScreen() {
     setLoadError('');
     try {
       if (role === 'ADMIN') {
+          if (!online) {
+            setAdminData(null);
+            setLoadError('Admin totals and request approvals need an internet connection.');
+            return;
+          }
         setAdminData(await api.dashboard.admin());
         return;
       }
@@ -49,18 +54,20 @@ export default function DashboardScreen() {
         ]);
         let currentStats: any = localStats;
         let currentRecords: any[] = records;
-        try {
-          const [serverStats, serverRecords] = await Promise.all([api.qc.stats(), api.qc.records({ limit: 5, scope: 'mine' })]);
-          currentStats = {
-            ...localStats,
-            today: serverStats.myTestsToday ?? localStats.today,
-            week: serverStats.myTestsThisWeek ?? localStats.week,
-            pending: serverStats.pendingQc ?? localStats.pending,
-            total: serverStats.myTotalTests ?? localStats.total,
-            passRate: serverStats.myPassRate,
-          };
-          if (Array.isArray(serverRecords?.items)) currentRecords = serverRecords.items.slice(0, 5);
-        } catch { /* Offline snapshots remain available from the device cache. */ }
+        if (online) {
+          try {
+            const [serverStats, serverRecords] = await Promise.all([api.qc.stats(), api.qc.records({ limit: 5, scope: 'mine' })]);
+            currentStats = {
+              ...localStats,
+              today: serverStats.myTestsToday ?? localStats.today,
+              week: serverStats.myTestsThisWeek ?? localStats.week,
+              pending: serverStats.pendingQc ?? localStats.pending,
+              total: serverStats.myTotalTests ?? localStats.total,
+              passRate: serverStats.myPassRate,
+            };
+            if (Array.isArray(serverRecords?.items)) currentRecords = serverRecords.items.slice(0, 5);
+          } catch { /* Offline snapshots remain available from the device cache. */ }
+        }
         setStats(currentStats);
         setRecent(currentRecords as any);
         setPendingBatches(batches);
@@ -71,25 +78,27 @@ export default function DashboardScreen() {
         ]);
         let currentStats: any = localStats;
         let currentRecords: any[] = records;
-        try {
-          const [serverStats, serverRecords] = await Promise.all([api.dispatch.stats(), api.dispatch.records()]);
-          currentStats = {
-            ...localStats,
-            ready: serverStats.readyToDispatch ?? localStats.ready,
-            pendingOrders: serverStats.pendingOrders ?? localStats.pendingOrders,
-            approvedOrders: serverStats.approvedOrders ?? localStats.approvedOrders,
-            dispatchedToday: serverStats.dispatchedToday ?? localStats.dispatchedToday,
-            totalDispatches: serverStats.myTotalDispatches ?? localStats.totalDispatches,
-          };
-          if (Array.isArray(serverRecords?.items)) currentRecords = serverRecords.items.slice(0, 5);
-        } catch { /* Offline snapshots remain available from the device cache. */ }
+        if (online) {
+          try {
+            const [serverStats, serverRecords] = await Promise.all([api.dispatch.stats(), api.dispatch.records()]);
+            currentStats = {
+              ...localStats,
+              ready: serverStats.readyToDispatch ?? localStats.ready,
+              pendingOrders: serverStats.pendingOrders ?? localStats.pendingOrders,
+              approvedOrders: serverStats.approvedOrders ?? localStats.approvedOrders,
+              dispatchedToday: serverStats.dispatchedToday ?? localStats.dispatchedToday,
+              totalDispatches: serverStats.myTotalDispatches ?? localStats.totalDispatches,
+            };
+            if (Array.isArray(serverRecords?.items)) currentRecords = serverRecords.items.slice(0, 5);
+          } catch { /* Offline snapshots remain available from the device cache. */ }
+        }
         setStats(currentStats);
         setRecent(currentRecords as any);
       }
     } catch (err: any) {
       setLoadError(err?.message || 'Could not load the dashboard from this device.');
     }
-  }, [role, userId]);
+  }, [role, userId, online]);
 
   useFocusEffect(
     useCallback(() => {
@@ -136,26 +145,26 @@ export default function DashboardScreen() {
   if (role === 'ADMIN') {
     const statsData = adminData?.stats || {};
     const adminCards = [
-      { label: 'Products', value: statsData.totalProducts ?? 0, icon: 'flask-outline', color: colors.primary, soft: colors.primarySoft },
-      { label: 'Inventory value', value: `₹${Number(statsData.inventoryValue || 0).toLocaleString('en-IN')}`, icon: 'cash-outline', color: colors.success, soft: colors.successSoft },
-      { label: 'Active users', value: `${statsData.activeUsers ?? 0}/${statsData.totalUsers ?? 0}`, icon: 'people-outline', color: colors.purple, soft: colors.purpleSoft },
-      { label: 'QC passed', value: statsData.qcPassed ?? 0, icon: 'checkmark-circle-outline', color: colors.success, soft: colors.successSoft },
-      { label: 'QC failed', value: statsData.qcFailed ?? 0, icon: 'close-circle-outline', color: colors.danger, soft: colors.dangerSoft },
-      { label: 'Pending requests', value: statsData.pendingRequests ?? 0, icon: 'time-outline', color: colors.warning, soft: colors.warningSoft },
-      { label: 'Active locations', value: `${statsData.activeLocations ?? 0}/${statsData.totalLocations ?? 0}`, icon: 'location-outline', color: colors.info, soft: colors.infoSoft },
+      { label: 'Products', value: adminData ? statsData.totalProducts ?? 0 : '—', icon: 'flask-outline', color: colors.primary, soft: colors.primarySoft },
+      { label: 'Inventory value', value: adminData ? `₹${Number(statsData.inventoryValue || 0).toLocaleString('en-IN')}` : '—', icon: 'cash-outline', color: colors.success, soft: colors.successSoft },
+      { label: 'Active users', value: adminData ? `${statsData.activeUsers ?? 0}/${statsData.totalUsers ?? 0}` : '—', icon: 'people-outline', color: colors.purple, soft: colors.purpleSoft },
+      { label: 'QC passed', value: adminData ? statsData.qcPassed ?? 0 : '—', icon: 'checkmark-circle-outline', color: colors.success, soft: colors.successSoft },
+      { label: 'QC failed', value: adminData ? statsData.qcFailed ?? 0 : '—', icon: 'close-circle-outline', color: colors.danger, soft: colors.dangerSoft },
+      { label: 'Pending requests', value: adminData ? statsData.pendingRequests ?? 0 : '—', icon: 'time-outline', color: colors.warning, soft: colors.warningSoft },
+      { label: 'Active locations', value: adminData ? `${statsData.activeLocations ?? 0}/${statsData.totalLocations ?? 0}` : '—', icon: 'location-outline', color: colors.info, soft: colors.infoSoft },
     ];
     const actions = [
-      { title: 'Review orders', href: '/orders', icon: 'clipboard-outline' },
-      { title: 'Manage records', href: '/manage', icon: 'grid-outline' },
-      { title: 'Open reports', href: '/reports', icon: 'bar-chart-outline' },
+      { title: 'Review orders', href: '/(tabs)/orders', icon: 'clipboard-outline' },
+      { title: 'Manage records', href: '/(tabs)/manage', icon: 'grid-outline' },
+      { title: 'Open reports', href: '/(tabs)/reports', icon: 'bar-chart-outline' },
       { title: 'Production', href: '/production', icon: 'construct-outline' },
     ];
-    return <Screen><ScrollView style={styles.screen} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}>
-      <View style={styles.hero}><View style={{ flex: 1 }}><Text style={styles.eyebrow}>ADMIN DASHBOARD</Text><Text style={styles.title}>Hello, {session?.user.name?.split(' ')[0] || 'there'}</Text><Text style={styles.subtitle}>Live totals from the shared inventory server.</Text></View><View style={styles.heroActions}><Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code to view product details" onPress={() => router.push('/(tabs)/qr-lookup')} style={({ pressed }) => [styles.lookupButton, pressed && styles.lookupPressed]}><Ionicons name="scan-outline" size={24} color={colors.primary} /></Pressable><View style={styles.connectionDot}><Ionicons name={online ? 'wifi-outline' : 'cloud-offline-outline'} size={22} color={online ? colors.success : colors.warning} /></View></View></View>
+    return <Screen><ScrollView style={styles.screen} contentContainerStyle={styles.content} alwaysBounceVertical refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}>
+      <View style={styles.hero}><View style={{ flex: 1 }}><Text style={styles.eyebrow}>ADMIN DASHBOARD</Text><Text style={styles.title}>Hello, {session?.user.name?.split(' ')[0] || 'there'}</Text><Text style={styles.subtitle}>Live totals from the shared inventory server.</Text></View><View style={styles.heroActions}><Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code to view product details" onPress={() => router.push('/qr-lookup')} style={({ pressed }) => [styles.lookupButton, pressed && styles.lookupPressed]}><Ionicons name="scan-outline" size={24} color={colors.primary} /></Pressable><View style={styles.connectionDot}><Ionicons name={online ? 'wifi-outline' : 'cloud-offline-outline'} size={22} color={online ? colors.success : colors.warning} /></View></View></View>
       {loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
       <View style={styles.statGrid}>{adminCards.map((card) => <StatCard key={card.label} label={card.label} value={card.value} icon={<Ionicons name={card.icon as any} size={18} color={card.color} />} accent={card.color} soft={card.soft} />)}</View>
-      <View style={styles.adminActions}>{actions.map((action) => <Button key={action.title} title={action.title} variant="secondary" icon={<Ionicons name={action.icon as any} size={16} color={colors.primary} />} onPress={() => router.push(action.href as any)} style={styles.adminAction} />)}</View>
-      <Card style={{ gap: spacing.sm }}><SectionHeader title="Pending dispatch requests" subtitle={`${adminData?.pendingRequests?.length || 0} need review`} />{(adminData?.pendingRequests || []).slice(0, 5).map((item: any, index: number) => <View key={String(item.id ?? item._id ?? index)} style={styles.activityRow}><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{item.product_name || 'Dispatch request'}</Text><Text style={styles.activityMeta}>{item.batch_number} · {item.raised_by_name || 'Dispatch team'}</Text></View><Badge status={item.status || 'PENDING'} /></View>)}{!adminData?.pendingRequests?.length ? <EmptyState title="Nothing waiting" message="New dispatch requests will appear here." /> : null}<Button title="Review requests" variant="secondary" onPress={() => router.push('/orders')} /></Card>
+      <View style={styles.adminActions}>{actions.map((action) => <Button key={action.title} title={action.title} variant="secondary" icon={<Ionicons name={action.icon as any} size={16} color={colors.primary} />} onPress={() => action.href.startsWith('/(tabs)/') ? router.navigate(action.href as any) : router.push(action.href as any)} style={styles.adminAction} />)}</View>
+      <Card style={{ gap: spacing.sm }}><SectionHeader title="Pending dispatch requests" subtitle={adminData ? `${adminData.pendingRequests?.length || 0} need review` : 'Connect to load requests'} />{(adminData?.pendingRequests || []).slice(0, 5).map((item: any, index: number) => <View key={String(item.id ?? item._id ?? index)} style={styles.activityRow}><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{item.product_name || 'Dispatch request'}</Text><Text style={styles.activityMeta}>{item.batch_number} · {item.raised_by_name || 'Dispatch team'}</Text></View><Badge status={item.status || 'PENDING'} /></View>)}{adminData && !adminData.pendingRequests?.length ? <EmptyState title="Nothing waiting" message="New dispatch requests will appear here." /> : null}<Button title="Review requests" variant="secondary" onPress={() => router.navigate('/(tabs)/orders')} /></Card>
       <Card style={{ gap: spacing.sm }}><SectionHeader title="Recent activity" subtitle="Latest server events" />{(adminData?.recentActivity || []).slice(0, 6).map((item: any, index: number) => <View key={String(item.id ?? item._id ?? index)} style={styles.activityRow}><Ionicons name="pulse-outline" size={17} color={colors.info} /><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{item.action || item.event || 'Update'}</Text><Text style={styles.activityMeta} numberOfLines={2}>{item.description || item.created_at || ''}</Text></View></View>)}{!adminData?.recentActivity?.length ? <EmptyState title="No recent activity" /> : null}</Card>
     </ScrollView></Screen>;
   }
@@ -173,6 +182,7 @@ export default function DashboardScreen() {
       <ScrollView
         style={styles.screen}
         contentContainerStyle={styles.content}
+        alwaysBounceVertical
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       >
         <View style={styles.hero}>
@@ -184,7 +194,7 @@ export default function DashboardScreen() {
             </Text>
           </View>
           <View style={styles.heroActions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code to view product details" onPress={() => router.push('/(tabs)/qr-lookup')} style={({ pressed }) => [styles.lookupButton, pressed && styles.lookupPressed]}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code to view product details" onPress={() => router.push('/qr-lookup')} style={({ pressed }) => [styles.lookupButton, pressed && styles.lookupPressed]}>
               <Ionicons name="scan-outline" size={24} color={colors.primary} />
             </Pressable>
             <View style={[styles.connectionDot, { backgroundColor: online ? colors.successSoft : colors.warningSoft }]}>
@@ -217,10 +227,11 @@ export default function DashboardScreen() {
               </Text>
             </View>
             <Button
-              title={syncing ? 'Syncing' : 'Sync now'}
+              title={syncing ? 'Syncing' : online ? 'Sync now' : 'Waiting for internet'}
               variant="secondary"
               small
               loading={syncing}
+              disabled={!online}
               onPress={() => void sync()}
             />
           </View>
@@ -243,13 +254,13 @@ export default function DashboardScreen() {
           <Button
             title={role === 'QC' ? 'Start QC scan' : 'Start dispatch scan'}
             large
-            onPress={() => router.push({ pathname: '/scan', params: { autostart: '1' } })}
+            onPress={() => router.navigate({ pathname: '/(tabs)/scan', params: { autostart: '1' } })}
             icon={<Ionicons name="camera-outline" size={22} color="#fff" />}
           />
           <Button
             title="History"
             variant="secondary"
-            onPress={() => router.push('/history')}
+            onPress={() => router.navigate('/(tabs)/history')}
           />
         </View>
 
@@ -334,7 +345,7 @@ export default function DashboardScreen() {
                     Showing 8 of {filteredPending.length}. Search to narrow the queue or open QC Scan.
                   </Text>
                 ) : null}
-                <Button title="Open QC group scan" variant="secondary" onPress={() => router.push({ pathname: '/scan', params: { autostart: '1' } })} />
+                <Button title="Open QC group scan" variant="secondary" onPress={() => router.navigate({ pathname: '/(tabs)/scan', params: { autostart: '1' } })} />
               </View>
             )}
           </Card>
@@ -346,7 +357,7 @@ export default function DashboardScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 40 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.lg, paddingBottom: 40 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4, color: colors.primary },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },

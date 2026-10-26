@@ -79,6 +79,14 @@ function RootNavigator() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
         <Stack.Protected guard={!!session}>
           <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="qr-lookup" options={{ headerShown: true, title: 'QR product checker' }} />
+          <Stack.Screen name="products" options={{ headerShown: true, title: 'Products' }} />
+          <Stack.Screen name="production" options={{ headerShown: true, title: 'Production' }} />
+          <Stack.Screen name="qr-jobs" options={{ headerShown: true, title: 'QR label jobs' }} />
+          <Stack.Screen name="profile" options={{ headerShown: true, title: 'Profile' }} />
+          <Stack.Screen name="settings" options={{ headerShown: true, title: 'Settings' }} />
+          <Stack.Screen name="sync" options={{ headerShown: true, title: 'Sync center' }} />
+          <Stack.Screen name="manage/[section]" options={{ headerShown: true, title: 'Inventory setup' }} />
         </Stack.Protected>
         <Stack.Protected guard={!session}>
           <Stack.Screen name="login" />

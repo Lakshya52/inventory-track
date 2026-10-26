@@ -316,6 +316,7 @@ export default function DispatchScreen() {
         style={styles.screen}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       >
         <View style={styles.hero}>
@@ -599,7 +600,7 @@ export default function DispatchScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 48 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.lg, paddingBottom: 48 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4, color: colors.success },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },

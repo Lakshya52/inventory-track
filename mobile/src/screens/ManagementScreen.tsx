@@ -6,6 +6,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { useSync } from '../sync/SyncContext';
 import { Badge, Button, Card, EmptyState, Field, LoadingView, Screen, SectionHeader } from '../components/ui';
 import type { EntityId } from '../types';
 import { colors, spacing } from '../theme';
@@ -51,6 +52,7 @@ export default function ManagementScreen() {
   const module = (section || 'products') as Module;
   const config = configs[module] || configs.products;
   const { session } = useAuth();
+  const { online } = useSync();
   const router = useRouter();
   const [rows, setRows] = useState<any[]>([]);
   const [query, setQuery] = useState('');
@@ -69,6 +71,12 @@ export default function ManagementScreen() {
   const masterKind = module === 'bag-quantities' ? 'bag-quantities' : 'grades';
   const load = useCallback(async () => {
     setError('');
+    if (!online) {
+      setError('Offline · current server data may be out of date. Reconnect to refresh or make changes.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const data = module === 'products' ? await api.listProducts()
         : module === 'users' ? await api.users.list()
@@ -79,7 +87,7 @@ export default function ManagementScreen() {
       setRows(Array.isArray(data) ? data : []);
     } catch (e: any) { setError(e?.message || 'Could not load records.'); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [module, masterKind]);
+  }, [module, masterKind, online]);
   useFocusEffect(useCallback(() => { setLoading(true); void load(); }, [load]));
 
   const filtered = useMemo(() => {
@@ -96,6 +104,7 @@ export default function ManagementScreen() {
     setRole(item.role || 'QC'); setError(''); setModal(true);
   };
   const save = async () => {
+    if (!online) { setError('Connect to the server before saving changes.'); return; }
     const missing = config.fields.filter((f) => !f.optional && !(form[f.key] || '').trim());
     if (missing.length) { setError(`Enter ${missing[0].label.toLowerCase()}.`); return; }
     setSaving(true); setError('');
@@ -127,6 +136,7 @@ export default function ManagementScreen() {
   };
 
   const remove = (item: any) => {
+    if (!online) { setError('Connect to the server before changing records.'); return; }
     const deactivates = module === 'vendors';
     return Alert.alert(deactivates ? 'Deactivate this vendor?' : 'Delete this record?', 'This action uses the existing web service and may affect future selection lists.', [
     { text: 'Cancel', style: 'cancel' },
@@ -145,6 +155,7 @@ export default function ManagementScreen() {
   };
 
   const toggle = async (item: any) => {
+    if (!online) { setError('Connect to the server before changing record status.'); return; }
     try {
       const enabled = !active(item);
       if (module === 'users') await api.users.setStatus(String(item.role).toLowerCase(), idOf(item), enabled);
@@ -159,6 +170,7 @@ export default function ManagementScreen() {
   };
 
   const savePassword = async () => {
+    if (!online) { setError('Connect to the server before changing passwords.'); return; }
     if (!passwordUser || newPassword.trim().length < 8) { setError('Use a password with at least 8 characters.'); return; }
     setSaving(true); setError('');
     try {
@@ -169,6 +181,7 @@ export default function ManagementScreen() {
   };
 
   const importProducts = async () => {
+    if (!online) { setError('Connect to the server before importing products.'); return; }
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'], copyToCacheDirectory: true });
       if (result.canceled || !result.assets?.[0]) return;
@@ -178,6 +191,7 @@ export default function ManagementScreen() {
   };
 
   const shareProductTemplate = async () => {
+    if (!online) { setError('Connect to the server before downloading the template.'); return; }
     try {
       const uri = await api.products.downloadImportSample();
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', dialogTitle: 'Save product import template' });
@@ -200,13 +214,13 @@ export default function ManagementScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
+      <ScrollView contentContainerStyle={styles.content} alwaysBounceVertical refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
         <SectionHeader title={config.title} subtitle={`${rows.length} records · search and manage`} right={<Pressable accessibilityRole="button" accessibilityLabel="Back" hitSlop={10} style={styles.closeButton} onPress={() => router.back()}><Ionicons name="close" size={22} color={colors.textMuted} /></Pressable>} />
         {error && !modal ? <Text style={styles.error}>{error}</Text> : null}
         <Field value={query} onChangeText={setQuery} placeholder={`Search ${config.title.toLowerCase()}…`} autoCapitalize="none" />
         {canManage ? <View style={styles.actions}>
-          <Button title={`Add ${module === 'masters' ? 'grade' : module === 'bag-quantities' ? 'quantity' : module === 'locations' ? 'location' : config.title.slice(0, -1)}`} onPress={startCreate} style={{ flex: 1 }} />
-          {module === 'products' ? <><Button title="Template" variant="secondary" onPress={() => void shareProductTemplate()} /><Button title="Import" variant="secondary" onPress={() => void importProducts()} /></> : null}
+          <Button title={`Add ${module === 'masters' ? 'grade' : module === 'bag-quantities' ? 'quantity' : module === 'locations' ? 'location' : config.title.slice(0, -1)}`} onPress={startCreate} disabled={!online} style={{ flex: 1 }} />
+          {module === 'products' ? <><Button title="Template" variant="secondary" disabled={!online} onPress={() => void shareProductTemplate()} /><Button title="Import" variant="secondary" disabled={!online} onPress={() => void importProducts()} /></> : null}
         </View> : null}
         {filtered.length === 0 ? <EmptyState title="No records found" message={query ? 'Try a shorter search.' : 'Create the first record to start using this list.'} /> : filtered.map((item, index) => (
           <Card key={String(idOf(item) ?? index)} style={styles.record}>
@@ -216,10 +230,10 @@ export default function ManagementScreen() {
               {['users', 'vendors', 'masters', 'locations'].includes(module) && item.is_active !== undefined ? <Badge status={active(item) ? 'APPLIED' : 'FAILED'} label={active(item) ? 'Active' : 'Inactive'} /> : null}
             </View>
             {canManage ? <View style={styles.iconActions}>
-              {module === 'users' ? <Button title="Password" small variant="secondary" icon={<Ionicons name="key-outline" size={15} color={colors.primary} />} onPress={() => resetPassword(item)} style={styles.recordAction} /> : null}
-              {module === 'users' || module === 'vendors' || module === 'masters' || module === 'bag-quantities' ? <Button title={active(item) ? 'Deactivate' : 'Activate'} small variant="secondary" icon={<Ionicons name={active(item) ? 'pause-circle-outline' : 'play-circle-outline'} size={15} color={colors.warning} />} onPress={() => void toggle(item)} style={styles.recordAction} /> : null}
-              <Button title="Edit" small variant="secondary" icon={<Ionicons name="create-outline" size={15} color={colors.info} />} onPress={() => startEdit(item)} style={styles.recordAction} />
-              {module !== 'vendors' ? <Button title="Delete" small variant="danger" icon={<Ionicons name="trash-outline" size={15} color={colors.danger} />} onPress={() => remove(item)} style={styles.recordAction} /> : null}
+              {module === 'users' ? <Button title="Password" small variant="secondary" disabled={!online} icon={<Ionicons name="key-outline" size={15} color={colors.primary} />} onPress={() => resetPassword(item)} style={styles.recordAction} /> : null}
+              {module === 'users' || module === 'vendors' || module === 'masters' || module === 'bag-quantities' ? <Button title={active(item) ? 'Deactivate' : 'Activate'} small variant="secondary" disabled={!online} icon={<Ionicons name={active(item) ? 'pause-circle-outline' : 'play-circle-outline'} size={15} color={colors.warning} />} onPress={() => void toggle(item)} style={styles.recordAction} /> : null}
+              <Button title="Edit" small variant="secondary" disabled={!online} icon={<Ionicons name="create-outline" size={15} color={colors.info} />} onPress={() => startEdit(item)} style={styles.recordAction} />
+              {module !== 'vendors' ? <Button title="Delete" small variant="danger" disabled={!online} icon={<Ionicons name="trash-outline" size={15} color={colors.danger} />} onPress={() => remove(item)} style={styles.recordAction} /> : null}
             </View> : null}
           </Card>
         ))}
@@ -236,7 +250,7 @@ export default function ManagementScreen() {
             ))}
             {module === 'users' && !editing ? <View style={styles.roleChoices}><Text style={styles.label}>Role</Text><View style={styles.chips}>{(['QC', 'DISPATCH', 'ADMIN'] as const).map((choice) => <Pressable key={choice} accessibilityRole="radio" accessibilityState={{ selected: role === choice }} onPress={() => setRole(choice)} style={[styles.chip, role === choice && styles.chipSelected]}><Text style={[styles.chipText, role === choice && styles.chipTextSelected]}>{choice}</Text></Pressable>)}</View></View> : null}
             {error ? <Text style={styles.error}>{error}</Text> : null}
-            <Button title={saving ? 'Saving…' : editing ? 'Save changes' : 'Create'} loading={saving} onPress={() => void save()} />
+            <Button title={saving ? 'Saving…' : online ? editing ? 'Save changes' : 'Create' : 'Connect to save'} loading={saving} disabled={!online} onPress={() => void save()} />
           </ScrollView>
         </Screen>
       </Modal>
@@ -251,7 +265,7 @@ export default function ManagementScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
   actions: { flexDirection: 'row', gap: spacing.sm },
   record: { gap: spacing.md },
   name: { fontSize: 14, color: colors.text, fontWeight: '800' },

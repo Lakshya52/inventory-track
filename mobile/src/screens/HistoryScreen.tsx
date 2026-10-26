@@ -76,6 +76,7 @@ export default function HistoryScreen() {
       <ScrollView
         style={styles.screen}
         contentContainerStyle={styles.content}
+        alwaysBounceVertical
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       >
         <View style={styles.hero}>
@@ -212,7 +213,7 @@ function photoCount(images: string): number {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 40 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.lg, paddingBottom: 40 },
   pendingCard: { gap: spacing.md, borderColor: colors.warningSoft },
   pendingCopy: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   pendingText: { flex: 1, gap: 3 },

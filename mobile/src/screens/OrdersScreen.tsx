@@ -14,7 +14,8 @@ import { colors, spacing } from '../theme';
 import LimitedAccessScreen from './LimitedAccessScreen';
 
 function listOf(value: any): any[] {
-  return Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : Array.isArray(value?.orders) ? value.orders : [];
+  const rows = Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : Array.isArray(value?.orders) ? value.orders : [];
+  return rows.filter((row: any) => row && typeof row === 'object');
 }
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character));
@@ -38,10 +39,19 @@ export default function OrdersScreen() {
   const [container, setContainer] = useState('');
   const [remarks, setRemarks] = useState('');
   const [packing, setPacking] = useState<any>(null);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
     if (role !== 'ADMIN' && role !== 'DISPATCH') {
       setLoading(false);
+      return;
+    }
+    if (role === 'ADMIN' && !online) {
+      setOrders([]);
+      setLoadError('Admin approvals need an internet connection.');
+      setLoading(false);
+      setRefreshing(false);
       return;
     }
     try {
@@ -58,7 +68,7 @@ export default function OrdersScreen() {
         setOrders(listOf(segment === 'pending' ? await api.dispatchOrders.pending() : await api.dispatchOrders.all(segment === 'all' ? undefined : segment.toUpperCase())));
       }
     } catch (error: any) {
-      Alert.alert('Could not load orders', error?.message || 'Check your connection and refresh.');
+      setLoadError(error?.message || 'Could not load orders. Check your connection and refresh.');
     } finally { setLoading(false); setRefreshing(false); }
   }, [role, segment, online]);
   useFocusEffect(useCallback(() => { setLoading(true); void load(); }, [load]));
@@ -116,7 +126,14 @@ export default function OrdersScreen() {
   };
 
   const showPackingList = async (order: any) => {
-    try { setPacking(await api.dispatchOrders.packingList(order.id ?? order._id)); }
+    if (!online) { Alert.alert('Connection required', 'Packing lists are loaded from the server. Reconnect and try again.'); return; }
+    try {
+      const result = await api.dispatchOrders.packingList(order.id ?? order._id);
+      if (!result || typeof result !== 'object' || Array.isArray(result)) {
+        throw new Error('The server returned no packing details for this order. Refresh and try again.');
+      }
+      setPacking(result);
+    }
     catch (error: any) { Alert.alert('Could not load packing list', error?.message || 'Please try again.'); }
   };
 
@@ -137,7 +154,9 @@ export default function OrdersScreen() {
     await Print.printAsync({ html });
   };
 
-  const packingItems = Array.isArray(packing?.items) ? packing.items : [];
+  const packingItems = Array.isArray(packing?.items)
+    ? packing.items.filter((item: any) => item && typeof item === 'object')
+    : [];
 
   if (role === 'QC') return <LimitedAccessScreen />;
   if (loading && orders.length === 0 && batches.length === 0) return <Screen><LoadingView label="Loading dispatch orders…" /></Screen>;
@@ -145,8 +164,9 @@ export default function OrdersScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
+      <ScrollView contentContainerStyle={styles.content} alwaysBounceVertical refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
         <SectionHeader title="Dispatch orders" subtitle={admin ? 'Review dispatch requests and update approvals.' : online ? 'Raise a dispatch request or track your requests.' : 'Offline requests stay on this device and sync automatically.'} />
+        {loadError ? <Text style={styles.offlineNotice}>{loadError}</Text> : null}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segments}>
           {(admin ? [['pending', 'Pending'], ['all', 'All orders']] : [['ready', 'Ready to request'], ['mine', 'My requests']]).map(([key, label]) => (
             <Pressable key={key} accessibilityRole="tab" accessibilityState={{ selected: segment === key }} onPress={() => setSegment(key)} style={[styles.segment, segment === key && styles.segmentActive]}>
@@ -185,10 +205,10 @@ export default function OrdersScreen() {
                 <Button title="Approve" small onPress={() => void decide(order, true)} loading={busyId === id} style={{ flex: 1 }} />
                 <Button title="Reject" small variant="danger" onPress={() => void decide(order, false)} style={{ flex: 1 }} />
               </> : null}
-              {role === 'DISPATCH' && (order.status === 'APPROVED' || order.dispatched_at) ? <Button title="Packing list" small variant="secondary" onPress={() => void showPackingList(order)} /> : null}
+              {role === 'DISPATCH' && (order.status === 'APPROVED' || order.dispatched_at) ? <Button title="Packing list" small variant="secondary" disabled={!online} onPress={() => void showPackingList(order)} /> : null}
             </View>
           </Card>;
-        }) : <EmptyState title={segment === 'pending' ? 'No requests waiting' : 'No orders yet'} message="Pull down to refresh the latest server data." />) : null}
+        }) : <EmptyState title={loadError ? 'Orders unavailable' : segment === 'pending' ? 'No requests waiting' : 'No orders yet'} message={loadError || (online ? 'Pull down to refresh the latest server data.' : 'No saved dispatch requests are available on this device yet.')} />) : null}
       </ScrollView>
 
       <Modal visible={!!selectedBatch} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSelectedBatch(null)}>
@@ -213,17 +233,17 @@ export default function OrdersScreen() {
               <View style={styles.packingIntro}>
                 <Ionicons name="cube-outline" size={21} color={colors.primary} />
                 <View style={styles.main}>
-                  <Text style={styles.title}>{packing.client_name || packing.client?.name || 'Dispatch shipment'}</Text>
-                  <Text style={styles.meta}>{packing.batch_number || 'Packing details'} · {packing.status || '—'}</Text>
+                  <Text style={styles.title}>{packing?.client_name || packing?.client?.name || 'Dispatch shipment'}</Text>
+                  <Text style={styles.meta}>{packing?.batch_number || 'Packing details'} · {packing?.status || '—'}</Text>
                 </View>
               </View>
-              <KeyValue label="Driver" value={packing.driver_name} />
-              <KeyValue label="Vehicle" value={packing.vehicle_number} />
-              <KeyValue label="Container" value={packing.container_number} />
-              <KeyValue label="Location" value={packing.location} />
-              <KeyValue label="Dispatched by" value={packing.dispatched_by} />
-              <KeyValue label="Dispatched at" value={packing.dispatched_at} />
-              {packing.admin_remarks ? <Text style={styles.detail}>Review note: {packing.admin_remarks}</Text> : null}
+              <KeyValue label="Driver" value={packing?.driver_name} />
+              <KeyValue label="Vehicle" value={packing?.vehicle_number} />
+              <KeyValue label="Container" value={packing?.container_number} />
+              <KeyValue label="Location" value={packing?.location} />
+              <KeyValue label="Dispatched by" value={packing?.dispatched_by} />
+              <KeyValue label="Dispatched at" value={packing?.dispatched_at} />
+              {packing?.admin_remarks ? <Text style={styles.detail}>Review note: {packing.admin_remarks}</Text> : null}
             </Card>
             <SectionHeader title="Items" subtitle={`${packingItems.length} item${packingItems.length === 1 ? '' : 's'} in this shipment`} />
             {packingItems.length ? packingItems.map((item: any, index: number) => (
@@ -250,7 +270,8 @@ export default function OrdersScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 42 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.md, paddingBottom: 42 },
+  offlineNotice: { color: colors.warning, backgroundColor: colors.warningSoft, borderRadius: 12, padding: spacing.md, fontSize: 13, lineHeight: 19 },
   segments: { gap: 8, paddingVertical: 2 },
   segment: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 22, borderColor: colors.border, borderWidth: 1, backgroundColor: colors.surface },
   segmentActive: { backgroundColor: colors.primary, borderColor: colors.primary },

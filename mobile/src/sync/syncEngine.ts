@@ -42,6 +42,17 @@ async function prepareOperation(operation: OutboxOperation): Promise<OutboxOpera
   return { ...operation, payload };
 }
 
+async function applyLocalPending(operation: OutboxOperation): Promise<void> {
+  const batchIds = affectedBatchIds(operation);
+  if (batchIds.length === 0) return;
+  const status = operation.type.startsWith('QC_SUBMIT')
+    ? (String(operation.payload.result).toUpperCase() === 'PASS' ? 'QC_PASSED' : 'QC_FAILED')
+    : operation.type.startsWith('DISPATCH_CONFIRM') ? 'DISPATCHED'
+      : operation.type === 'DISPATCH_ORDER_RAISE' ? 'DISPATCH_ORDER_RAISED' : null;
+  if (!status) return;
+  for (const batchId of batchIds) await setBatchLocalStatus(batchId, status, 1);
+}
+
 function affectedBatchIds(operation: OutboxOperation, result?: SyncResult): EntityId[] {
   const values = result?.data?.batch_ids ?? operation.payload.batch_ids;
   if (Array.isArray(values)) {
@@ -79,7 +90,20 @@ async function applyLocalIssue(operation: OutboxOperation): Promise<void> {
   if (operation.type === 'DISPATCH_ORDER_RAISE') {
     await deleteLocalOrderByOperation(operation.operation_id);
   }
-  for (const batchId of batchIds) await clearLocalPendingForBatch(batchId);
+  const fallbackStatus = operation.type.startsWith('QC_SUBMIT') ? 'CREATED'
+    : operation.type.startsWith('DISPATCH_CONFIRM') ? 'DISPATCH_APPROVED'
+      : operation.type === 'DISPATCH_ORDER_RAISE' ? 'QC_PASSED' : null;
+  for (const batchId of batchIds) {
+    const savedStatus = operation.payload.previous_statuses?.[String(batchId)];
+    const expectedStatus = operation.type === 'DISPATCH_ORDER_RAISE'
+      ? operation.payload.expected_status : undefined;
+    const previousStatus = typeof savedStatus === 'string' && savedStatus
+      ? savedStatus
+      : typeof expectedStatus === 'string' && expectedStatus
+        ? expectedStatus : fallbackStatus;
+    if (previousStatus) await setBatchLocalStatus(batchId, previousStatus, 0);
+    else await clearLocalPendingForBatch(batchId);
+  }
 }
 
 async function handleResult(operation: OutboxOperation, result: SyncResult): Promise<void> {
@@ -126,18 +150,28 @@ export async function pushOutbox(session: AuthSession): Promise<PushSummary> {
 
   const prepared: OutboxOperation[] = [];
   for (const operation of operations) {
+    // Failed rows can become due for automatic retry after their backoff.
+    // Reapply the optimistic state before sending so the cache stays aligned
+    // with the pending work while that retry is in flight.
+    await applyLocalPending(operation);
     prepared.push(await prepareOperation(operation));
   }
 
   const deviceId = await getDeviceId();
   const response = await api.push(
     deviceId,
-    prepared.map((operation) => ({
-      operation_id: operation.operation_id,
-      type: operation.type,
-      payload: operation.payload,
-      client_timestamp: operation.client_timestamp,
-    }))
+    prepared.map((operation) => {
+      // This rollback snapshot belongs only to the local SQLite cache; the
+      // backend needs the operation itself, not device-specific UI state.
+      const payload = { ...operation.payload };
+      delete payload.previous_statuses;
+      return {
+        operation_id: operation.operation_id,
+        type: operation.type,
+        payload,
+        client_timestamp: operation.client_timestamp,
+      };
+    })
   );
 
   for (let i = 0; i < prepared.length; i += 1) {

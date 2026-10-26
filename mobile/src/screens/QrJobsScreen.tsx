@@ -7,6 +7,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { api } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { useSync } from '../sync/SyncContext';
 import { Button, Card, EmptyState, Field, LoadingView, Screen, SectionHeader } from '../components/ui';
 import type { EntityId } from '../types';
 import { colors, spacing } from '../theme';
@@ -17,6 +18,7 @@ function idOf(item: any): EntityId { return item.id ?? item._id; }
 
 export default function QrJobsScreen() {
   const { session } = useAuth();
+  const { online } = useSync();
   const [jobs, setJobs] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -28,18 +30,27 @@ export default function QrJobsScreen() {
   const [selectedJob, setSelectedJob] = useState<any>(null);
   const [details, setDetails] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoadError('');
+    if (!online) {
+      setLoadError('QR jobs are stored on the server. Connect to view or create jobs.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const [jobResult, productRows] = await Promise.all([api.qc.qrJobs(search), api.listProducts()]);
       setJobs(rowsOf(jobResult)); setProducts(productRows || []);
       setProductId((current) => current || productRows?.[0]?.id || null);
-    } catch (error: any) { Alert.alert('Could not load QR jobs', error?.message || 'Connect to the server and refresh.'); }
+    } catch (error: any) { setLoadError(error?.message || 'Could not load QR jobs.'); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [search]);
+  }, [online, search]);
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   const open = async (job: any) => {
+    if (!online) { Alert.alert('Connection required', 'Connect to the server to load QR job details.'); return; }
     setSelectedJob(job); setDetailLoading(true); setDetails(null);
     try { setDetails(await api.getQrJob(idOf(job))); }
     catch (error: any) { Alert.alert('Could not open QR job', error?.message || 'Please try again.'); setSelectedJob(null); }
@@ -47,6 +58,7 @@ export default function QrJobsScreen() {
   };
 
   const create = async () => {
+    if (!online) { Alert.alert('Connection required', 'Connect to the server before creating a QR job.'); return; }
     const amount = Number(quantity);
     if (!productId || !Number.isInteger(amount) || amount < 1) { Alert.alert('Check job details', 'Choose a product and enter a whole number of labels.'); return; }
     setCreating(true);
@@ -74,6 +86,7 @@ export default function QrJobsScreen() {
   };
 
   const reprint = async () => {
+    if (!online) { Alert.alert('Connection required', 'Connect to the server before preparing a reprint.'); return; }
     const labels = details?.labels || [];
     if (!selectedJob || labels.length === 0) return;
     try {
@@ -86,8 +99,9 @@ export default function QrJobsScreen() {
   if (!['ADMIN', 'QC'].includes(session?.user.role || '')) return <LimitedAccessScreen />;
   if (loading && jobs.length === 0) return <Screen><LoadingView label="Loading QR jobs…" /></Screen>;
 
-  return <Screen><ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
+  return <Screen><ScrollView contentContainerStyle={styles.content} alwaysBounceVertical refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
     <SectionHeader title="QR label jobs" subtitle="Create or reprint labels from the shared server." />
+    {loadError ? <Text style={styles.offlineNotice}>{loadError}</Text> : null}
     <Field value={search} onChangeText={setSearch} placeholder="Search by job, product, or batch" autoCapitalize="none" />
     <Card style={styles.createCard}>
       <Text style={styles.cardTitle}>Create a label job</Text>
@@ -95,19 +109,19 @@ export default function QrJobsScreen() {
         {products.map((product) => <Pressable key={String(idOf(product))} accessibilityRole="radio" accessibilityState={{ selected: String(productId) === String(idOf(product)) }} onPress={() => setProductId(idOf(product))} style={[styles.product, String(productId) === String(idOf(product)) && styles.productSelected]}><Text style={[styles.productText, String(productId) === String(idOf(product)) && styles.productTextSelected]} numberOfLines={1}>{product.name}</Text></Pressable>)}
       </ScrollView>
       <Field label="Label quantity" value={quantity} onChangeText={setQuantity} keyboardType="number-pad" />
-      <Button title={creating ? 'Creating…' : 'Create QR job'} loading={creating} onPress={() => void create()} />
+      <Button title={creating ? 'Creating…' : online ? 'Create QR job' : 'Connect to create'} loading={creating} disabled={!online} onPress={() => void create()} />
     </Card>
-    {jobs.length === 0 ? <EmptyState title="No QR jobs found" message="New jobs will appear here and can be printed as a label sheet." /> : jobs.map((job, index) => <Card key={String(idOf(job) ?? index)} style={styles.job}>
+    {jobs.length === 0 ? <EmptyState title={loadError ? 'QR jobs unavailable' : 'No QR jobs found'} message={loadError || 'New jobs will appear here and can be printed as a label sheet.'} /> : jobs.map((job, index) => <Card key={String(idOf(job) ?? index)} style={styles.job}>
       <View style={styles.jobIcon}><Ionicons name="qr-code-outline" size={20} color={colors.primary} /></View>
       <View style={styles.jobText}><Text style={styles.cardTitle}>{job.job_code || job.product_name || `QR job ${index + 1}`}</Text><Text style={styles.meta}>{job.product_name || ''} · {job.quantity || job.label_count || 0} labels</Text></View>
-      <Button title="Open" small variant="secondary" onPress={() => void open(job)} />
+      <Button title="Open" small variant="secondary" disabled={!online} onPress={() => void open(job)} />
     </Card>)}
   </ScrollView>
     <Modal visible={!!selectedJob} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => { setSelectedJob(null); setDetails(null); }}>
       <Screen edges={['top', 'bottom']}><ScrollView contentContainerStyle={styles.modal}>
         <SectionHeader title={details?.job?.job_code || selectedJob?.job_code || 'QR job'} subtitle={`${details?.labels?.length || 0} labels`} right={<Pressable accessibilityRole="button" accessibilityLabel="Close" style={styles.closeButton} onPress={() => { setSelectedJob(null); setDetails(null); }}><Ionicons name="close" size={22} color={colors.text} /></Pressable>} />
         {detailLoading ? <LoadingView label="Loading labels…" /> : <>
-          <View style={styles.actions}><Button title="Print labels" onPress={() => void printLabels(details?.labels || [])} style={{ flex: 1 }} /><Button title="Prepare reprint" variant="secondary" onPress={() => void reprint()} style={{ flex: 1 }} /></View>
+          <View style={styles.actions}><Button title="Print labels" disabled={!details?.labels?.length} onPress={() => void printLabels(details?.labels || [])} style={{ flex: 1 }} /><Button title="Prepare reprint" variant="secondary" disabled={!online} onPress={() => void reprint()} style={{ flex: 1 }} /></View>
           {(details?.labels || []).slice(0, 100).map((label: any, index: number) => <Card key={String(idOf(label) ?? index)} style={styles.labelRow}><Text style={styles.labelNumber}>#{label.serial_no || index + 1}</Text><Text selectable style={styles.labelValue}>{label.qr_value || label.code}</Text></Card>)}
           {(details?.labels || []).length > 100 ? <Text style={styles.meta}>Showing the first 100 labels. The print sheet includes every label.</Text> : null}
         </>}
@@ -117,7 +131,8 @@ export default function QrJobsScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 42 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.md, paddingBottom: 42 },
+  offlineNotice: { color: colors.warning, backgroundColor: colors.warningSoft, borderRadius: 12, padding: spacing.md, fontSize: 13, lineHeight: 19 },
   createCard: { gap: spacing.sm },
   cardTitle: { color: colors.text, fontSize: 15, fontWeight: '800' },
   products: { gap: 7 },

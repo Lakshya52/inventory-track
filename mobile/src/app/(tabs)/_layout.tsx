@@ -67,28 +67,10 @@ export default function TabsLayout() {
         name="history"
         options={tabOptions('history', 'History', 'time-outline', 'time')}
       />
-      <Tabs.Screen
-        name="sync"
-        options={{
-          href: null,
-        }}
-      />
-      <Tabs.Screen name="products" options={{ href: null }} />
-      <Tabs.Screen name="qr-lookup" options={{ href: null }} />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          href: null,
-        }}
-      />
       <Tabs.Screen name="orders" options={tabOptions('orders', 'Orders', 'clipboard-outline', 'clipboard')} />
       <Tabs.Screen name="manage" options={tabOptions('manage', 'Manage', 'grid-outline', 'grid')} />
       <Tabs.Screen name="reports" options={tabOptions('reports', 'Reports', 'bar-chart-outline', 'bar-chart')} />
       <Tabs.Screen name="more" options={tabOptions('more', 'More', 'ellipsis-horizontal-circle-outline', 'ellipsis-horizontal-circle')} />
-      <Tabs.Screen name="settings" options={{ href: null }} />
-      <Tabs.Screen name="production" options={{ href: null }} />
-      <Tabs.Screen name="qr-jobs" options={{ href: null }} />
-      <Tabs.Screen name="manage/[section]" options={{ href: null }} />
     </Tabs>
   );
 }

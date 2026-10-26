@@ -16,7 +16,6 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import { File, Paths } from 'expo-file-system';
 import QRCode from 'qrcode';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../api/client';
@@ -25,6 +24,7 @@ import { useSync } from '../sync/SyncContext';
 import { Badge, Button, Card, EmptyState, Field, Screen, SectionHeader } from '../components/ui';
 import { colors, radius, spacing } from '../theme';
 import { formatAge, formatDate } from '../utils/format';
+import { createShareablePdf } from '../utils/shareablePdf';
 import type {
   Batch,
   CreateBatchesResponse,
@@ -196,14 +196,10 @@ async function downloadLabelSets(
   sets: { job: QrPrintJob; labels: QrLabel[] }[]
 ): Promise<'shared' | 'printed'> {
   const html = await labelSetsHtml(sets);
-  const file = await Print.printToFileAsync({ html });
+  const file = await createShareablePdf(html, 'product-scanning-qr-labels');
   try {
     if (await Sharing.isAvailableAsync()) {
-      // Print writes under its own cache subdirectory. Copy to the app cache root
-      // so Android's share provider can grant the receiving app read access.
-      const shareFile = new File(Paths.cache, `qr-labels-${Date.now()}.pdf`);
-      await new File(file.uri).copy(shareFile);
-      await Sharing.shareAsync(shareFile.uri, {
+      await Sharing.shareAsync(file.uri, {
         mimeType: 'application/pdf',
         dialogTitle: 'Save QR labels PDF',
         UTI: 'com.adobe.pdf',
@@ -225,14 +221,11 @@ async function printLabelSets(sets: { job: QrPrintJob; labels: QrLabel[] }[]): P
 
 async function downloadLabelSetsOnly(sets: { job: QrPrintJob; labels: QrLabel[] }[]): Promise<void> {
   const html = await labelSetsHtml(sets);
-  const file = await Print.printToFileAsync({ html });
+  const file = await createShareablePdf(html, 'product-scanning-qr-labels');
   if (!(await Sharing.isAvailableAsync())) {
     throw new Error('Sharing is not available on this device. Choose Print now and select Save as PDF.');
   }
-  // Share from the app cache root so Android grants the receiving app access.
-  const shareFile = new File(Paths.cache, `qr-labels-${Date.now()}.pdf`);
-  await new File(file.uri).copy(shareFile);
-  await Sharing.shareAsync(shareFile.uri, {
+  await Sharing.shareAsync(file.uri, {
     mimeType: 'application/pdf',
     dialogTitle: 'Save QR labels PDF',
     UTI: 'com.adobe.pdf',
@@ -786,6 +779,7 @@ export default function BatchesScreen() {
         style={styles.screen}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       >
         <View style={styles.hero}>
@@ -1545,7 +1539,7 @@ function BatchDetail({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.3, color: colors.primary },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useIsFocused } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { api } from '../api/client';
 import { cacheBatchForScannedQr, getBatchByBarcode } from '../db/database';
 import { useSync } from '../sync/SyncContext';
@@ -34,11 +34,12 @@ function priceValue(value?: number | null): string | null {
 }
 
 export default function QrLookupScreen() {
-  const { online } = useSync();
+  const { online, sync } = useSync();
   const [permission, requestPermission] = useCameraPermissions();
   const isFocused = useIsFocused();
   const [cameraActive, setCameraActive] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [manualValue, setManualValue] = useState('');
   const [scannedValue, setScannedValue] = useState('');
   const [batch, setBatch] = useState<BatchLookup | null>(null);
@@ -107,6 +108,16 @@ export default function QrLookupScreen() {
     }
   }, [online]);
 
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      if (scannedValue) await lookup(scannedValue);
+      else await sync();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const details = useMemo(() => {
     if (!batch) return [] as { label: string; value: string }[];
     const rows: [string, string | number | null | undefined][] = [
@@ -157,7 +168,12 @@ export default function QrLookupScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+      >
         <View style={styles.hero}>
           <View style={styles.heroIcon}><Ionicons name="scan-outline" size={25} color={colors.primary} /></View>
           <View style={{ flex: 1, minWidth: 0 }}>
@@ -260,7 +276,7 @@ export default function QrLookupScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 40 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.md, paddingBottom: 40 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   heroIcon: { width: 48, height: 48, borderRadius: 16, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.3, color: colors.primary },

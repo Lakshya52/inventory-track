@@ -7,8 +7,10 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { api } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { useSync } from '../sync/SyncContext';
 import { Badge, Button, Card, EmptyState, Field, LoadingView, Screen, SectionHeader } from '../components/ui';
 import { colors, spacing } from '../theme';
+import { createShareablePdf } from '../utils/shareablePdf';
 import LimitedAccessScreen from './LimitedAccessScreen';
 
 const kinds = [
@@ -39,6 +41,7 @@ function isValidDate(value: string): boolean {
 
 export default function ReportsScreen() {
   const { session } = useAuth();
+  const { online } = useSync();
   const [kind, setKind] = useState<ReportKind>('summary');
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,11 +51,20 @@ export default function ReportsScreen() {
   const [result, setResult] = useState('');
   const [status, setStatus] = useState('');
   const [appliedFilters, setAppliedFilters] = useState({ from: '', to: '', result: '', status: '' });
+  const [loadError, setLoadError] = useState('');
   const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
     const requestId = ++requestSequence.current;
     setLoading(true);
+    setLoadError('');
+    if (!online) {
+      setRows([]);
+      setLoadError('Reports are loaded from the server. Connect to view or export them.');
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const dates = { ...(appliedFilters.from ? { from: appliedFilters.from } : {}), ...(appliedFilters.to ? { to: appliedFilters.to } : {}) };
       const data = kind === 'summary' ? await api.reports.summary()
@@ -65,7 +77,7 @@ export default function ReportsScreen() {
       if (requestId === requestSequence.current) setRows(normalize(data));
     } catch (error: any) {
       if (requestId === requestSequence.current) {
-        Alert.alert('Could not load report', error?.message || 'Connect to the server and try again.');
+        setLoadError(error?.message || 'Could not load report data.');
         setRows([]);
       }
     } finally {
@@ -74,7 +86,7 @@ export default function ReportsScreen() {
         setRefreshing(false);
       }
     }
-  }, [kind, appliedFilters]);
+  }, [kind, appliedFilters, online]);
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   const selectKind = (nextKind: ReportKind) => {
@@ -131,9 +143,16 @@ export default function ReportsScreen() {
         return `<tr>${fields.map((field) => `<td>${escapeHtml(flat[field] || '')}</td>`).join('')}</tr>`;
       }).join('');
       const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{font-family:Arial,sans-serif;padding:20px;color:#172033}h1{font-size:20px}p{color:#64748b;font-size:12px}table{border-collapse:collapse;width:100%;font-size:10px}th,td{border:1px solid #d9e1ec;padding:7px;text-align:left;vertical-align:top}th{background:#f1f5f9;text-transform:capitalize}</style></head><body><h1>${escapeHtml(kinds.find((item) => item.key === kind)?.label || 'Report')}</h1><p>Generated ${new Date().toLocaleString()} · ${rows.length} records</p><table><thead><tr>${fields.map((field) => `<th>${escapeHtml(humanize(field))}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table></body></html>`;
-      const file = await Print.printToFileAsync({ html });
-      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: 'Export report PDF' });
-      else await Print.printAsync({ html });
+      const file = await createShareablePdf(html, `product-scanning-${kind}`);
+      if (await Sharing.isAvailableAsync()) {
+        try {
+          await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: 'Export report PDF', UTI: 'com.adobe.pdf' });
+          return;
+        } catch (shareError) {
+          console.warn('Could not share the report PDF; opening the print dialog instead.', shareError);
+        }
+      }
+      await Print.printAsync({ uri: file.uri });
     } catch (error: any) { Alert.alert('Export failed', error?.message || 'Could not generate the PDF.'); }
   };
 
@@ -141,8 +160,9 @@ export default function ReportsScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
+      <ScrollView contentContainerStyle={styles.content} alwaysBounceVertical refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
         <SectionHeader title="Reports" subtitle="Review activity and export server data." />
+        {loadError ? <Text style={styles.offlineNotice}>{loadError}</Text> : null}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.kinds}>
           {kinds.map((item) => <Pressable key={item.key} accessibilityRole="tab" accessibilityState={{ selected: kind === item.key }} onPress={() => selectKind(item.key)} style={[styles.kind, kind === item.key && styles.kindActive]}><Text style={[styles.kindText, kind === item.key && styles.kindTextActive]}>{item.label}</Text></Pressable>)}
         </ScrollView>
@@ -150,11 +170,11 @@ export default function ReportsScreen() {
           <View style={styles.dateFields}><Field containerStyle={styles.dateField} label="From" placeholder="YYYY-MM-DD" value={from} onChangeText={setFrom} autoCapitalize="none" autoCorrect={false} keyboardType="numbers-and-punctuation" maxLength={10} /><Field containerStyle={styles.dateField} label="To" placeholder="YYYY-MM-DD" value={to} onChangeText={setTo} autoCapitalize="none" autoCorrect={false} keyboardType="numbers-and-punctuation" maxLength={10} /></View>
           {kind === 'qc' ? <View style={styles.chips}>{['', 'PASS', 'FAIL'].map((value) => <Pressable key={value || 'all'} accessibilityRole="radio" accessibilityState={{ selected: result === value }} onPress={() => setResult(value)} style={[styles.filterChip, result === value && styles.filterChipActive]}><Text style={[styles.filterText, result === value && styles.filterTextActive]}>{value || 'All results'}</Text></Pressable>)}</View> : null}
           {kind === 'requests' || kind === 'batches' ? <View style={styles.chips}>{['', ...(kind === 'requests' ? ['PENDING', 'APPROVED', 'REJECTED'] : ['CREATED', 'QC_PASSED', 'QC_FAILED', 'DISPATCHED'])].map((value) => <Pressable key={value || 'all'} accessibilityRole="radio" accessibilityState={{ selected: status === value }} onPress={() => setStatus(value)} style={[styles.filterChip, status === value && styles.filterChipActive]}><Text style={[styles.filterText, status === value && styles.filterTextActive]}>{value || 'All statuses'}</Text></Pressable>)}</View> : null}
-          <Button title="Apply filters" onPress={applyFilters} />
+          <Button title="Apply filters" disabled={!online} onPress={applyFilters} />
         </Card> : null}
-        <View style={styles.exportRow}><Button title="Export CSV" variant="secondary" icon={<Ionicons name="download-outline" size={16} color={colors.text} />} onPress={() => void exportCsv()} style={{ flex: 1 }} /><Button title="Export PDF" variant="secondary" icon={<Ionicons name="document-text-outline" size={16} color={colors.text} />} onPress={() => void exportPdf()} style={{ flex: 1 }} /></View>
+        <View style={styles.exportRow}><Button title="Export CSV" variant="secondary" disabled={!online} icon={<Ionicons name="download-outline" size={16} color={colors.text} />} onPress={() => void exportCsv()} style={{ flex: 1 }} /><Button title="Export PDF" variant="secondary" disabled={!online} icon={<Ionicons name="document-text-outline" size={16} color={colors.text} />} onPress={() => void exportPdf()} style={{ flex: 1 }} /></View>
         <Text style={styles.resultMeta}>{rows.length} records{rows.length > displayRows.length ? ` · showing ${displayRows.length}` : ''}</Text>
-        {loading && !rows.length ? <LoadingView label="Loading report…" /> : displayRows.length === 0 ? <EmptyState title="No report rows" message="Try a different report or date filter." /> : displayRows.map((row, index) => {
+        {loading && !rows.length ? <LoadingView label="Loading report…" /> : displayRows.length === 0 ? <EmptyState title={loadError ? 'Report unavailable' : 'No report rows'} message={loadError || 'Try a different report or date filter.'} /> : displayRows.map((row, index) => {
           const flat = flatten(row);
           const titleKey = ['product_name', 'batch_number', 'name', 'metric', 'action', 'event', 'user_name'].find((key) => flat[key]);
           const title = titleKey ? flat[titleKey] : `Record ${index + 1}`;
@@ -170,7 +190,8 @@ export default function ReportsScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 42 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.md, paddingBottom: 42 },
+  offlineNotice: { color: colors.warning, backgroundColor: colors.warningSoft, borderRadius: 12, padding: spacing.md, fontSize: 13, lineHeight: 19 },
   kinds: { gap: 8 },
   kind: { minHeight: 44, justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9 },
   kindActive: { backgroundColor: colors.primary, borderColor: colors.primary },

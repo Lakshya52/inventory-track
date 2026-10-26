@@ -787,6 +787,15 @@ export async function queueBulkOperation(input: {
   const db = await getDb();
   const timestamp = nowIso();
   await db.withTransactionAsync(async () => {
+    const previousStatuses: Record<string, string> = {};
+    for (const batchId of input.batch_ids) {
+      const row = await db.getFirstAsync<{ status: string | null }>(
+        'SELECT status FROM batches WHERE id = ?',
+        [batchId]
+      );
+      if (row?.status) previousStatuses[String(batchId)] = row.status;
+    }
+    const payload = { ...input.payload, previous_statuses: previousStatuses };
     await db.runAsync(
       `INSERT INTO outbox (operation_id, type, payload, client_timestamp, status, attempts,
          last_error, created_at, next_attempt_at, entity_type, entity_id)
@@ -794,7 +803,7 @@ export async function queueBulkOperation(input: {
       [
         input.operation_id,
         input.type,
-        JSON.stringify(input.payload),
+        JSON.stringify(payload),
         timestamp,
         timestamp,
         input.entity_type || null,
@@ -891,11 +900,37 @@ export async function markOutboxIssue(
 
 export async function retryOutbox(operationId: string): Promise<void> {
   const db = await getDb();
-  await db.runAsync(
-    `UPDATE outbox SET status = 'PENDING', attempts = 0, last_error = NULL,
-       next_attempt_at = NULL WHERE operation_id = ?`,
-    [operationId]
-  );
+  await db.withTransactionAsync(async () => {
+    const operation = await db.getFirstAsync<{ type: OperationType; payload: string; entity_id: EntityId | null }>(
+      'SELECT type, payload, entity_id FROM outbox WHERE operation_id = ?', [operationId]
+    );
+    if (!operation) return;
+    let payload: Record<string, any> = {};
+    try { payload = JSON.parse(operation.payload || '{}'); } catch { payload = {}; }
+
+    await db.runAsync(
+      `UPDATE outbox SET status = 'PENDING', attempts = 0, last_error = NULL,
+         next_attempt_at = NULL WHERE operation_id = ?`,
+      [operationId]
+    );
+
+    const status = operation.type.startsWith('QC_SUBMIT')
+      ? (String(payload.result).toUpperCase() === 'PASS' ? 'QC_PASSED' : 'QC_FAILED')
+      : operation.type.startsWith('DISPATCH_CONFIRM') ? 'DISPATCHED'
+        : operation.type === 'DISPATCH_ORDER_RAISE' ? 'DISPATCH_ORDER_RAISED' : null;
+    if (!status) return;
+    const batchIds: EntityId[] = Array.isArray(payload.batch_ids)
+      ? payload.batch_ids.filter((id: unknown): id is EntityId =>
+          typeof id === 'string' ? !!id.trim() : typeof id === 'number' && Number.isFinite(id))
+      : [payload.batch_id ?? operation.entity_id].filter((id): id is EntityId =>
+          typeof id === 'string' ? !!id.trim() : typeof id === 'number' && Number.isFinite(id));
+    for (const batchId of batchIds) {
+      await db.runAsync(
+        'UPDATE batches SET status = ?, local_pending = 1, updated_at = ? WHERE id = ?',
+        [status, nowIso(), batchId]
+      );
+    }
+  });
 }
 
 export async function deleteOutbox(operationId: string): Promise<void> {
@@ -944,16 +979,17 @@ export async function discardOutboxOperation(operationId: string): Promise<void>
         ? [payload.barcode_value.trim()]
         : [];
 
-    const revertGroup = async (status: string): Promise<void> => {
+    const revertGroup = async (fallbackStatus: string): Promise<void> => {
       const column = batchIds.length > 0 ? 'id' : barcodes.length > 0 ? 'barcode_value' : null;
       const values: (EntityId | string)[] = batchIds.length > 0 ? batchIds : barcodes;
       if (!column || values.length === 0) return;
-      const placeholders = values.map(() => '?').join(',');
-      await db.runAsync(
-        `UPDATE batches SET status = ?, local_pending = 0, updated_at = ?
-         WHERE ${column} IN (${placeholders})`,
-        [status, nowIso(), ...values]
-      );
+      for (const value of values) {
+        const previous = payload.previous_statuses?.[String(value)] || fallbackStatus;
+        await db.runAsync(
+          `UPDATE batches SET status = ?, local_pending = 0, updated_at = ? WHERE ${column} = ?`,
+          [previous, nowIso(), value]
+        );
+      }
     };
 
     switch (operation.type) {

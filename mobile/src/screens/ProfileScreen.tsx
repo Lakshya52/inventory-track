@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
@@ -12,8 +12,9 @@ import { formatDate } from '../utils/format';
 export default function ProfileScreen() {
   const router = useRouter();
   const { session, logout } = useAuth();
-  const { online, syncing, pendingCount, conflictCount, lastSyncAt, sync } = useSync();
+  const { online, syncing, pendingCount, conflictCount, lastSyncAt, sync, refreshLocal } = useSync();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const role = session?.user.role || '-';
 
@@ -42,9 +43,21 @@ export default function ProfileScreen() {
     );
   };
 
+  const refresh = async () => {
+    setRefreshing(true);
+    try { await sync(); await refreshLocal(); }
+    catch (error) { console.warn('Could not refresh profile sync status.', error); }
+    finally { setRefreshing(false); }
+  };
+
   return (
     <Screen>
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+        alwaysBounceVertical
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+      >
         <View style={styles.hero}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -110,7 +123,7 @@ export default function ProfileScreen() {
             <Button
               title="Sync details"
               variant="secondary"
-              onPress={() => router.push('/sync')}
+        onPress={() => router.push('/sync')}
               style={{ flex: 1 }}
             />
             <Button
@@ -146,7 +159,7 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 48 },
+  content: { flexGrow: 1, padding: spacing.lg, gap: spacing.lg, paddingBottom: 48 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   avatar: {
     width: 58,
