@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.dayKey = exports.ageMinutes = exports.daysAgo = exports.startOfWeek = exports.endOfDay = exports.startOfDay = exports.parseDateValue = exports.isDuplicateKey = exports.stripIds = exports.stripId = exports.now = exports.DbContext = exports.getContext = exports.getDb = exports.getClient = exports.execute = exports.query = exports.getPool = exports.useMongo = void 0;
+exports.dayKey = exports.ageMinutes = exports.daysAgo = exports.startOfWeek = exports.endOfDay = exports.startOfDay = exports.parseDateValue = exports.isDuplicateKey = exports.isValidId = exports.idKey = exports.stripIds = exports.stripId = exports.now = exports.DbContext = exports.getContext = exports.getDb = exports.getClient = exports.execute = exports.query = exports.getPool = exports.useMongo = void 0;
 exports.withTransaction = withTransaction;
 exports.checkDatabase = checkDatabase;
 exports.closePool = closePool;
@@ -57,6 +57,8 @@ Object.defineProperty(exports, "DbContext", { enumerable: true, get: function ()
 exports.now = mongo.now;
 exports.stripId = mongo.stripId;
 exports.stripIds = mongo.stripIds;
+exports.idKey = mongo.idKey;
+exports.isValidId = mongo.isValidId;
 exports.isDuplicateKey = mongo.isDuplicateKey;
 exports.parseDateValue = mongo.parseDateValue;
 exports.startOfDay = mongo.startOfDay;

@@ -54,8 +54,11 @@ const users_1 = __importStar(require("./routes/users"));
 const import_1 = __importDefault(require("./routes/import"));
 const shelfLocations_1 = __importDefault(require("./routes/shelfLocations"));
 const clients_1 = __importDefault(require("./routes/clients"));
+const vendors_1 = __importDefault(require("./routes/vendors"));
+const masters_1 = __importDefault(require("./routes/masters"));
 const reports_1 = __importDefault(require("./routes/reports"));
 const sync_1 = __importDefault(require("./routes/sync"));
+const production_1 = __importDefault(require("./routes/production"));
 const errorHandler_1 = require("./middleware/errorHandler");
 const rateLimit_1 = require("./middleware/rateLimit");
 const schema_1 = require("./config/schema");
@@ -63,9 +66,9 @@ const database_1 = require("./config/database");
 const uploadController_1 = require("./controllers/uploadController");
 const app = (0, express_1.default)();
 const PORT = Number(process.env.PORT) || 3001;
-const allowedOrigins = (process.env.CORS_ORIGIN || '')
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
     .split(',')
-    .map((origin) => origin.trim())
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
     .filter(Boolean);
 function isOriginAllowed(origin) {
     return allowedOrigins.some((allowed) => {
@@ -125,8 +128,11 @@ app.use('/api/activity', activity_1.default);
 app.use('/api/products/import', import_1.default);
 app.use('/api/shelf-locations', shelfLocations_1.default);
 app.use('/api/clients', clients_1.default);
+app.use('/api/vendors', vendors_1.default);
+app.use('/api/masters', masters_1.default);
 app.use('/api/reports', reports_1.default);
 app.use('/api/sync', sync_1.default);
+app.use('/api/production', production_1.default);
 app.get('/api/health', async (_req, res) => {
     const db = await (0, database_1.checkDatabase)();
     res.status(db ? 200 : 503).json({

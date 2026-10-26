@@ -15,6 +15,8 @@ export { DbContext } from './database.mongo';
 export declare const now: typeof mongo.now;
 export declare const stripId: typeof mongo.stripId;
 export declare const stripIds: typeof mongo.stripIds;
+export declare const idKey: typeof mongo.idKey;
+export declare const isValidId: typeof mongo.isValidId;
 export declare const isDuplicateKey: typeof mongo.isDuplicateKey;
 export declare const parseDateValue: typeof mongo.parseDateValue;
 export declare const startOfDay: typeof mongo.startOfDay;

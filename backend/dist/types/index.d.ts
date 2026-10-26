@@ -2,7 +2,7 @@ export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 export type BatchStatus = 'CREATED' | 'QC_PASSED' | 'QC_FAILED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'DISPATCH_REJECTED' | 'DISPATCHED';
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 export interface Product {
-    id: number;
+    id: string | number;
     name: string;
     description: string | null;
     sku: string;
@@ -20,8 +20,8 @@ export interface Product {
     created_at: string;
 }
 export interface Batch {
-    id: number;
-    product_id: number;
+    id: string | number;
+    product_id: string | number;
     batch_number: string;
     quantity: number;
     uom: string | null;
@@ -29,42 +29,42 @@ export interface Batch {
     manufacturing_date: string | null;
     expiry_date: string | null;
     storage_location: string | null;
-    shelf_location_id?: number | null;
+    shelf_location_id?: string | number | null;
     notes: string | null;
     status: BatchStatus;
     barcode_value: string;
     created_at: string;
 }
 export interface QcRecord {
-    id: number;
-    batch_id: number;
-    tester_id: number;
+    id: string | number;
+    batch_id: string | number;
+    tester_id: string | number;
     result: 'PASS' | 'FAIL';
     remarks: string | null;
     created_at: string;
 }
 export interface DispatchRecord {
-    id: number;
-    batch_id: number;
-    dispatcher_id: number;
+    id: string | number;
+    batch_id: string | number;
+    dispatcher_id: string | number;
     remarks: string | null;
     created_at: string;
 }
 export interface DispatchOrder {
-    id: number;
-    batch_id: number;
-    raised_by: number;
+    id: string | number;
+    batch_id: string | number;
+    raised_by: string | number;
     status: DispatchOrderStatus;
-    admin_id: number | null;
+    admin_id: string | number | null;
     admin_remarks: string | null;
-    client_id: number;
+    client_id: string | number;
     driver_name: string;
     vehicle_number: string;
     created_at: string;
     updated_at: string;
 }
 export interface ShelfLocation {
-    id: number;
+    id: string | number;
     location_code: string;
     description: string | null;
     warehouse: string | null;
@@ -74,7 +74,7 @@ export interface ShelfLocation {
     created_at: string;
 }
 export interface Client {
-    id: number;
+    id: string | number;
     name: string;
     contact_person: string | null;
     email: string | null;
@@ -85,9 +85,9 @@ export interface Client {
     created_at: string;
 }
 export interface PackingListItem {
-    id: number;
-    dispatch_order_id: number;
-    batch_id: number;
+    id: string | number;
+    dispatch_order_id: string | number;
+    batch_id: string | number;
     product_name: string | null;
     batch_number: string | null;
     quantity: number | null;
@@ -97,15 +97,15 @@ export interface PackingListItem {
     created_at: string;
 }
 export interface FixRecord {
-    id: number;
-    batch_id: number;
-    fixed_by: number;
+    id: string | number;
+    batch_id: string | number;
+    fixed_by: string | number;
     description: string | null;
     created_at: string;
 }
 export interface ActivityLog {
-    id: number;
-    user_id: number | null;
+    id: string | number;
+    user_id: string | number | null;
     user_name: string | null;
     user_role: string | null;
     action: string;
@@ -113,7 +113,7 @@ export interface ActivityLog {
     created_at: string;
 }
 export interface JwtPayload {
-    userId: number;
+    userId: string | number;
     role: Role;
     name: string;
     email: string;
@@ -131,12 +131,12 @@ export interface SyncOperationResult {
     operation_id: string;
     status: SyncOperationStatus;
     entity_type: string | null;
-    entity_id: number | null;
+    entity_id: string | number | null;
     data?: Record<string, any> | null;
     error?: string | null;
     error_code?: string | null;
     /** Internal ownership fields, used to stop cross-user idempotency reuse. */
-    user_id?: number;
+    user_id?: string | number;
     user_role?: string;
 }
 export interface DeviceRegistration {
@@ -146,9 +146,9 @@ export interface DeviceRegistration {
     push_token?: string;
 }
 export interface RefreshTokenRecord {
-    id: number;
+    id: string | number;
     token_hash: string;
-    user_id: number;
+    user_id: string | number;
     user_role: Role;
     user_table: JwtPayload['table'];
     device_uuid: string | null;

@@ -6,7 +6,7 @@ const schema_mysql_1 = require("./schema.mysql");
 const schema_mongo_1 = require("./schema.mongo");
 /**
  * Idempotent startup migration for the selected database.
- * MySQL keeps the original SQL DDL; MongoDB creates indexes and counters.
+ * MySQL keeps the original SQL DDL; MongoDB creates its indexes.
  */
 async function ensureAdminSchema() {
     if (database_1.useMongo) {

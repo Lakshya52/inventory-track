@@ -33,12 +33,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getById = exports.update = exports.search = exports.getByBarcode = exports.list = exports.create = void 0;
+exports.getById = exports.update = exports.search = exports.getByBarcode = exports.list = exports.finishGoods = exports.create = void 0;
 const database_1 = require("../config/database");
 const mysqlImpl = __importStar(require("./batchController.mysql"));
 const mongoImpl = __importStar(require("./batchController.mongo"));
 const implementation = database_1.useMongo ? mongoImpl : mysqlImpl;
 exports.create = implementation.create;
+exports.finishGoods = implementation.finishGoods;
 exports.list = implementation.list;
 exports.getByBarcode = implementation.getByBarcode;
 exports.search = implementation.search;
