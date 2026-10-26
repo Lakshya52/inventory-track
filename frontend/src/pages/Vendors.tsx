@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, FormEvent } from 'react';
 import { api } from '../services/api';
-import { Vendor } from '../types';
+import { EntityId, Vendor } from '../types';
 import {
   Handshake, Plus, Search, Pencil, Trash2, X, Power, Building2,
   Mail, Phone, MapPin, BadgeCheck,
@@ -24,7 +24,7 @@ export default function Vendors() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<EntityId | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');

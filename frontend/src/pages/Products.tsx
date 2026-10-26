@@ -1,6 +1,6 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
-import { Product } from '../types';
+import { EntityId, Product } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { Package, Plus, Search, Download, Upload, Pencil, Trash2, X, RefreshCw } from 'lucide-react';
 
@@ -17,9 +17,9 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
   const { user } = useAuth();
   const canManage = !readOnly && user?.role === 'ADMIN';
   const [products, setProducts] = useState<Product[]>([]);
-  const [grades, setGrades] = useState<Array<{ id: number; name: string; is_active: number | boolean }>>([]);
+  const [grades, setGrades] = useState<Array<{ id: EntityId; name: string; is_active: number | boolean }>>([]);
   const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<EntityId | null>(null);
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
 
@@ -31,8 +31,8 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
       .then(([productRows, gradeRows]) => {
         setProducts(productRows);
         setGrades(gradeRows.filter(grade =>
-          Number.isSafeInteger(Number(grade.id)) &&
-          Number(grade.id) > 0 &&
+          ((typeof grade.id === 'string' && grade.id.trim().length > 0) ||
+            (typeof grade.id === 'number' && Number.isSafeInteger(grade.id) && grade.id > 0)) &&
           (grade.is_active === true || Number(grade.is_active) === 1)
         ));
       })
@@ -78,7 +78,7 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
     } catch (err: any) { setError(err.message); }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: EntityId) => {
     if (!window.confirm('Delete this product?')) return;
     await api.products.delete(id);
     api.products.list().then(setProducts);

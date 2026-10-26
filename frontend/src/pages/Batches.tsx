@@ -72,8 +72,9 @@ async function downloadCreatedQrPdfs(
 }
 
 function hasUsableMasterId(row: any): boolean {
-  const id = Number(row?.id);
-  return Number.isSafeInteger(id) && id > 0;
+  const id = row?.id;
+  return (typeof id === 'string' && id.trim().length > 0) ||
+    (typeof id === 'number' && Number.isSafeInteger(id) && id > 0);
 }
 
 function isActiveMaster(row: any): boolean {
@@ -134,7 +135,7 @@ export default function Batches() {
       .catch((err: Error) => setError(err.message));
   }, []);
 
-  const selectedProduct = useMemo(() => products.find(p => p.id === Number(productId)), [productId, products]);
+  const selectedProduct = useMemo(() => products.find(p => String(p.id) === productId), [productId, products]);
 
   const filteredBatches = useMemo(() => {
     if (!searchQuery) return batches;
@@ -180,7 +181,7 @@ export default function Batches() {
         return;
       }
       const created = await api.batches.create({
-        product_id: Number(productId), batch_number: batchNumber, quantity: Number(quantity),
+        product_id: productId, batch_number: batchNumber, quantity: Number(quantity),
         batch_count: batchTotal,
         uom: uom || undefined, unit_price: Number(unitPrice) || 0,
         manufacturing_date: manufacturingDate || undefined, expiry_date: expiryDate || undefined,
@@ -208,12 +209,11 @@ export default function Batches() {
 
   const handleFinishGoods = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const vendorId = Number(finishGoodsSelection.vendorId);
-    const gradeId = Number(finishGoodsSelection.gradeId);
-    const bagQuantityId = Number(finishGoodsSelection.bagQuantityId);
-    const isValidSelection = (id: number, rows: any[]) =>
-      Number.isSafeInteger(id) && id > 0 &&
-      rows.some(row => Number(row.id) === id && isActiveMaster(row));
+    const vendorId = finishGoodsSelection.vendorId;
+    const gradeId = finishGoodsSelection.gradeId;
+    const bagQuantityId = finishGoodsSelection.bagQuantityId;
+    const isValidSelection = (id: string, rows: any[]) =>
+      id.length > 0 && rows.some(row => String(row.id) === id && isActiveMaster(row));
     if (!finishBatch) return;
     if (
       !isValidSelection(vendorId, vendors) ||
@@ -229,7 +229,7 @@ export default function Batches() {
         vendor_id: vendorId,
         grade_id: gradeId,
         bag_quantity_id: bagQuantityId,
-        shelf_location_id: shelfLocationId ? Number(shelfLocationId) : undefined,
+        shelf_location_id: shelfLocationId || undefined,
       });
       setSuccess(`Finished-goods details saved for ${finishBatch.batch_number}. Its ${result.labels.length} QR labels remain available to download.`);
       setFinishBatch(null);
@@ -254,8 +254,8 @@ export default function Batches() {
       const zip = new JSZip();
       const orderedBatches = [...group].sort((a, b) => a.batch_number.localeCompare(b.batch_number, undefined, { numeric: true }));
       const details = await Promise.all(orderedBatches.map(async (batch) => {
-        const detail = await api.qc.qrJobs.get(Number(batch.qr_job_id));
-        return api.qc.qrJobs.reprint(Number(batch.qr_job_id), {
+        const detail = await api.qc.qrJobs.get(batch.qr_job_id!);
+        return api.qc.qrJobs.reprint(batch.qr_job_id!, {
           label_ids: detail.labels.map((label: QrLabel) => label.id),
         });
       }));
@@ -289,8 +289,8 @@ export default function Batches() {
       return;
     }
     try {
-      const detail = await api.qc.qrJobs.get(Number(batch.qr_job_id));
-      const reprinted = await api.qc.qrJobs.reprint(Number(batch.qr_job_id), {
+      const detail = await api.qc.qrJobs.get(batch.qr_job_id);
+      const reprinted = await api.qc.qrJobs.reprint(batch.qr_job_id, {
         label_ids: detail.labels.map((label: QrLabel) => label.id),
       });
       await downloadQrPdf(reprinted.labels, reprinted.job);
@@ -356,7 +356,7 @@ export default function Batches() {
                     <label className="input-label">Product *</label>
                     <select className="select" value={productId} onChange={e => {
                       setProductId(e.target.value);
-                      const p = products.find(x => x.id === Number(e.target.value));
+                      const p = products.find(x => String(x.id) === e.target.value);
                       if (p?.price && p.price > 0) setUnitPrice(String(p.price));
                       if (p) setBatchNumber(generateBatchNumber(p.sku, batches));
                     }} required>
@@ -469,7 +469,7 @@ export default function Batches() {
                     >
                       <option value="">-- Select supplier --</option>
                       {vendors.map(vendor => (
-                        <option key={vendor.id} value={String(Number(vendor.id))}>
+                        <option key={vendor.id} value={String(vendor.id)}>
                           {vendor.vendor_code === 'SELF' ? 'Self (Manufacturing Plant)' : vendor.name}
                         </option>
                       ))}
@@ -490,7 +490,7 @@ export default function Batches() {
                     >
                       <option value="">-- Select grade --</option>
                       {grades.map(grade => (
-                        <option key={grade.id} value={String(Number(grade.id))}>{grade.name}</option>
+                        <option key={grade.id} value={String(grade.id)}>{grade.name}</option>
                       ))}
                     </select>
                   </div>
@@ -509,7 +509,7 @@ export default function Batches() {
                     >
                       <option value="">-- Select bag quantity --</option>
                       {bagQuantities.map(value => (
-                        <option key={value.id} value={String(Number(value.id))}>{value.quantity} {value.unit}</option>
+                        <option key={value.id} value={String(value.id)}>{value.quantity} {value.unit}</option>
                       ))}
                     </select>
                   </div>

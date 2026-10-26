@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getContext } from '../config/database';
+import { getContext, idKey, isValidId } from '../config/database';
 import { mapByIds, mapNames } from '../services/queryService';
 
 export async function listBatches(_req: Request, res: Response): Promise<void> {
@@ -13,10 +13,10 @@ export async function listBatches(_req: Request, res: Response): Promise<void> {
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => batch.product_id)
   );
   res.json(batches.map((batch) => {
-    const product = products.get(Number(batch.product_id));
+    const product = products.get(idKey(batch.product_id));
     return {
       ...batch,
       product_name: product?.name ?? null,
@@ -27,12 +27,12 @@ export async function listBatches(_req: Request, res: Response): Promise<void> {
 
 export async function fixBatch(req: Request, res: Response): Promise<void> {
   const { batch_id, description } = req.body;
-  if (!batch_id) {
+  if (!batch_id || !isValidId(batch_id)) {
     res.status(400).json({ error: 'Batch ID required' });
     return;
   }
   const ctx = await getContext();
-  const batch = await ctx.findOne('batches', { id: Number(batch_id) }, { projection: { _id: 0 } });
+  const batch = await ctx.findOne('batches', { id: batch_id }, { projection: { _id: 0 } });
   if (!batch) {
     res.status(404).json({ error: 'Batch not found' });
     return;
@@ -43,11 +43,11 @@ export async function fixBatch(req: Request, res: Response): Promise<void> {
   }
 
   await ctx.insert('fix_records', {
-    batch_id: Number(batch_id),
+    batch_id,
     fixed_by: req.user!.userId,
     description: description || null,
   });
-  await ctx.updateOne('batches', { id: Number(batch_id) }, { $set: { status: 'CREATED' } });
+  await ctx.updateOne('batches', { id: batch_id }, { $set: { status: 'CREATED' } });
   await ctx.insert('activity_logs', {
     user_name: req.user?.name || 'Production',
     user_role: req.user?.role || 'PRODUCTION',
@@ -68,23 +68,23 @@ export async function listFixRecords(_req: Request, res: Response): Promise<void
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => Number(record.batch_id))
+    records.map((record) => record.batch_id)
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => batch.product_id)
   );
-  const fixedBy = await mapNames(ctx, 'production_users', records.map((record) => Number(record.fixed_by)));
+  const fixedBy = await mapNames(ctx, 'production_users', records.map((record) => record.fixed_by));
 
   res.json(records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...record,
       batch_number: batch?.batch_number ?? null,
       product_name: product?.name ?? null,
-      fixed_by_name: fixedBy.get(Number(record.fixed_by)) ?? null,
+      fixed_by_name: fixedBy.get(idKey(record.fixed_by)) ?? null,
     };
   }));
 }
@@ -105,7 +105,7 @@ export async function submitForQc(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: `Can only submit CREATED batches to QC. Current status: ${batch.status}` });
     return;
   }
-  const product = await ctx.findOne('products', { id: Number(batch.product_id) }, { projection: { _id: 0, name: 1 } });
+  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0, name: 1 } });
   await ctx.insert('activity_logs', {
     user_name: req.user?.name || 'Production',
     user_role: req.user?.role || 'PRODUCTION',

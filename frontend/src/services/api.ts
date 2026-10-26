@@ -1,9 +1,14 @@
 // In local development API_URL is unset and Vite proxies /api to the backend.
 // On Vercel, set API_URL to the Render service origin.
 import type { QrJob, QrLabel } from '../utils/qrPdf';
+import type { EntityId } from '../types';
 
 const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '');
 const BASE_URL = `${API_ORIGIN}/api`;
+
+function idPath(id: EntityId): string {
+  return encodeURIComponent(String(id));
+}
 
 export function uploadUrl(filename: string): string {
   return `${API_ORIGIN}/uploads/${filename}`;
@@ -61,25 +66,25 @@ export const api = {
     list: () => request<any[]>('/users'),
     add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH' }) =>
       request<any>('/users', { method: 'POST', body: JSON.stringify(data) }),
-    update: (type: string, id: number, data: { name: string; email: string }) =>
-      request<any>(`/users/${type}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    changePassword: (type: string, id: number, password: string) =>
-      request<any>(`/users/${type}/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
-    setStatus: (type: string, id: number, is_active: boolean) =>
-      request<any>(`/users/${type}/${id}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
-    delete: (type: string, id: number) =>
-      request<any>(`/users/${type}/${id}`, { method: 'DELETE' }),
+    update: (type: string, id: EntityId, data: { name: string; email: string }) =>
+      request<any>(`/users/${type}/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    changePassword: (type: string, id: EntityId, password: string) =>
+      request<any>(`/users/${type}/${idPath(id)}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+    setStatus: (type: string, id: EntityId, is_active: boolean) =>
+      request<any>(`/users/${type}/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
+    delete: (type: string, id: EntityId) =>
+      request<any>(`/users/${type}/${idPath(id)}`, { method: 'DELETE' }),
   },
   masters: {
     list: (kind: 'grades' | 'bag-quantities') => request<any[]>(`/masters/${kind}`),
     create: (kind: 'grades' | 'bag-quantities', data: any) =>
       request<any>(`/masters/${kind}`, { method: 'POST', body: JSON.stringify(data) }),
-    update: (kind: 'grades' | 'bag-quantities', id: number, data: any) =>
-      request<any>(`/masters/${kind}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    setStatus: (kind: 'grades' | 'bag-quantities', id: number, is_active: boolean) =>
-      request<any>(`/masters/${kind}/${id}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
-    remove: (kind: 'grades' | 'bag-quantities', id: number) =>
-      request<any>(`/masters/${kind}/${id}`, { method: 'DELETE' }),
+    update: (kind: 'grades' | 'bag-quantities', id: EntityId, data: any) =>
+      request<any>(`/masters/${kind}/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    setStatus: (kind: 'grades' | 'bag-quantities', id: EntityId, is_active: boolean) =>
+      request<any>(`/masters/${kind}/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
+    remove: (kind: 'grades' | 'bag-quantities', id: EntityId) =>
+      request<any>(`/masters/${kind}/${idPath(id)}`, { method: 'DELETE' }),
   },
   vendors: {
     list: (params?: { q?: string; status?: string }) => {
@@ -90,10 +95,10 @@ export const api = {
       return request<any[]>(`/vendors${suffix}`);
     },
     create: (data: any) => request<any>('/vendors', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: number, data: any) => request<any>(`/vendors/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    setStatus: (id: number, is_active: boolean) =>
-      request<any>(`/vendors/${id}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
-    delete: (id: number) => request<any>(`/vendors/${id}`, { method: 'DELETE' }),
+    update: (id: EntityId, data: any) => request<any>(`/vendors/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    setStatus: (id: EntityId, is_active: boolean) =>
+      request<any>(`/vendors/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
+    delete: (id: EntityId) => request<any>(`/vendors/${idPath(id)}`, { method: 'DELETE' }),
   },
   reports: {
     summary: () => request<any>('/reports/summary'),
@@ -131,8 +136,8 @@ export const api = {
     create: (data: any) =>
       request<any>('/products', { method: 'POST', body: JSON.stringify(data) }),
     search: (q: string) => request<any[]>(`/products/search?q=${encodeURIComponent(q)}`),
-    update: (id: number, data: any) => request<any>(`/products/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: number) => request<any>(`/products/${id}`, { method: 'DELETE' }),
+    update: (id: EntityId, data: any) => request<any>(`/products/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: EntityId) => request<any>(`/products/${idPath(id)}`, { method: 'DELETE' }),
     importExcel: (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
@@ -163,7 +168,7 @@ export const api = {
   batches: {
     list: () => request<any[]>('/batches'),
     create: (data: {
-      product_id: number;
+      product_id: EntityId;
       batch_number: string;
       quantity: number;
       batch_count?: number;
@@ -176,7 +181,7 @@ export const api = {
       batch_group_id: string;
       batch_count: number;
       batches: Array<{
-        id: number;
+        id: EntityId;
         batch_number: string;
         barcode_value: string;
         qr_job: QrJob;
@@ -185,12 +190,12 @@ export const api = {
       message: string;
     }> =>
       request('/batches', { method: 'POST', body: JSON.stringify(data) }),
-    finishGoods: (id: number, data: { vendor_id: number; grade_id: number; bag_quantity_id: number; shelf_location_id?: number }) =>
-      request<any>(`/batches/${id}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
+    finishGoods: (id: EntityId, data: { vendor_id: EntityId; grade_id: EntityId; bag_quantity_id: EntityId; shelf_location_id?: EntityId }) =>
+      request<any>(`/batches/${idPath(id)}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
     getByBarcode: (barcode: string) =>
       request<any>(`/batches/barcode/${encodeURIComponent(barcode)}`),
-    getById: (id: number) => request<any>(`/batches/${id}`),
-    update: (id: number, data: any) => request<any>(`/batches/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    getById: (id: EntityId) => request<any>(`/batches/${idPath(id)}`),
+    update: (id: EntityId, data: any) => request<any>(`/batches/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     search: (q: string) => request<any[]>(`/batches/search?q=${encodeURIComponent(q)}`),
   },
   qc: {
@@ -219,15 +224,15 @@ export const api = {
         body: JSON.stringify({ barcodes: data.barcodes, result: data.result, remarks: data.remarks }),
       });
     },
-    reopenFailedBatch: (id: number, reason: string) =>
-      request<any>(`/qc/batches/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    reopenFailedBatch: (id: EntityId, reason: string) =>
+      request<any>(`/qc/batches/${idPath(id)}/reopen`, { method: 'POST', body: JSON.stringify({ reason }) }),
     qrJobs: {
       list: (q?: string) => request<{ items: any[]; total: number }>(`/qc/qr-jobs${q ? `?q=${encodeURIComponent(q)}` : ''}`),
-      create: (data: { product_id: number; quantity: number }) =>
+      create: (data: { product_id: EntityId; quantity: number }) =>
         request<any>('/qc/qr-jobs', { method: 'POST', body: JSON.stringify(data) }),
-      get: (id: number) => request<any>(`/qc/qr-jobs/${id}`),
-      reprint: (id: number, data: { quantity?: number; label_ids?: number[] }) =>
-        request<any>(`/qc/qr-jobs/${id}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
+      get: (id: EntityId) => request<any>(`/qc/qr-jobs/${idPath(id)}`),
+      reprint: (id: EntityId, data: { quantity?: number; label_ids?: EntityId[] }) =>
+        request<any>(`/qc/qr-jobs/${idPath(id)}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
     },
     stats: () => request<any>('/qc/stats'),
     pending: (params?: { page?: number; limit?: number; q?: string }) => {
@@ -264,7 +269,7 @@ export const api = {
       }
       return request<any>('/dispatch', { method: 'POST', body: JSON.stringify(data) });
     },
-    submitBulk: (data: { barcodes: string[]; remarks?: string; images?: File[]; direct?: boolean; dispatch_order_id?: number }) => {
+    submitBulk: (data: { barcodes: string[]; remarks?: string; images?: File[]; direct?: boolean; dispatch_order_id?: EntityId }) => {
       if (data.images && data.images.length > 0) {
         const fd = new FormData();
         fd.append('barcodes', JSON.stringify(data.barcodes));
@@ -307,7 +312,7 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: number; barcode_value?: string; expected_status?: string; client_id: number; driver_name: string; vehicle_number: string; container_number: string }) =>
+    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; driver_name: string; vehicle_number: string; container_number: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
     pending: (params?: { q?: string }) => {
       const qs = new URLSearchParams();
@@ -326,12 +331,12 @@ export const api = {
       if (params?.status) qs.set('status', params.status);
       return request<any[]>(`/dispatch-orders/mine${qs.toString() ? `?${qs}` : ''}`);
     },
-    approve: (id: number, remarks?: string) =>
-      request<any>(`/dispatch-orders/${id}/approve`, { method: 'POST', body: JSON.stringify({ admin_remarks: remarks }) }),
-    reject: (id: number, remarks?: string) =>
-      request<any>(`/dispatch-orders/${id}/reject`, { method: 'POST', body: JSON.stringify({ admin_remarks: remarks }) }),
-    packingList: (id: number) =>
-      request<any>(`/dispatch-orders/${id}/packing-list`),
+    approve: (id: EntityId, remarks?: string) =>
+      request<any>(`/dispatch-orders/${idPath(id)}/approve`, { method: 'POST', body: JSON.stringify({ admin_remarks: remarks }) }),
+    reject: (id: EntityId, remarks?: string) =>
+      request<any>(`/dispatch-orders/${idPath(id)}/reject`, { method: 'POST', body: JSON.stringify({ admin_remarks: remarks }) }),
+    packingList: (id: EntityId) =>
+      request<any>(`/dispatch-orders/${idPath(id)}/packing-list`),
   },
   sync: {
     register: (data: { device_uuid: string; platform?: string; app_version?: string }) =>
@@ -350,21 +355,21 @@ export const api = {
     list: () => request<any[]>('/shelf-locations'),
     create: (data: any) =>
       request<any>('/shelf-locations', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: number, data: any) => request<any>(`/shelf-locations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: number) => request<any>(`/shelf-locations/${id}`, { method: 'DELETE' }),
+    update: (id: EntityId, data: any) => request<any>(`/shelf-locations/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: EntityId) => request<any>(`/shelf-locations/${idPath(id)}`, { method: 'DELETE' }),
   },
   clients: {
     list: () => request<any[]>('/clients'),
     create: (data: any) =>
       request<any>('/clients', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: number, data: any) => request<any>(`/clients/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: number) => request<any>(`/clients/${id}`, { method: 'DELETE' }),
+    update: (id: EntityId, data: any) => request<any>(`/clients/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: EntityId) => request<any>(`/clients/${idPath(id)}`, { method: 'DELETE' }),
   },
   production: {
     batches: () => request<any[]>('/production/batches'),
     submitForQc: (barcode_value: string) =>
       request<any>('/production/submit-for-qc', { method: 'POST', body: JSON.stringify({ barcode_value }) }),
-    fixBatch: (batch_id: number, description: string) =>
+    fixBatch: (batch_id: EntityId, description: string) =>
       request<any>('/production/fix-batch', { method: 'POST', body: JSON.stringify({ batch_id, description }) }),
     fixRecords: () => request<any[]>('/production/fix-records'),
   },

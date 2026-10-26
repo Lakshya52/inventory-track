@@ -91,57 +91,13 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
 }
 
 /**
- * Bring the counters collection in line with any documents that were created
- * outside of this process (for example a restored backup). Existing counters
- * are only ever increased, never reset.
- */
-async function syncCounters(ctx: DbContext, collections: string[]): Promise<void> {
-  for (const name of collections) {
-    const last = await ctx.collection(name).find({}, { sort: { id: -1 }, limit: 1, projection: { id: 1 } }).toArray();
-    const maxId = Number(last[0]?.id || 0);
-    if (!Number.isFinite(maxId) || maxId <= 0) continue;
-    await ctx.collection<{ _id: string; seq: number }>('counters').updateOne(
-      { _id: name },
-      { $max: { seq: maxId } },
-      { upsert: true }
-    );
-  }
-}
-
-const COLLECTIONS = [
-  'admins',
-  'qc_users',
-  'dispatch_users',
-  'products',
-  'shelf_locations',
-  'clients',
-  'vendors',
-  'grades',
-  'bag_quantities',
-  'batches',
-  'qr_print_jobs',
-  'qr_labels',
-  'qc_records',
-  'dispatch_orders',
-  'dispatch_records',
-  'fix_records',
-  'packing_list_items',
-  'activity_logs',
-  'devices',
-  'device_sync_state',
-  'sync_operations',
-  'refresh_tokens',
-];
-
-/**
  * Idempotent startup migration. MongoDB creates collections on first write,
- * so this creates indexes, repairs numeric ID counters, and normalizes legacy
- * active flags used by master-data dropdowns.
+ * so this creates indexes and normalizes legacy active flags used by
+ * master-data dropdowns. Existing document IDs are left untouched.
  */
 export async function ensureAdminSchema(): Promise<void> {
   const ctx = await getContext();
   await ensureIndexes(ctx);
-  await syncCounters(ctx, COLLECTIONS);
   for (const collection of ['grades', 'bag_quantities', 'vendors', 'shelf_locations']) {
     await ctx.updateMany(
       collection,
@@ -160,7 +116,7 @@ export async function ensureAdminSchema(): Promise<void> {
   }
   const selfVendor = await ctx.findOne('vendors', { vendor_code: 'SELF' }, { projection: { _id: 0, id: 1 } });
   if (selfVendor) {
-    await ctx.updateOne('vendors', { id: Number(selfVendor.id) }, {
+    await ctx.updateOne('vendors', { id: selfVendor.id }, {
       $set: { name: 'Self', category: 'Internal', is_active: 1 },
     });
   } else {

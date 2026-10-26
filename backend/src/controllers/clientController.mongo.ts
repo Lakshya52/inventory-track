@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getContext } from '../config/database';
+import { getContext, isValidId } from '../config/database';
 
 export async function list(req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
@@ -31,7 +31,8 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid client id' }); return; }
   const { name, contact_person, email, phone, address, gst_number, is_active } = req.body;
   const ctx = await getContext();
   const existing = await ctx.findOne('clients', { id });
@@ -66,7 +67,8 @@ export async function update(req: Request, res: Response): Promise<void> {
 }
 
 export async function remove(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid client id' }); return; }
   const ctx = await getContext();
   const client = await ctx.findOne('clients', { id }, { projection: { name: 1, is_active: 1 } });
   if (!client) {

@@ -1,15 +1,10 @@
 import { API_URL, REQUEST_TIMEOUT_MS } from "../config";
-import { File } from "expo-file-system";
-
-// Log resolved API URL for debugging sync issues
-if (__DEV__) {
-  console.log("✅ [Sync] Resolved API_URL:", API_URL);
-}
-
+import { File, Paths } from "expo-file-system";
 import type {
   AuthSession,
   Batch,
   CreateBatchesResponse,
+  EntityId,
   MobileMasterOption,
   MobileProduct,
   MobileShelfLocation,
@@ -21,6 +16,11 @@ import type {
   SyncPushResponse,
   User,
 } from "../types";
+
+// Log resolved API URL for debugging sync issues
+if (__DEV__) {
+  console.log("✅ [Sync] Resolved API_URL:", API_URL);
+}
 
 export class ApiError extends Error {
   status: number;
@@ -35,6 +35,7 @@ export class ApiError extends Error {
 }
 
 let currentSession: AuthSession | null = null;
+let refreshInFlight: Promise<AuthSession> | null = null;
 let sessionUpdateHandler:
   | ((session: AuthSession) => Promise<void> | void)
   | null = null;
@@ -87,11 +88,6 @@ async function rawRequest(
         (typeof body === "string" && body) ||
         `Request failed (${response.status})`;
       throw new ApiError(String(message), response.status, body);
-      console.log("[API] Error message:", message);
-      console.log("[API] Status:", response.status);
-      console.log("[API] Response body:", body);
-
-      throw new ApiError(message, response.status, body);
     }
     return body;
     // } catch (error) {
@@ -104,19 +100,31 @@ async function rawRequest(
     //   clearTimeout(timer);
     // }
   } catch (error) {
-    console.error("[API] Failed URL:", `${API_URL}${path}`);
-    console.error("[API] Original error:", error);
-
-    if (error instanceof ApiError) throw error;
-
-    if ((error as any)?.name === "AbortError") {
-      throw new ApiError("Request timed out. Your work is saved offline.", 0);
+    // A 401 is expected when an access token expires; request() will refresh
+    // the session and retry. Avoid reporting that normal flow as a network
+    // error in the device console.
+    if (error instanceof ApiError) {
+      if (error.status !== 401) {
+        console.error("[API] Request failed:", `${API_URL}${path}`, error.message);
+      }
+      throw error;
     }
 
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      controller.signal.aborted ||
+      (error as any)?.name === "AbortError" ||
+      /fetch request has been canceled/i.test(message)
+    ) {
+      throw new ApiError(
+        "The request timed out or was canceled. Check the connection and retry.",
+        0,
+      );
+    }
+
+    console.error("[API] Network request failed:", `${API_URL}${path}`, error);
     throw new ApiError(
-      `Network error: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Network error: ${message}`,
       0,
     );
   } finally {
@@ -124,7 +132,7 @@ async function rawRequest(
   }
 }
 
-async function refreshSession(): Promise<AuthSession> {
+async function performSessionRefresh(): Promise<AuthSession> {
   if (!currentSession?.refreshToken) {
     throw new ApiError("Session expired. Please sign in again.", 401);
   }
@@ -144,13 +152,26 @@ async function refreshSession(): Promise<AuthSession> {
   return next;
 }
 
+function refreshSession(): Promise<AuthSession> {
+  // Refresh tokens are rotated by the backend. Share one refresh request when
+  // several screens receive 401 at once, instead of racing to consume the
+  // same refresh token.
+  if (!refreshInFlight) {
+    refreshInFlight = performSessionRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
   retryOnUnauthorized = true,
 ): Promise<T> {
+  const sentToken = currentSession?.token;
   try {
-    return (await rawRequest(path, options, currentSession?.token)) as T;
+    return (await rawRequest(path, options, sentToken)) as T;
   } catch (error) {
     if (
       error instanceof ApiError &&
@@ -158,11 +179,68 @@ async function request<T>(
       retryOnUnauthorized &&
       currentSession?.refreshToken
     ) {
+      // Another request may already have rotated the refresh token while this
+      // request was in flight. Retry with that newer access token first.
+      if (sentToken && currentSession.token !== sentToken) {
+        return (await rawRequest(path, options, currentSession.token)) as T;
+      }
       await refreshSession();
       return (await rawRequest(path, options, currentSession?.token)) as T;
     }
     throw error;
   }
+}
+
+async function requestFileBytes(path: string): Promise<Uint8Array> {
+  const fetchBytes = async (token?: string | null) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    try {
+      const response = await fetch(`${API_URL}${path}`, { headers, signal: controller.signal });
+      if (!response.ok) {
+        const body = await parseResponse(response);
+        const message = body?.error || body?.message || 'The file could not be downloaded.';
+        throw new ApiError(String(message), response.status, body);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (controller.signal.aborted || (error as any)?.name === 'AbortError' || /fetch request has been canceled/i.test(message)) {
+        throw new ApiError('The download timed out or was canceled. Check the connection and retry.', 0);
+      }
+      throw new ApiError(`Network error: ${message}`, 0);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const sentToken = currentSession?.token;
+  try {
+    return await fetchBytes(sentToken);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401 && currentSession?.refreshToken) {
+      if (sentToken && currentSession.token !== sentToken) {
+        return fetchBytes(currentSession.token);
+      }
+      const next = await refreshSession();
+      return fetchBytes(next.token);
+    }
+    throw error;
+  }
+}
+
+function queryString(params: Record<string, string | number | null | undefined>): string {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && String(value).trim()) {
+      query.set(key, String(value));
+    }
+  });
+  const encoded = query.toString();
+  return encoded ? `?${encoded}` : "";
 }
 
 export const api = {
@@ -264,24 +342,96 @@ export const api = {
     return request<MobileProduct[]>("/api/products");
   },
 
+  profile: {
+    update: (data: { name?: string; currentPassword?: string; newPassword?: string }) =>
+      request<any>("/api/profile", { method: "PUT", body: JSON.stringify(data) }),
+  },
+
+  users: {
+    list: () => request<any[]>("/api/users"),
+    add: (data: { name: string; email: string; password: string; role: "ADMIN" | "QC" | "DISPATCH" }) =>
+      request<any>("/api/users", { method: "POST", body: JSON.stringify(data) }),
+    update: (role: string, id: EntityId, data: { name: string; email: string }) =>
+      request<any>(`/api/users/${encodeURIComponent(role)}/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+    changePassword: (role: string, id: EntityId, password: string) =>
+      request<any>(`/api/users/${encodeURIComponent(role)}/${encodeURIComponent(String(id))}/password`, { method: "PUT", body: JSON.stringify({ password }) }),
+    setStatus: (role: string, id: EntityId, is_active: boolean) =>
+      request<any>(`/api/users/${encodeURIComponent(role)}/${encodeURIComponent(String(id))}/status`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
+    remove: (role: string, id: EntityId) =>
+      request<any>(`/api/users/${encodeURIComponent(role)}/${encodeURIComponent(String(id))}`, { method: "DELETE" }),
+  },
+
+  clients: {
+    list: () => request<any[]>("/api/clients"),
+    create: (data: any) => request<any>("/api/clients", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: EntityId, data: any) => request<any>(`/api/clients/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+    remove: (id: EntityId) => request<any>(`/api/clients/${encodeURIComponent(String(id))}`, { method: "DELETE" }),
+  },
+
   async listVendors(): Promise<MobileVendor[]> {
     return request<MobileVendor[]>("/api/vendors?status=active");
+  },
+
+  vendors: {
+    list: (status = "all") => request<any[]>(`/api/vendors?status=${encodeURIComponent(status)}`),
+    create: (data: any) => request<any>("/api/vendors", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: EntityId, data: any) => request<any>(`/api/vendors/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+    setStatus: (id: EntityId, is_active: boolean) => request<any>(`/api/vendors/${encodeURIComponent(String(id))}/status`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
+    remove: (id: EntityId) => request<any>(`/api/vendors/${encodeURIComponent(String(id))}`, { method: "DELETE" }),
   },
 
   async listMasterOptions(kind: "grades" | "bag-quantities"): Promise<MobileMasterOption[]> {
     return request<MobileMasterOption[]>(`/api/masters/${kind}`);
   },
 
+  masters: {
+    list: (kind: "grades" | "bag-quantities") => request<any[]>(`/api/masters/${kind}`),
+    create: (kind: "grades" | "bag-quantities", data: any) => request<any>(`/api/masters/${kind}`, { method: "POST", body: JSON.stringify(data) }),
+    update: (kind: "grades" | "bag-quantities", id: EntityId, data: any) => request<any>(`/api/masters/${kind}/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+    setStatus: (kind: "grades" | "bag-quantities", id: EntityId, is_active: boolean) => request<any>(`/api/masters/${kind}/${encodeURIComponent(String(id))}/status`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
+    remove: (kind: "grades" | "bag-quantities", id: EntityId) => request<any>(`/api/masters/${kind}/${encodeURIComponent(String(id))}`, { method: "DELETE" }),
+  },
+
   async listShelfLocations(): Promise<MobileShelfLocation[]> {
     return request<MobileShelfLocation[]>("/api/shelf-locations");
+  },
+
+  shelfLocations: {
+    list: () => request<any[]>("/api/shelf-locations"),
+    create: (data: any) => request<any>("/api/shelf-locations", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: EntityId, data: any) => request<any>(`/api/shelf-locations/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+    remove: (id: EntityId) => request<any>(`/api/shelf-locations/${encodeURIComponent(String(id))}`, { method: "DELETE" }),
+  },
+
+  products: {
+    create: (data: any) => request<any>("/api/products", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: EntityId, data: any) => request<any>(`/api/products/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+    remove: (id: EntityId) => request<any>(`/api/products/${encodeURIComponent(String(id))}`, { method: "DELETE" }),
+    importExcel: async (asset: { uri: string; name: string; mimeType?: string | null }) => {
+      const form = new FormData();
+      form.append("file", { uri: asset.uri, name: asset.name, type: asset.mimeType || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } as any);
+      return request<any>("/api/products/import", { method: "POST", body: form });
+    },
+    downloadImportSample: async (): Promise<string> => {
+      const bytes = await requestFileBytes('/api/products/import/sample');
+      const file = new File(Paths.cache, `sample_products_import_${Date.now()}.xlsx`);
+      await file.create();
+      await file.write(bytes);
+      return file.uri;
+    },
   },
 
   async listBatches(): Promise<Batch[]> {
     return request<Batch[]>("/api/batches");
   },
 
+  batches: {
+    get: (id: EntityId) => request<any>(`/api/batches/${encodeURIComponent(String(id))}`),
+    update: (id: EntityId, data: any) => request<any>(`/api/batches/${encodeURIComponent(String(id))}`, { method: "PUT", body: JSON.stringify(data) }),
+  },
+
   async createBatches(data: {
-    product_id: number;
+    product_id: EntityId;
     batch_number: string;
     quantity: number;
     batch_count: number;
@@ -289,7 +439,7 @@ export const api = {
     manufacturing_date: string;
     expiry_date: string;
     notes?: string;
-    shelf_location_id?: number;
+    shelf_location_id?: EntityId;
   }): Promise<CreateBatchesResponse> {
     return request<CreateBatchesResponse>("/api/batches", {
       method: "POST",
@@ -298,12 +448,12 @@ export const api = {
   },
 
   async finishGoods(
-    id: number,
+    id: EntityId,
     data: {
-      vendor_id: number;
-      grade_id: number;
-      bag_quantity_id: number;
-      shelf_location_id?: number;
+      vendor_id: EntityId;
+      grade_id: EntityId;
+      bag_quantity_id: EntityId;
+      shelf_location_id?: EntityId;
     },
   ): Promise<{ qr_job: QrPrintJob; labels: QrLabel[] }> {
     return request(`/api/batches/${id}/finish-goods`, {
@@ -312,19 +462,19 @@ export const api = {
     });
   },
 
-  async reopenFailedBatch(id: number, reason: string): Promise<void> {
-    await request(`/api/qc/batches/${id}/reopen`, {
+  async reopenFailedBatch(id: EntityId, reason: string): Promise<void> {
+    await request(`/api/qc/batches/${encodeURIComponent(String(id))}/reopen`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
   },
 
-  async getQrJob(id: number): Promise<QrJobDetails> {
-    return request<QrJobDetails>(`/api/qc/qr-jobs/${id}`);
+  async getQrJob(id: EntityId): Promise<QrJobDetails> {
+    return request<QrJobDetails>(`/api/qc/qr-jobs/${encodeURIComponent(String(id))}`);
   },
 
-  async reprintQrLabels(id: number, labelIds: number[]): Promise<QrJobDetails> {
-    return request<QrJobDetails>(`/api/qc/qr-jobs/${id}/reprint`, {
+  async reprintQrLabels(id: EntityId, labelIds: EntityId[]): Promise<QrJobDetails> {
+    return request<QrJobDetails>(`/api/qc/qr-jobs/${encodeURIComponent(String(id))}/reprint`, {
       method: "POST",
       body: JSON.stringify({ label_ids: labelIds }),
     });
@@ -334,6 +484,57 @@ export const api = {
     return request<Batch>(
       `/api/batches/barcode/${encodeURIComponent(barcode)}`,
     );
+  },
+
+  qc: {
+    stats: () => request<any>("/api/qc/stats"),
+    pending: (params: { page?: number; limit?: number; q?: string } = {}) => request<any>(`/api/qc/pending${queryString(params)}`),
+    records: (params: { page?: number; limit?: number; q?: string; result?: string; scope?: 'mine' | 'all' } = {}) => request<any>(`/api/qc/records${queryString(params)}`),
+    qrJobs: (q?: string) => request<any>(`/api/qc/qr-jobs${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+    createQrJob: (product_id: EntityId, quantity: number) => request<any>("/api/qc/qr-jobs", { method: "POST", body: JSON.stringify({ product_id, quantity }) }),
+  },
+
+  dispatch: {
+    submit: (data: any) => request<any>("/api/dispatch", { method: "POST", body: JSON.stringify(data) }),
+    submitBulk: (data: any) => request<any>("/api/dispatch/bulk", { method: "POST", body: JSON.stringify(data) }),
+    today: () => request<any[]>("/api/dispatch/today"),
+    stats: () => request<any>("/api/dispatch/stats"),
+    ready: (q?: string) => request<any>(`/api/dispatch/ready${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+    records: (q?: string) => request<any>(`/api/dispatch/records${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+    approvedOrders: () => request<any[]>("/api/dispatch/approved-orders"),
+  },
+
+  dispatchOrders: {
+    raise: (data: any) => request<any>("/api/dispatch-orders", { method: "POST", body: JSON.stringify(data) }),
+    pending: () => request<any[]>("/api/dispatch-orders/pending"),
+    all: (status?: string) => request<any[]>(`/api/dispatch-orders/all${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+    mine: (status?: string) => request<any[]>(`/api/dispatch-orders/mine${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+    approve: (id: EntityId, remarks?: string) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/approve`, { method: "POST", body: JSON.stringify({ admin_remarks: remarks }) }),
+    reject: (id: EntityId, remarks?: string) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/reject`, { method: "POST", body: JSON.stringify({ admin_remarks: remarks }) }),
+    packingList: (id: EntityId) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/packing-list`),
+  },
+
+  reports: {
+    summary: () => request<any>("/api/reports/summary"),
+    qc: (params: Record<string, string> = {}) => request<any[]>(`/api/reports/qc${queryString(params)}`),
+    dispatch: (params: Record<string, string> = {}) => request<any[]>(`/api/reports/dispatch${queryString(params)}`),
+    dispatchRequests: (params: Record<string, string> = {}) => request<any[]>(`/api/reports/dispatch-requests${queryString(params)}`),
+    inventory: () => request<any[]>("/api/reports/inventory"),
+    batches: (params: Record<string, string> = {}) => request<any[]>(`/api/reports/batches${queryString(params)}`),
+  },
+
+  activity: () => request<any>("/api/activity?page=1&limit=100"),
+
+  production: {
+    batches: () => request<any[]>("/api/production/batches"),
+    submitForQc: (barcode_value: string) => request<any>("/api/production/submit-for-qc", { method: "POST", body: JSON.stringify({ barcode_value }) }),
+    fixBatch: (batch_id: EntityId, description: string) => request<any>("/api/production/fix-batch", { method: "POST", body: JSON.stringify({ batch_id, description }) }),
+    fixRecords: () => request<any[]>("/api/production/fix-records"),
+  },
+
+  dashboard: {
+    stats: () => request<any>("/api/dashboard"),
+    admin: () => request<any>("/api/dashboard/admin"),
   },
 
   async health(): Promise<{ status: string; database: string }> {

@@ -26,6 +26,7 @@ interface AuthContextValue {
   authError: string | null;
   login: (email: string, password: string) => Promise<AuthSession>;
   logout: () => Promise<void>;
+  updateCurrentUser: (user: Partial<AuthSession['user']>) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -134,9 +135,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearAllData();
   }, []);
 
+  const updateCurrentUser = useCallback(async (user: Partial<AuthSession['user']>): Promise<void> => {
+    if (!session) return;
+    const next = { ...session, user: { ...session.user, ...user } };
+    await saveSession(next);
+    setApiSession(next);
+    setSession(next);
+  }, [session]);
+
   const value = useMemo(
-    () => ({ session, initializing, authError, login, logout }),
-    [session, initializing, authError, login, logout]
+    () => ({ session, initializing, authError, login, logout, updateCurrentUser }),
+    [session, initializing, authError, login, logout, updateCurrentUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

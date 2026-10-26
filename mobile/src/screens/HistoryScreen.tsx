@@ -1,11 +1,11 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
 import { useSync } from '../sync/SyncContext';
 import { getDispatchRecords, getQcRecords } from '../db/database';
-import { Badge, Card, EmptyState, Field, Screen, SectionHeader } from '../components/ui';
+import { Badge, Button, Card, EmptyState, Field, Screen, SectionHeader } from '../components/ui';
 import LimitedAccessScreen from './LimitedAccessScreen';
 import { colors, spacing } from '../theme';
 import { formatDate } from '../utils/format';
@@ -13,7 +13,8 @@ import type { DispatchRecord, QcRecord } from '../types';
 
 export default function HistoryScreen() {
   const { session } = useAuth();
-  const { sync } = useSync();
+  const { sync, pendingCount } = useSync();
+  const router = useRouter();
   const [qcRecords, setQcRecords] = useState<QcRecord[]>([]);
   const [dispatchRecords, setDispatchRecords] = useState<DispatchRecord[]>([]);
   const [search, setSearch] = useState('');
@@ -82,7 +83,7 @@ export default function HistoryScreen() {
             <Text style={styles.eyebrow}>{role} HISTORY</Text>
             <Text style={styles.title}>{role === 'QC' ? 'QC test history' : 'Dispatch history'}</Text>
             <Text style={styles.subtitle}>
-              Local records stay visible offline. Pull to refresh after a sync.
+              Synced records stay on this device. Work waiting to sync is in the queue below.
             </Text>
           </View>
           <View style={styles.heroIcon}>
@@ -97,11 +98,24 @@ export default function HistoryScreen() {
           </View>
         ) : null}
 
+        {pendingCount > 0 ? (
+          <Card style={styles.pendingCard}>
+            <View style={styles.pendingCopy}>
+              <Ionicons name="cloud-upload-outline" size={19} color={colors.warning} />
+              <View style={styles.pendingText}>
+                <Text style={styles.pendingTitle}>{pendingCount} item{pendingCount === 1 ? '' : 's'} waiting to sync</Text>
+                <Text style={styles.pendingHint}>Review the queue or retry when your connection is available.</Text>
+              </View>
+            </View>
+            <Button title="Review sync queue" variant="secondary" small onPress={() => router.push('/sync')} />
+          </Card>
+        ) : null}
+
         <Card style={{ gap: spacing.md }}>
           <SectionHeader
             title="All records"
             subtitle={`${filtered.length} record${filtered.length === 1 ? '' : 's'} on this device`}
-            right={<Badge status="APPLIED" label="Offline first" />}
+            right={<Badge status="APPLIED" label="On device" />}
           />
           <Field
             value={search}
@@ -199,10 +213,15 @@ function photoCount(images: string): number {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 40 },
+  pendingCard: { gap: spacing.md, borderColor: colors.warningSoft },
+  pendingCopy: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  pendingText: { flex: 1, gap: 3 },
+  pendingTitle: { color: colors.text, fontSize: 14, fontWeight: '800' },
+  pendingHint: { color: colors.textMuted, fontSize: 13, lineHeight: 18 },
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4, color: colors.purple },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },
-  subtitle: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
+  subtitle: { fontSize: 13, color: colors.textMuted, marginTop: 4, lineHeight: 18 },
   heroIcon: {
     width: 50,
     height: 50,
@@ -226,22 +245,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  recordTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  recordMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
-  recordRemarks: { fontSize: 11, color: colors.textFaint, marginTop: 3, lineHeight: 15 },
-  filterRow: { flexDirection: 'row', gap: spacing.sm },
+  recordTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  recordMeta: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  recordRemarks: { fontSize: 12, color: colors.textFaint, marginTop: 4, lineHeight: 17 },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   filterChip: {
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 999,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
     backgroundColor: colors.surface,
   },
   filterChipSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-  filterText: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
+  filterText: { fontSize: 13, fontWeight: '700', color: colors.textMuted },
   filterTextSelected: { color: colors.primaryDark },
-  recordPhotoCount: { fontSize: 11, color: colors.info, marginTop: 3 },
+  recordPhotoCount: { fontSize: 12, color: colors.info, marginTop: 4 },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',

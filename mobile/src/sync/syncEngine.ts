@@ -12,7 +12,7 @@ import {
   setMeta,
   updateOutboxPayload,
 } from '../db/database';
-import type { AuthSession, OutboxOperation, SyncResult } from '../types';
+import type { AuthSession, EntityId, OutboxOperation, SyncResult } from '../types';
 import { MAX_SYNC_BATCH } from '../config';
 
 const BACKOFF_MS = [30_000, 120_000, 300_000, 900_000, 3_600_000, 14_400_000];
@@ -42,13 +42,17 @@ async function prepareOperation(operation: OutboxOperation): Promise<OutboxOpera
   return { ...operation, payload };
 }
 
-function affectedBatchIds(operation: OutboxOperation, result?: SyncResult): number[] {
+function affectedBatchIds(operation: OutboxOperation, result?: SyncResult): EntityId[] {
   const values = result?.data?.batch_ids ?? operation.payload.batch_ids;
   if (Array.isArray(values)) {
-    return [...new Set(values.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+    const ids = values.filter((value): value is EntityId =>
+      typeof value === 'string' ? value.trim().length > 0 : typeof value === 'number' && Number.isFinite(value)
+    );
+    return [...new Map(ids.map((id) => [String(id), id])).values()];
   }
-  const single = Number(result?.data?.batch_id || operation.payload.batch_id || 0);
-  return single > 0 ? [single] : [];
+  const single = result?.data?.batch_id ?? operation.payload.batch_id;
+  return typeof single === 'string' ? (single.trim() ? [single] : [])
+    : typeof single === 'number' && Number.isFinite(single) ? [single] : [];
 }
 
 async function applyLocalSuccess(operation: OutboxOperation, result: SyncResult): Promise<void> {

@@ -9,7 +9,6 @@ import { initDatabase } from '../db/database';
 import { Button, LoadingView, Screen } from '../components/ui';
 import { colors, radius, spacing } from '../theme';
 import { useFonts, Inter_400Regular } from '@expo-google-fonts/inter';
-import { LinearGradient } from 'expo-linear-gradient';
 
 type BootstrapState = 'loading' | 'ready' | 'error';
 

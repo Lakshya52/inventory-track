@@ -2,7 +2,9 @@ import { randomUUID } from 'crypto';
 import {
   DbContext,
   getContext,
+  idKey,
   isDuplicateKey,
+  isValidId,
   now,
   parseDateValue,
   withTransaction,
@@ -14,7 +16,7 @@ import {
   SyncOperationStatus,
   SyncOperationType,
 } from '../types';
-import { batchQrStats } from './queryService';
+import { batchQrStats, EntityId } from './queryService';
 
 export class SyncError extends Error {
   constructor(
@@ -92,11 +94,11 @@ async function findExistingOperation(
     operation_id: row.operation_id,
     status: row.status === 'APPLIED' ? 'DUPLICATE' : row.status,
     entity_type: row.entity_type || null,
-    entity_id: row.entity_id === null || row.entity_id === undefined ? null : Number(row.entity_id),
+    entity_id: row.entity_id === null || row.entity_id === undefined ? null : row.entity_id,
     data: result?.data ?? null,
     error: row.error_message || null,
     error_code: row.error_code || null,
-    user_id: Number(row.user_id),
+    user_id: row.user_id,
     user_role: row.user_role,
   };
 }
@@ -136,8 +138,8 @@ async function getBatchForUpdate(
   payload: Record<string, any>
 ): Promise<Record<string, any>> {
   const barcode = typeof payload.barcode_value === 'string' ? payload.barcode_value.trim() : '';
-  const batchId = Number(payload.batch_id);
-  if (!barcode && !Number.isFinite(batchId)) {
+  const batchId = payload.batch_id;
+  if (!barcode && !isValidId(batchId)) {
     throw new SyncError('barcode_value or batch_id is required', 'BATCH_REFERENCE_REQUIRED');
   }
 
@@ -149,7 +151,7 @@ async function getBatchForUpdate(
         projection: { _id: 0, batch_id: 1 },
       });
       if (label) {
-        batch = await ctx.findOne('batches', { id: Number(label.batch_id) }, { projection: { _id: 0 } });
+        batch = await ctx.findOne('batches', { id: label.batch_id }, { projection: { _id: 0 } });
       }
     }
   } else {
@@ -159,8 +161,8 @@ async function getBatchForUpdate(
     throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
   }
 
-  const product = await ctx.findOne('products', { id: Number(batch.product_id) }, { projection: { _id: 0 } });
-  const stats = await batchQrStats(ctx, [Number(batch.id)]);
+  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } });
+  const stats = await batchQrStats(ctx, [batch.id as EntityId]);
   return {
     ...batch,
     product_name: product?.name ?? null,
@@ -169,7 +171,7 @@ async function getBatchForUpdate(
     molecular_formula: product?.molecular_formula ?? null,
     product_grade: product?.grade ?? null,
     product_purity: product?.purity ?? null,
-    qr_count: stats.get(Number(batch.id))?.count ?? 0,
+    qr_count: stats.get(idKey(batch.id))?.count ?? 0,
   };
 }
 
@@ -223,39 +225,47 @@ async function getBatchesForUpdate(
       projection: { _id: 0, barcode_value: 1, id: 1 },
     }),
   ]);
-  const codeToBatch = new Map<string, number>();
-  for (const row of labelRows) codeToBatch.set(String(row.qr_value), Number(row.batch_id));
-  for (const row of legacyRows) codeToBatch.set(String(row.barcode_value), Number(row.id));
+  const codeToBatch = new Map<string, EntityId>();
+  for (const row of labelRows) codeToBatch.set(String(row.qr_value), row.batch_id as EntityId);
+  for (const row of legacyRows) codeToBatch.set(String(row.barcode_value), row.id as EntityId);
   const missing = barcodes.filter((barcode) => !codeToBatch.has(barcode));
   if (missing.length > 0) {
     throw new SyncConflictError('Some QR codes were not found', { missing_barcodes: missing });
   }
 
-  const batchIds = [...new Set(barcodes.map((barcode) => codeToBatch.get(barcode)!))];
+  const seenBatchIds = new Set<string>();
+  const batchIds: EntityId[] = [];
+  for (const barcode of barcodes) {
+    const batchId = codeToBatch.get(barcode)!;
+    const key = idKey(batchId);
+    if (seenBatchIds.has(key)) continue;
+    seenBatchIds.add(key);
+    batchIds.push(batchId);
+  }
   const batches = await ctx.find('batches', { id: { $in: batchIds } }, {
-    sort: { id: 1 },
+    sort: { created_at: 1 },
     projection: { _id: 0 },
   });
-  const productIds = batches.map((batch) => Number(batch.product_id));
+  const productIds = batches.map((batch) => batch.product_id as EntityId);
   const products = productIds.length > 0
     ? await ctx.find('products', { id: { $in: productIds } }, { projection: { _id: 0 } })
     : [];
-  const productMap = new Map(products.map((product) => [Number(product.id), product]));
+  const productMap = new Map(products.map((product) => [idKey(product.id), product]));
   const stats = await batchQrStats(ctx, batchIds);
   const enriched: Record<string, any>[] = batches.map((batch) => {
-    const product = productMap.get(Number(batch.product_id));
+    const product = productMap.get(idKey(batch.product_id));
     return {
       ...batch,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      qr_count: stats.get(Number(batch.id))?.count ?? 0,
+      qr_count: stats.get(idKey(batch.id))?.count ?? 0,
     };
   });
 
-  const scannedCounts = new Map<number, number>();
-  const scannedCodes = new Map<number, Set<string>>();
+  const scannedCounts = new Map<string, number>();
+  const scannedCodes = new Map<string, Set<string>>();
   for (const barcode of barcodes) {
-    const batchId = codeToBatch.get(barcode)!;
+    const batchId = idKey(codeToBatch.get(barcode)!);
     scannedCounts.set(batchId, (scannedCounts.get(batchId) || 0) + 1);
     const codes = scannedCodes.get(batchId) || new Set<string>();
     codes.add(barcode);
@@ -264,9 +274,9 @@ async function getBatchesForUpdate(
   const expectedLabelRows = await ctx.find('qr_labels', { batch_id: { $in: batchIds } }, {
     projection: { _id: 0, batch_id: 1, qr_value: 1 },
   });
-  const expectedCodes = new Map<number, Set<string>>();
+  const expectedCodes = new Map<string, Set<string>>();
   for (const row of expectedLabelRows) {
-    const batchId = Number(row.batch_id);
+    const batchId = idKey(row.batch_id);
     const codes = expectedCodes.get(batchId) || new Set<string>();
     codes.add(String(row.qr_value));
     expectedCodes.set(batchId, codes);
@@ -274,9 +284,9 @@ async function getBatchesForUpdate(
   const incomplete = enriched.filter((batch) =>
     Number(batch.qr_count) > 0 &&
     (Number(batch.qr_count) !== Number(batch.quantity) ||
-      scannedCounts.get(Number(batch.id)) !== Number(batch.qr_count) ||
-      [...(expectedCodes.get(Number(batch.id)) || [])].some(
-        (code) => !scannedCodes.get(Number(batch.id))?.has(code)
+      scannedCounts.get(idKey(batch.id)) !== Number(batch.qr_count) ||
+      [...(expectedCodes.get(idKey(batch.id)) || [])].some(
+        (code) => !scannedCodes.get(idKey(batch.id))?.has(code)
       ))
   );
   if (incomplete.length > 0) {
@@ -285,7 +295,7 @@ async function getBatchesForUpdate(
         batch_id: batch.id,
         batch_number: batch.batch_number,
         expected_qr_count: Number(batch.qr_count),
-        scanned_qr_count: scannedCounts.get(Number(batch.id)) || 0,
+        scanned_qr_count: scannedCounts.get(idKey(batch.id)) || 0,
       })),
     });
   }
@@ -315,33 +325,26 @@ async function logActivity(
  */
 async function deductProductStock(
   ctx: DbContext,
-  productId: number,
+  productId: EntityId,
   quantity: number
 ): Promise<number | null> {
-  if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
+  if (!isValidId(productId) || !Number.isFinite(quantity) || quantity <= 0) {
     return null;
   }
-  const result = await ctx.collection('products').findOneAndUpdate(
-    { id: productId },
-    [
-      {
-        $set: {
-          quantity: {
-            $cond: [
-              { $lt: [{ $subtract: [{ $ifNull: ['$quantity', 0] }, quantity] }, 0] },
-              0,
-              { $subtract: [{ $ifNull: ['$quantity', 0] }, quantity] },
-            ],
-          },
-          updated_at: now(),
-        },
-      },
-    ],
+  const result = await ctx.findOneAndUpdate('products', { id: productId }, [
     {
-      returnDocument: 'after',
-      ...(ctx.session ? { session: ctx.session } : {}),
-    }
-  );
+      $set: {
+        quantity: {
+          $cond: [
+            { $lt: [{ $subtract: [{ $ifNull: ['$quantity', 0] }, quantity] }, 0] },
+            0,
+            { $subtract: [{ $ifNull: ['$quantity', 0] }, quantity] },
+          ],
+        },
+        updated_at: now(),
+      },
+    },
+  ], { returnDocument: 'after' });
   return result ? Number((result as Record<string, any>).quantity) : null;
 }
 
@@ -350,7 +353,7 @@ async function applyQcSubmit(
   user: JwtPayload,
   deviceUuid: string | null,
   input: SyncOperationInput
-): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
   if (!['QC', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only QC or admin users can submit QC results', 'FORBIDDEN', 403);
   }
@@ -428,7 +431,7 @@ async function applyQcSubmitBulk(
   user: JwtPayload,
   deviceUuid: string | null,
   input: SyncOperationInput
-): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
   if (!['QC', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only QC or admin users can submit QC results', 'FORBIDDEN', 403);
   }
@@ -455,7 +458,7 @@ async function applyQcSubmitBulk(
   }
 
   const newStatus = result === 'PASS' ? 'QC_PASSED' : 'QC_FAILED';
-  const recordIds: number[] = [];
+  const recordIds: EntityId[] = [];
   for (const batch of batches) {
     const recordId = await ctx.insert('qc_records', {
       batch_id: batch.id,
@@ -506,15 +509,15 @@ async function applyDispatchOrderRaise(
   user: JwtPayload,
   deviceUuid: string | null,
   input: SyncOperationInput
-): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can raise dispatch orders', 'FORBIDDEN', 403);
   }
-  const clientId = Number(input.payload.client_id);
+  const clientId = input.payload.client_id as EntityId;
   const driverName = String(input.payload.driver_name || '').trim().slice(0, 150);
   const vehicleNumber = String(input.payload.vehicle_number || '').trim().slice(0, 50);
   const containerNumber = String(input.payload.container_number || '').trim().slice(0, 100);
-  if (!Number.isInteger(clientId) || clientId <= 0 || !driverName || !vehicleNumber || !containerNumber) {
+  if (!isValidId(clientId) || !driverName || !vehicleNumber || !containerNumber) {
     throw new SyncError('Select a client and provide the driver, vehicle, and container details', 'DISPATCH_DETAILS_REQUIRED');
   }
   const client = await ctx.findOne('clients', { id: clientId, is_active: 1 }, { projection: { id: 1 } });
@@ -535,7 +538,7 @@ async function applyDispatchOrderRaise(
     `Dispatch order can only be raised for QC_PASSED or DISPATCH_REJECTED batches. Current status: ${batch.status}`
   );
   if (!batch.fg_details_completed_at) {
-    const labelCount = await ctx.count('qr_labels', { batch_id: Number(batch.id) });
+    const labelCount = await ctx.count('qr_labels', { batch_id: batch.id });
     if (labelCount !== Number(batch.quantity)) {
       throw new SyncConflictError('Complete finished-goods details and generate bag QR labels before raising a dispatch order', {
         batch_id: batch.id,
@@ -545,7 +548,7 @@ async function applyDispatchOrderRaise(
     }
   }
   if (Number(batch.quantity) > 1) {
-    const labelCount = await ctx.count('qr_labels', { batch_id: Number(batch.id) });
+    const labelCount = await ctx.count('qr_labels', { batch_id: batch.id });
     if (labelCount !== Number(batch.quantity)) {
       throw new SyncConflictError('Batch unit QR labels are incomplete. Contact an administrator.', {
         batch_id: batch.id,
@@ -558,7 +561,7 @@ async function applyDispatchOrderRaise(
   const existing = await ctx.find('dispatch_orders', {
     batch_id: batch.id,
     status: { $in: ['PENDING', 'APPROVED'] },
-  }, { sort: { id: -1 }, limit: 1, projection: { _id: 0, id: 1, status: 1 } });
+  }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1, status: 1 } });
   if (existing.length > 0) {
     throw new SyncConflictError(
       existing[0].status === 'APPROVED'
@@ -619,7 +622,7 @@ async function applyDispatchConfirm(
   user: JwtPayload,
   deviceUuid: string | null,
   input: SyncOperationInput
-): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can confirm dispatches', 'FORBIDDEN', 403);
   }
@@ -657,19 +660,19 @@ async function applyDispatchConfirm(
     });
   }
 
-  let orderId: number | null = null;
+  let orderId: EntityId | null = null;
   if (batch.status === 'DISPATCH_APPROVED') {
     const orders = await ctx.find('dispatch_orders', {
       batch_id: batch.id,
       status: 'APPROVED',
-    }, { sort: { id: -1 }, limit: 1, projection: { _id: 0, id: 1 } });
+    }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1 } });
     if (orders.length === 0) {
       throw new SyncConflictError('No approved dispatch order was found for this batch', {
         batch_id: batch.id,
         current_status: batch.status,
       });
     }
-    orderId = Number(orders[0].id);
+    orderId = orders[0].id as EntityId;
   } else if (batch.status === 'QC_PASSED') {
     const directAllowed = payload.direct === true && (user.role === 'ADMIN' || process.env.ALLOW_DIRECT_DISPATCH === 'true');
     if (!directAllowed) {
@@ -713,7 +716,7 @@ async function applyDispatchConfirm(
   const dispatchedQuantity = Number(batch.quantity) || 0;
   const remainingStock = await deductProductStock(
     ctx,
-    Number(batch.product_id),
+    batch.product_id as EntityId,
     dispatchedQuantity
   );
 
@@ -737,7 +740,7 @@ async function applyDispatchConfirm(
       dispatch_record_id: dispatchRecordId,
       dispatch_order_id: orderId,
       images,
-      product_id: Number(batch.product_id),
+      product_id: batch.product_id,
       dispatched_quantity: dispatchedQuantity,
       remaining_stock: remainingStock,
     },
@@ -749,7 +752,7 @@ async function applyDispatchConfirmBulk(
   user: JwtPayload,
   deviceUuid: string | null,
   input: SyncOperationInput
-): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can confirm dispatches', 'FORBIDDEN', 403);
   }
@@ -757,16 +760,16 @@ async function applyDispatchConfirmBulk(
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
   const barcodes = bulkBarcodes(payload);
-  const requestedOrderId = Number(payload.dispatch_order_id);
+  const requestedOrderId = payload.dispatch_order_id as EntityId;
   const batches = await getBatchesForUpdate(ctx, barcodes);
 
   const directAllowed = payload.direct === true &&
     (user.role === 'ADMIN' || process.env.ALLOW_DIRECT_DISPATCH === 'true');
-  const recordIds: number[] = [];
-  const orderIds: number[] = [];
+  const recordIds: EntityId[] = [];
+  const orderIds: EntityId[] = [];
   const stockDeductions: Array<{
-    batch_id: number;
-    product_id: number;
+    batch_id: EntityId;
+    product_id: EntityId;
     quantity: number;
     remaining_stock: number | null;
   }> = [];
@@ -787,12 +790,12 @@ async function applyDispatchConfirmBulk(
       });
     }
 
-    let orderId: number | null = null;
+    let orderId: EntityId | null = null;
     if (batch.status === 'DISPATCH_APPROVED') {
       const orders = await ctx.find('dispatch_orders', {
         batch_id: batch.id,
         status: 'APPROVED',
-      }, { sort: { id: -1 }, limit: 1, projection: { _id: 0, id: 1 } });
+      }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1 } });
       if (orders.length === 0) {
         throw new SyncConflictError('No approved dispatch order was found for a scanned QR code', {
           batch_id: batch.id,
@@ -800,8 +803,8 @@ async function applyDispatchConfirmBulk(
           current_status: batch.status,
         });
       }
-      orderId = Number(orders[0].id);
-      if (!Number.isInteger(requestedOrderId) || requestedOrderId !== orderId) {
+      orderId = orders[0].id as EntityId;
+      if (!isValidId(requestedOrderId) || idKey(requestedOrderId) !== idKey(orderId)) {
         throw new SyncConflictError('Scan bags for one approved dispatch order at a time', {
           batch_id: batch.id,
           expected_order_id: orderId,
@@ -853,13 +856,13 @@ async function applyDispatchConfirmBulk(
     const dispatchedQuantity = Number(batch.quantity) || 0;
     const remainingStock = await deductProductStock(
       ctx,
-      Number(batch.product_id),
+      batch.product_id as EntityId,
       dispatchedQuantity
     );
     if (remainingStock !== null) {
       stockDeductions.push({
-        batch_id: Number(batch.id),
-        product_id: Number(batch.product_id),
+        batch_id: batch.id as EntityId,
+        product_id: batch.product_id as EntityId,
         quantity: dispatchedQuantity,
         remaining_stock: remainingStock,
       });
@@ -924,7 +927,7 @@ export async function applyOperation(
         await ctx.deleteOne('sync_operations', { operation_id: input.operation_id });
       }
 
-      let applied: { entityType: string; entityId: number; data: Record<string, any> };
+      let applied: { entityType: string; entityId: EntityId; data: Record<string, any> };
       switch (input.type) {
         case 'QC_SUBMIT':
           applied = await applyQcSubmit(ctx, user, deviceUuid, input);

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
-import { getContext, isDuplicateKey } from '../config/database';
+import { randomBytes } from 'crypto';
+import { getContext, isDuplicateKey, isValidId } from '../config/database';
 import { contains } from '../services/queryService';
 
 async function logActivity(req: Request, action: string, description: string): Promise<void> {
@@ -36,8 +37,9 @@ export async function list(req: Request, res: Response): Promise<void> {
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
+  if (!isValidId(req.params.id)) { res.status(400).json({ error: 'Invalid vendor id' }); return; }
   const ctx = await getContext();
-  const vendor = await ctx.findOne('vendors', { id: Number(req.params.id) }, { projection: { _id: 0 } });
+  const vendor = await ctx.findOne('vendors', { id: req.params.id }, { projection: { _id: 0 } });
   if (!vendor) { res.status(404).json({ error: 'Vendor not found' }); return; }
   res.json(vendor);
 }
@@ -70,7 +72,7 @@ export async function create(req: Request, res: Response): Promise<void> {
       is_active: is_active === false || is_active === 0 ? 0 : 1,
     });
 
-    const vendorCode = `VND-${String(id).padStart(4, '0')}`;
+    const vendorCode = `VND-${randomBytes(3).toString('hex').toUpperCase()}`;
     await ctx.updateOne('vendors', { id }, { $set: { vendor_code: vendorCode } });
     await logActivity(req, 'VENDOR_CREATED', `Vendor "${name}" (${vendorCode}) created`);
 
@@ -85,7 +87,8 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid vendor id' }); return; }
   const {
     name, contact_person, email, phone, address, gst_number,
     category, payment_terms, notes, is_active,
@@ -124,7 +127,8 @@ export async function update(req: Request, res: Response): Promise<void> {
 }
 
 export async function setStatus(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid vendor id' }); return; }
   const active = req.body.is_active === true || req.body.is_active === 1 || req.body.is_active === '1';
   const ctx = await getContext();
   const existing = await ctx.findOne('vendors', { id }, { projection: { _id: 0, vendor_code: 1 } });
@@ -141,7 +145,8 @@ export async function setStatus(req: Request, res: Response): Promise<void> {
 }
 
 export async function remove(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid vendor id' }); return; }
   const ctx = await getContext();
   const vendor = await ctx.findOne('vendors', { id }, { projection: { name: 1, vendor_code: 1 } });
   if (!vendor) { res.status(404).json({ error: 'Vendor not found' }); return; }

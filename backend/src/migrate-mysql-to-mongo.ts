@@ -153,7 +153,6 @@ async function main(): Promise<void> {
       for (const spec of TABLES) {
         await db.collection(spec.name).deleteMany({});
       }
-      await db.collection('counters').deleteMany({});
       console.log('Cleared existing MongoDB collections.');
     }
 
@@ -169,15 +168,6 @@ async function main(): Promise<void> {
         for (let index = 0; index < documents.length; index += chunkSize) {
           await db.collection(spec.name).insertMany(documents.slice(index, index + chunkSize), { ordered: true });
         }
-      }
-
-      if (!dryRun && spec.idField && documents.length > 0) {
-        const maxId = documents.reduce((max, document) => Math.max(max, Number(document.id) || 0), 0);
-        await db.collection('counters').updateOne(
-          { _id: spec.name as any },
-          { $max: { seq: maxId } },
-          { upsert: true }
-        );
       }
 
       console.log(`${dryRun ? 'Would copy' : 'Copied'} ${documents.length.toString().padStart(5)}  ${spec.name}`);

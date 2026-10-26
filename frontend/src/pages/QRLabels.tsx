@@ -6,6 +6,7 @@ import {
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { downloadQrPdf, printQrLabels, QrJob, QrLabel } from '../utils/qrPdf';
+import type { EntityId } from '../types';
 
 type QrJobRow = QrJob & {
   total_prints?: number;
@@ -32,7 +33,7 @@ export default function QRLabels() {
   const [success, setSuccess] = useState('');
   const [reprintJob, setReprintJob] = useState<QrJobRow | null>(null);
   const [reprintLabels, setReprintLabels] = useState<QrLabel[]>([]);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [selectedIds, setSelectedIds] = useState<EntityId[]>([]);
   const [reprintQty, setReprintQty] = useState('1');
   const [reprintLoading, setReprintLoading] = useState(false);
   const [reprinting, setReprinting] = useState(false);
@@ -93,7 +94,7 @@ export default function QRLabels() {
     setSelectedIds(reprintLabels.slice(0, Math.min(count, reprintLabels.length)).map((label) => label.id));
   };
 
-  const toggleLabel = (id: number) => {
+  const toggleLabel = (id: EntityId) => {
     setSelectedIds((current) =>
       current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
     );

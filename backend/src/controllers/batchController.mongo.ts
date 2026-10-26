@@ -1,12 +1,12 @@
 import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
-import { getContext, now, parseDateValue, withTransaction } from '../config/database';
-import { batchQrStats, contains, mapByIds } from '../services/queryService';
+import { getContext, idKey, isValidId, now, parseDateValue, withTransaction } from '../config/database';
+import { batchQrStats, contains, EntityId, mapByIds } from '../services/queryService';
 import { buildBatchNumbers } from '../utils/batchNumbers';
 
 type StoredQrLabel = {
-  id: number;
-  print_job_id: number;
+  id: EntityId;
+  print_job_id: EntityId;
   qr_value: string;
   serial_no: number;
   print_count?: number;
@@ -18,8 +18,8 @@ export async function create(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Product ID and batch number are required' });
     return;
   }
-  const productId = Number(product_id);
-  if (!Number.isInteger(productId) || productId < 1) {
+  const productId = product_id as EntityId;
+  if (!isValidId(productId)) {
     res.status(400).json({ error: 'Select a valid product' });
     return;
   }
@@ -55,18 +55,18 @@ export async function create(req: Request, res: Response): Promise<void> {
   const existing = await ctx.findOne('batches', { batch_number: { $in: batchNumbers } }, { projection: { id: 1, batch_number: 1 } });
   if (existing) { res.status(409).json({ error: `Batch number "${existing.batch_number}" already exists` }); return; }
   if (shelf_location_id) {
-    const location = await ctx.findOne('shelf_locations', { id: Number(shelf_location_id), is_active: 1 }, { projection: { id: 1 } });
+    const location = await ctx.findOne('shelf_locations', { id: shelf_location_id, is_active: 1 }, { projection: { id: 1 } });
     if (!location) { res.status(400).json({ error: 'Select an active shelf location' }); return; }
   }
 
   const batchGroupId = randomUUID();
   const result = await withTransaction(async (tx) => {
     const createdBatches: Array<{
-      id: number;
+      id: EntityId;
       batch_number: string;
       barcode_value: string;
-      qr_job: { id: number; job_code: string; product_name: string; product_sku: string; quantity: number };
-      labels: Array<{ id: number; qr_value: string; serial_no: number; batch_number: string; print_count: number }>;
+      qr_job: { id: EntityId; job_code: string; product_name: string; product_sku: string; quantity: number };
+      labels: Array<{ id: EntityId; qr_value: string; serial_no: number; batch_number: string; print_count: number }>;
     }> = [];
     for (const number of batchNumbers) {
       const qcBarcode = `QC:${randomUUID()}`;
@@ -146,15 +146,16 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function finishGoods(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
-  const vendorId = Number(req.body.vendor_id);
-  const gradeId = Number(req.body.grade_id);
-  const bagQuantityId = Number(req.body.bag_quantity_id);
-  const locationId = req.body.shelf_location_id ? Number(req.body.shelf_location_id) : null;
-  if (![vendorId, gradeId, bagQuantityId].every((value) => Number.isInteger(value) && value > 0)) {
+  const id = req.params.id;
+  const vendorId = req.body.vendor_id as EntityId;
+  const gradeId = req.body.grade_id as EntityId;
+  const bagQuantityId = req.body.bag_quantity_id as EntityId;
+  const locationId = req.body.shelf_location_id ? (req.body.shelf_location_id as EntityId) : null;
+  if (![vendorId, gradeId, bagQuantityId].every((value) => isValidId(value))) {
     res.status(400).json({ error: 'Select a supplier, grade, and bag quantity' });
     return;
   }
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const ctx = await getContext();
   const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0 } });
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
@@ -176,7 +177,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Select active supplier, grade, bag quantity, and shelf location values' });
     return;
   }
-  const product = await ctx.findOne('products', { id: Number(batch.product_id) }, { projection: { _id: 0 } });
+  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } });
   if (!product) { res.status(404).json({ error: 'Product not found' }); return; }
   const result = await withTransaction(async (tx) => {
     const current = await tx.findOne('batches', { id, status: 'QC_PASSED' }, { projection: { _id: 0 } });
@@ -191,22 +192,22 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     if (
       existingLabels.length > 0 &&
       (existingLabels.length !== Number(batch.quantity) ||
-        existingLabels.some((label) => Number(label.print_job_id) !== Number(existingLabels[0].print_job_id)))
+        existingLabels.some((label) => idKey(label.print_job_id) !== idKey(existingLabels[0].print_job_id)))
     ) {
       throw new Error('This batch has an incomplete or inconsistent set of QR labels');
     }
-    let jobId: number;
+    let jobId: EntityId;
     let jobCode: string;
     let firstBarcode: string;
     let labels: Array<Record<string, unknown>>;
     if (existingLabels.length > 0) {
-      jobId = Number(existingLabels[0].print_job_id);
+      jobId = existingLabels[0].print_job_id;
       const existingJob = await tx.findOne('qr_print_jobs', { id: jobId }, { projection: { _id: 0 } });
       if (!existingJob) throw new Error('QR label job for this batch could not be found');
       jobCode = String(existingJob.job_code);
       firstBarcode = String(existingLabels[0].qr_value);
       labels = existingLabels.map((label) => ({
-        id: Number(label.id),
+        id: label.id,
         qr_value: label.qr_value,
         serial_no: Number(label.serial_no),
         batch_number: batch.batch_number,
@@ -216,7 +217,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
       jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
       jobId = await tx.insert('qr_print_jobs', {
         job_code: jobCode,
-        product_id: Number(batch.product_id),
+        product_id: batch.product_id,
         quantity: Number(batch.quantity),
         created_by: req.user!.userId,
         created_by_role: req.user!.role,
@@ -283,33 +284,33 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
 export async function list(_req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
   const batches = await ctx.find('batches', {}, { sort: { created_at: -1 }, projection: { _id: 0 } });
-  const products = await mapByIds<{ id: number; name: string; sku: string; grade?: string | null }>(
+  const products = await mapByIds<{ id: EntityId; name: string; sku: string; grade?: string | null }>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => batch.product_id)
   );
-  const locations = await mapByIds<{ id: number; location_code: string }>(
+  const locations = await mapByIds<{ id: EntityId; location_code: string }>(
     ctx,
     'shelf_locations',
     batches.map((batch) => batch.shelf_location_id)
   );
-  const qr = await batchQrStats(ctx, batches.map((batch) => Number(batch.id)));
-  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', batches.map((batch) => Number(batch.vendor_id)));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', batches.map((batch) => Number(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', batches.map((batch) => Number(batch.bag_quantity_id)));
+  const qr = await batchQrStats(ctx, batches.map((batch) => batch.id));
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', batches.map((batch) => batch.vendor_id));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', batches.map((batch) => batch.grade_id));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', batches.map((batch) => batch.bag_quantity_id));
   res.json(batches.map((batch) => {
-    const product = products.get(Number(batch.product_id));
-    const location = locations.get(Number(batch.shelf_location_id));
-    const stats = qr.get(Number(batch.id));
+    const product = products.get(idKey(batch.product_id));
+    const location = locations.get(idKey(batch.shelf_location_id));
+    const stats = qr.get(idKey(batch.id));
     return {
       ...batch,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      vendor_name: vendors.get(Number(batch.vendor_id))?.name ?? null,
-      grade_name: grades.get(Number(batch.grade_id))?.name ?? product?.grade ?? null,
-      bag_quantity_name: bagQuantities.get(Number(batch.bag_quantity_id))?.name ?? null,
-      bag_quantity: bagQuantities.get(Number(batch.bag_quantity_id))?.quantity ?? null,
-      bag_quantity_unit: bagQuantities.get(Number(batch.bag_quantity_id))?.unit ?? null,
+      vendor_name: vendors.get(idKey(batch.vendor_id))?.name ?? null,
+      grade_name: grades.get(idKey(batch.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(idKey(batch.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(idKey(batch.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(idKey(batch.bag_quantity_id))?.unit ?? null,
       product_grade: product?.grade ?? null,
       location_code: location?.location_code ?? null,
       qr_count: stats?.count ?? 0,
@@ -325,7 +326,7 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
   let batch = await ctx.findOne('batches', { barcode_value: barcode }, { projection: { _id: 0 } });
   let matchedByBatchNumber = false;
   if (!batch && label) {
-    batch = await ctx.findOne('batches', { id: Number(label.batch_id) }, { projection: { _id: 0 } });
+    batch = await ctx.findOne('batches', { id: label.batch_id }, { projection: { _id: 0 } });
   }
   if (!batch) {
     const matchingBatches = await ctx.find('batches', { batch_number: barcode }, {
@@ -337,17 +338,17 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
       return;
     }
     if (matchingBatches.length === 1) {
-      batch = await ctx.findOne('batches', { id: Number(matchingBatches[0].id) }, { projection: { _id: 0 } });
+      batch = await ctx.findOne('batches', { id: matchingBatches[0].id }, { projection: { _id: 0 } });
       matchedByBatchNumber = Boolean(batch);
     }
   }
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
 
-  const product = await ctx.findOne('products', { id: Number(batch.product_id) }, { projection: { _id: 0 } });
+  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } });
   const location = batch.shelf_location_id
-    ? await ctx.findOne('shelf_locations', { id: Number(batch.shelf_location_id) }, { projection: { _id: 0, location_code: 1 } })
+    ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1 } })
     : null;
-  const qrCount = await ctx.count('qr_labels', { batch_id: Number(batch.id) });
+  const qrCount = await ctx.count('qr_labels', { batch_id: batch.id });
 
   res.json({
     ...batch,
@@ -363,12 +364,12 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
     product_physical_state: product?.physical_state ?? null,
     hsn_code: product?.hsn_code ?? null,
     manufacturer: product?.manufacturer ?? null,
-    scanned_qr: label && Number(label.batch_id) === Number(batch.id) ? barcode : null,
+    scanned_qr: label && idKey(label.batch_id) === idKey(batch.id) ? barcode : null,
     matched_by_batch_number: matchedByBatchNumber,
     location_code: location?.location_code ?? null,
     qr_count: qrCount,
     grade_name: batch.grade_id
-      ? (await ctx.findOne('grades', { id: Number(batch.grade_id) }, { projection: { _id: 0, name: 1 } }))?.name ?? product?.grade ?? null
+      ? (await ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } }))?.name ?? product?.grade ?? null
       : product?.grade ?? null,
   });
 }
@@ -380,20 +381,20 @@ export async function search(req: Request, res: Response): Promise<void> {
   const products = await ctx.find('products', {
     $or: [{ name: pattern }, { sku: pattern }],
   }, { projection: { id: 1 } });
-  const productIds = products.map((product) => Number(product.id));
+  const productIds = products.map((product) => idKey(product.id));
   const batches = await ctx.find('batches', {
     $or: [
       { product_id: { $in: productIds } },
       { batch_number: pattern },
     ],
   }, { sort: { created_at: -1 }, limit: 50, projection: { _id: 0 } });
-  const productMap = await mapByIds<{ id: number; name: string; sku: string }>(
+  const productMap = await mapByIds<{ id: EntityId; name: string; sku: string }>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => batch.product_id)
   );
   res.json(batches.map((batch) => {
-    const product = productMap.get(Number(batch.product_id));
+    const product = productMap.get(idKey(batch.product_id));
     return {
       ...batch,
       product_name: product?.name ?? null,
@@ -403,7 +404,8 @@ export async function search(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const { shelf_location_id, storage_location, notes, quantity, unit_price, manufacturing_date, expiry_date } = req.body;
   const ctx = await getContext();
   const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0, id: 1, quantity: 1 } });
@@ -417,9 +419,9 @@ export async function update(req: Request, res: Response): Promise<void> {
   }
   const locationId = shelf_location_id === undefined || shelf_location_id === null || shelf_location_id === ''
     ? null
-    : Number(shelf_location_id);
+    : (shelf_location_id as EntityId);
   if (locationId !== null) {
-    if (!Number.isInteger(locationId) || locationId <= 0) {
+    if (!isValidId(locationId)) {
       res.status(400).json({ error: 'Select a valid shelf location' });
       return;
     }
@@ -449,10 +451,12 @@ export async function update(req: Request, res: Response): Promise<void> {
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const ctx = await getContext();
-  const batch = await ctx.findOne('batches', { id: Number(req.params.id) }, { projection: { _id: 0 } });
+  const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0 } });
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
-  const product = await ctx.findOne('products', { id: Number(batch.product_id) }, {
+  const product = await ctx.findOne('products', { id: batch.product_id }, {
     projection: { _id: 0, name: 1, sku: 1 },
   });
   res.json({

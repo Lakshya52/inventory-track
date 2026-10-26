@@ -1,13 +1,15 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
+import { api } from '../api/client';
 import { useSync } from '../sync/SyncContext';
 import { newOperationId } from '../auth/authStorage';
 import {
   getActiveClients,
+  cacheBatchForScannedQr,
   getBatchByBarcode,
   getBatchesByStatus,
   queueDispatchOrderRequests,
@@ -17,35 +19,35 @@ import { Badge, Button, Card, EmptyState, Field, Screen, SectionHeader } from '.
 import { PhotoPicker } from '../components/PhotoPicker';
 import { colors, radius, spacing } from '../theme';
 import { formatAge } from '../utils/format';
-import type { Batch } from '../types';
+import type { Batch, EntityId } from '../types';
 
 type MessageKind = 'success' | 'error' | 'info';
 type ScannedQr = { batch: Batch; qrValue: string };
-type Client = { id: number; name: string; contact_person: string | null };
+type Client = { id: EntityId; name: string; contact_person: string | null };
 
 function expectedQrCount(batch: Batch): number {
-  if (Array.isArray(batch.unit_qr_codes)) return batch.unit_qr_codes.length;
+  if (Array.isArray(batch.unit_qr_codes) && batch.unit_qr_codes.length > 0) return batch.unit_qr_codes.length;
   if (typeof batch.unit_qr_codes === 'string') {
     try {
       const codes = JSON.parse(batch.unit_qr_codes);
-      if (Array.isArray(codes)) return codes.length;
+      if (Array.isArray(codes) && codes.length > 0) return codes.length;
     } catch {
-      return Math.max(1, Math.floor(Number(batch.quantity) || 1));
+      // Fall back to the server's label count or batch quantity below.
     }
   }
   return Math.max(1, Math.floor(Number(batch.qr_count ?? batch.quantity) || 1));
 }
 
-let localOrderSequence = 0;
-
-function nextLocalOrderId(): number {
-  localOrderSequence += 1;
-  return -Date.now() - localOrderSequence;
+function nextLocalOrderId(): string {
+  return `local:${newOperationId()}`;
 }
 
 export default function DispatchScreen() {
   const { session } = useAuth();
   const { online, pendingCount, syncing, sync } = useSync();
+  const { autostart } = useLocalSearchParams<{ autostart?: string }>();
+  const router = useRouter();
+  const isFocused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
   const [approved, setApproved] = useState<Batch[]>([]);
   const [ready, setReady] = useState<Batch[]>([]);
@@ -58,15 +60,17 @@ export default function DispatchScreen() {
   const [message, setMessage] = useState<string | null>(null);
   const [messageKind, setMessageKind] = useState<MessageKind>('info');
   const [submitting, setSubmitting] = useState(false);
-  const [raisingId, setRaisingId] = useState<number | null>(null);
+  const [raisingId, setRaisingId] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
-  const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<EntityId | null>(null);
   const [driverName, setDriverName] = useState('');
   const [vehicleNumber, setVehicleNumber] = useState('');
-  const [selectedReadyIds, setSelectedReadyIds] = useState<number[]>([]);
+  const [containerNumber, setContainerNumber] = useState('');
+  const [selectedReadyIds, setSelectedReadyIds] = useState<EntityId[]>([]);
   const groupRef = useRef<ScannedQr[]>([]);
   const lastScanRef = useRef<{ value: string; at: number } | null>(null);
+  const autoStartHandledRef = useRef(false);
 
   const load = useCallback(async () => {
     const [approvedRows, readyRows, clientRows] = await Promise.all([
@@ -77,12 +81,13 @@ export default function DispatchScreen() {
     setApproved(approvedRows);
     setReady(readyRows);
     setClients(clientRows);
-    setSelectedReadyIds((ids) => ids.filter((id) => readyRows.some((batch) => batch.id === id)));
+    setSelectedReadyIds((ids) => ids.filter((id) => readyRows.some((batch) => String(batch.id) === String(id))));
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       void load();
+      return () => setScanning(false);
     }, [load])
   );
 
@@ -106,9 +111,24 @@ export default function DispatchScreen() {
   const addByBarcode = useCallback(async (value: string) => {
     const barcode = value.trim();
     if (!barcode) return;
-    const batch = await getBatchByBarcode(barcode);
+    let batch = await getBatchByBarcode(barcode);
+    if (!batch && online) {
+      try {
+        batch = await api.batchByBarcode(barcode);
+        try {
+          await cacheBatchForScannedQr(batch, barcode);
+        } catch (cacheError) {
+          console.warn('Could not cache the scanned QR locally; continuing with the server result.', cacheError);
+        }
+      } catch (lookupError: any) {
+        showMessage(lookupError?.status === 404
+          ? 'This QR code is not registered on the server. Check the label or sync with your administrator.'
+          : lookupError?.message || 'Could not look up this QR code. Check the connection and try again.', 'error');
+        return;
+      }
+    }
     if (!batch) {
-      showMessage('That QR code is not on this device yet. Sync while online, then try again.', 'error');
+      showMessage('This QR code is not saved on this device. Connect and sync before scanning it.', 'error');
       return;
     }
     if (batch.status !== 'DISPATCH_APPROVED') {
@@ -135,7 +155,7 @@ export default function DispatchScreen() {
       `${batch.batch_number} added. ${groupRef.current.length} approved code${groupRef.current.length === 1 ? '' : 's'} ready.`,
       'success'
     );
-  }, [addBatch]);
+  }, [addBatch, online]);
 
   const onBarcodeScanned = useCallback(({ data }: { data: string }) => {
     const now = Date.now();
@@ -146,7 +166,7 @@ export default function DispatchScreen() {
     void addByBarcode(data);
   }, [addByBarcode]);
 
-  const startScanning = async () => {
+  const startScanning = useCallback(async () => {
     if (!permission?.granted) {
       const next = await requestPermission();
       if (!next.granted) {
@@ -154,8 +174,20 @@ export default function DispatchScreen() {
         return;
       }
     }
+    if (!isFocused) return;
     setScanning(true);
-  };
+  }, [isFocused, permission?.granted, requestPermission]);
+
+  useEffect(() => {
+    if (autostart !== '1') {
+      autoStartHandledRef.current = false;
+      return;
+    }
+    if (!isFocused || autoStartHandledRef.current) return;
+    autoStartHandledRef.current = true;
+    router.setParams({ autostart: '' });
+    void startScanning();
+  }, [autostart, isFocused, router, startScanning]);
 
   const removeBatch = (qrValue: string) => {
     const next = groupRef.current.filter((item) => item.qrValue !== qrValue);
@@ -175,13 +207,13 @@ export default function DispatchScreen() {
 
   const raiseOrders = async () => {
     if (!session) return;
-    const selectedBatches = ready.filter((batch) => selectedReadyIds.includes(batch.id));
-    const client = clients.find((item) => item.id === selectedClientId);
-    if (selectedBatches.length === 0 || !client || !driverName.trim() || !vehicleNumber.trim()) {
-      showMessage('Select at least one batch, a client, and enter the driver and vehicle details.', 'error');
+    const selectedBatches = ready.filter((batch) => selectedReadyIds.some((id) => String(id) === String(batch.id)));
+    const client = clients.find((item) => String(item.id) === String(selectedClientId));
+    if (selectedBatches.length === 0 || !client || !driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
+      showMessage('Select at least one batch and a client, then enter the driver, vehicle, and container details.', 'error');
       return;
     }
-    setRaisingId(-1);
+    setRaisingId(true);
     try {
       await queueDispatchOrderRequests(selectedBatches.map((batch) => ({
         operation_id: newOperationId(),
@@ -192,17 +224,19 @@ export default function DispatchScreen() {
         client_name: client.name,
         driver_name: driverName.trim(),
         vehicle_number: vehicleNumber.trim(),
+        container_number: containerNumber.trim(),
       })));
       showMessage(`${selectedBatches.length} dispatch request${selectedBatches.length === 1 ? '' : 's'} queued for ${client.name}.`, 'success');
       setSelectedReadyIds([]);
       setDriverName('');
       setVehicleNumber('');
+      setContainerNumber('');
       await load();
       await sync();
     } catch (err: any) {
       showMessage(err?.message || 'Could not queue the dispatch order.', 'error');
     } finally {
-      setRaisingId(null);
+      setRaisingId(false);
     }
   };
 
@@ -212,14 +246,14 @@ export default function DispatchScreen() {
       return;
     }
     const selected = groupRef.current;
-    const scannedCounts = new Map<number, number>();
-    selected.forEach(({ batch }) => scannedCounts.set(batch.id, (scannedCounts.get(batch.id) || 0) + 1));
+    const scannedCounts = new Map<string, number>();
+    selected.forEach(({ batch }) => scannedCounts.set(String(batch.id), (scannedCounts.get(String(batch.id)) || 0) + 1));
     const incomplete = [...scannedCounts].find(([batchId, count]) => {
-      const batch = selected.find((item) => item.batch.id === batchId)?.batch;
+      const batch = selected.find((item) => String(item.batch.id) === batchId)?.batch;
       return !batch || count !== expectedQrCount(batch);
     });
     if (incomplete) {
-      const batch = selected.find((item) => item.batch.id === incomplete[0])?.batch;
+      const batch = selected.find((item) => String(item.batch.id) === incomplete[0])?.batch;
       showMessage(
         `Scan every QR for ${batch?.batch_number || 'the batch'} (${incomplete[1]}/${batch ? expectedQrCount(batch) : '?'} scanned) before dispatching.`,
         'error'
@@ -261,7 +295,7 @@ export default function DispatchScreen() {
   const filteredApproved = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return approved.filter((batch) => {
-      if (group.some((item) => item.batch.id === batch.id)) return false;
+    if (group.some((item) => String(item.batch.id) === String(batch.id))) return false;
       if (!needle) return true;
       return [batch.batch_number, batch.product_name, batch.product_sku, batch.barcode_value]
         .filter(Boolean)
@@ -327,14 +361,15 @@ export default function DispatchScreen() {
         <Card style={{ gap: spacing.md }}>
           <SectionHeader
             title="Add approved QR codes"
-            subtitle={`${online ? 'Online' : 'Offline'} · ${pendingCount} queued change${pendingCount === 1 ? '' : 's'}`}
+            subtitle={`Tap once to scan approved labels · ${pendingCount} queued`}
             right={<Badge status="DISPATCH_APPROVED" label="Approved" />}
           />
           <View style={styles.scanButtons}>
             <Button
-              title={scanning ? 'Stop camera' : 'Scan with camera'}
+              title={scanning ? 'Stop scanning' : 'Start dispatch scan'}
+              large
               variant={scanning ? 'secondary' : 'primary'}
-              icon={<Ionicons name={scanning ? 'stop-circle-outline' : 'camera-outline'} size={18} color={scanning ? colors.text : '#fff'} />}
+              icon={<Ionicons name={scanning ? 'stop-circle-outline' : 'camera-outline'} size={22} color={scanning ? colors.text : '#fff'} />}
               onPress={() => {
                 if (scanning) setScanning(false);
                 else void startScanning();
@@ -343,7 +378,7 @@ export default function DispatchScreen() {
             />
           </View>
 
-          {scanning ? (
+          {scanning && isFocused ? (
             <View style={styles.cameraWrap}>
               <CameraView
                 style={styles.camera}
@@ -403,7 +438,7 @@ export default function DispatchScreen() {
                       {batch.batch_number} · {qrValue}
                     </Text>
                   </View>
-                  <Pressable onPress={() => removeBatch(qrValue)} hitSlop={8} style={styles.removeButton}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${qrValue} from dispatch group`} onPress={() => removeBatch(qrValue)} style={styles.removeButton}>
                     <Ionicons name="close-outline" size={18} color={colors.danger} />
                   </Pressable>
                 </View>
@@ -469,14 +504,14 @@ export default function DispatchScreen() {
           ) : (
             filteredApproved.slice(0, 40).map((batch) => (
               <View key={batch.id} style={styles.pendingRow}>
-                <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ minWidth: 0 }}>
                   <Text style={styles.pendingTitle} numberOfLines={1}>{batch.product_name}</Text>
                   <Text style={styles.pendingMeta} numberOfLines={1}>
                     {batch.batch_number} · {batch.product_sku}
                   </Text>
                   <Text style={styles.pendingAge}>approved {formatAge(batch.age_minutes)} ago</Text>
                 </View>
-                <Text style={styles.pendingAge}>Scan all {expectedQrCount(batch)} QR labels before dispatch.</Text>
+                  <Text style={styles.pendingAge}>{expectedQrCount(batch)} QR label{expectedQrCount(batch) === 1 ? '' : 's'} required for dispatch</Text>
               </View>
             ))
           )}
@@ -490,10 +525,12 @@ export default function DispatchScreen() {
                 <View style={{ gap: spacing.xs }}>
                   <Text style={styles.pendingTitle}>Client</Text>
                   {clients.map((client) => {
-                    const active = selectedClientId === client.id;
+              const active = String(selectedClientId) === String(client.id);
                     return (
                       <Pressable
                         key={client.id}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: active }}
                         onPress={() => setSelectedClientId(client.id)}
                         style={[styles.clientChoice, active && styles.clientChoiceSelected]}
                       >
@@ -515,30 +552,37 @@ export default function DispatchScreen() {
                     placeholder="Enter the vehicle registration"
                     autoCapitalize="characters"
                   />
+                  <Field
+                    label="Container number"
+                    value={containerNumber}
+                    onChangeText={setContainerNumber}
+                    placeholder="Enter the container number"
+                    autoCapitalize="characters"
+                  />
                 </View>
               )}
               {ready.slice(0, 20).map((batch) => (
                 <View key={batch.id} style={styles.pendingRow}>
-                  <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={{ minWidth: 0 }}>
                     <Text style={styles.pendingTitle} numberOfLines={1}>{batch.product_name}</Text>
                     <Text style={styles.pendingMeta} numberOfLines={1}>
                       {batch.batch_number} · {batch.quantity} {batch.uom || ''}
                     </Text>
                   </View>
                   <Button
-                    title={selectedReadyIds.includes(batch.id) ? 'Selected' : 'Select'}
+                title={selectedReadyIds.some((id) => String(id) === String(batch.id)) ? 'Selected' : 'Select'}
                     small
-                    variant={selectedReadyIds.includes(batch.id) ? 'primary' : 'secondary'}
+                variant={selectedReadyIds.some((id) => String(id) === String(batch.id)) ? 'primary' : 'secondary'}
                     onPress={() => setSelectedReadyIds((ids) =>
-                      ids.includes(batch.id) ? ids.filter((id) => id !== batch.id) : [...ids, batch.id]
+                    ids.some((id) => String(id) === String(batch.id)) ? ids.filter((id) => String(id) !== String(batch.id)) : [...ids, batch.id]
                     )}
                   />
                 </View>
               ))}
               <Button
-                title={raisingId === -1 ? 'Queuing requests...' : `Raise request for ${selectedReadyIds.length} batch${selectedReadyIds.length === 1 ? '' : 'es'}`}
-                loading={raisingId === -1}
-                disabled={selectedReadyIds.length === 0 || !selectedClientId || !driverName.trim() || !vehicleNumber.trim()}
+              title={raisingId ? 'Queuing requests...' : `Raise request for ${selectedReadyIds.length} batch${selectedReadyIds.length === 1 ? '' : 'es'}`}
+              loading={raisingId}
+                disabled={selectedReadyIds.length === 0 || !selectedClientId || !driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()}
                 onPress={() => void raiseOrders()}
               />
             </View>
@@ -575,10 +619,10 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: radius.md,
   },
-  messageText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  messageText: { flex: 1, fontSize: 13, lineHeight: 19, fontWeight: '600' },
   scanButtons: { flexDirection: 'row', gap: spacing.sm },
   cameraWrap: { borderRadius: radius.lg, overflow: 'hidden', backgroundColor: '#0f172a' },
-  camera: { width: '100%', height: 260 },
+  camera: { width: '100%', height: 320 },
   cameraOverlay: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -587,7 +631,7 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     backgroundColor: 'rgba(15,23,42,0.85)',
   },
-  cameraText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  cameraText: { color: '#fff', fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   manualRow: { flexDirection: 'row', alignItems: 'flex-end', gap: spacing.sm },
   batchRow: {
     flexDirection: 'row',
@@ -605,24 +649,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  batchTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  batchMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
-  removeButton: { padding: 4 },
+  batchTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  batchMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  removeButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   quickRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  footerHint: { fontSize: 11, color: colors.textFaint, textAlign: 'center', lineHeight: 16 },
+  footerHint: { fontSize: 12, color: colors.textFaint, textAlign: 'center', lineHeight: 18 },
   pendingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     gap: spacing.sm,
     paddingVertical: spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  pendingTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  pendingMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
-  pendingAge: { fontSize: 10, color: colors.textFaint, marginTop: 2 },
-  sectionMini: { fontSize: 10, fontWeight: '800', color: colors.warning, letterSpacing: 1 },
+  pendingTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  pendingMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  pendingAge: { fontSize: 12, color: colors.textFaint, marginTop: 3 },
+  sectionMini: { fontSize: 12, fontWeight: '800', color: colors.warning, letterSpacing: 0.5 },
   clientChoice: {
+    minHeight: 48,
+    justifyContent: 'center',
     padding: spacing.sm,
     borderWidth: 1,
     borderColor: colors.border,

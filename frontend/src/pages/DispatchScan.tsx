@@ -99,8 +99,8 @@ export default function DispatchScan() {
       setQueue(
         orders.map((order: any) => ({
           ...order,
-          order_id: Number(order.id),
-          id: Number(order.batch_id || order.id),
+          order_id: String(order.id),
+          id: String(order.batch_id || order.id),
           status: 'DISPATCH_APPROVED',
         }))
       );
@@ -127,7 +127,7 @@ export default function DispatchScan() {
       }
       return false;
     }
-    if (Number(found.id || found.batch_id) !== Number(selectedOrder.batch_id)) {
+    if (String(found.id || found.batch_id) !== String(selectedOrder.batch_id)) {
       if (!silent) {
         setMessageKind('error');
         setMessage(`This QR belongs to a different batch. Scan only lot ${selectedOrder.batch_number} (grade ${selectedOrder.grade_name || selectedOrder.product_grade || 'not specified'}).`);
@@ -199,8 +199,8 @@ export default function DispatchScan() {
       const found = await api.batches.getByBarcode(barcode);
       if (found.matched_by_batch_number) {
         const selectedOrder = queue.find((order) =>
-          Number(order.batch_id) === Number(found.id) && String(order.order_id) === selectedOrderId
-        ) || queue.find((order) => Number(order.batch_id) === Number(found.id));
+          String(order.batch_id) === String(found.id) && String(order.order_id) === selectedOrderId
+        ) || queue.find((order) => String(order.batch_id) === String(found.id));
         if (!selectedOrder) {
           setMessageKind('error');
           setMessage(`No approved dispatch order is available for batch ${found.batch_number}. Refresh the order list or contact QC.`);
@@ -331,10 +331,11 @@ export default function DispatchScan() {
       setMessage('Scan at least one approved QR code before dispatching.');
       return;
     }
-    const batchCounts = new Map<number, { batch: any; count: number }>();
+    const batchCounts = new Map<string, { batch: any; count: number }>();
     for (const item of scannedRef.current) {
-      const current = batchCounts.get(Number(item.id));
-      batchCounts.set(Number(item.id), { batch: item, count: (current?.count || 0) + 1 });
+      const id = String(item.id);
+      const current = batchCounts.get(id);
+      batchCounts.set(id, { batch: item, count: (current?.count || 0) + 1 });
     }
     const incomplete = [...batchCounts.values()].find(({ batch, count }) => count !== expectedQrCount(batch));
     if (incomplete) {
@@ -351,7 +352,7 @@ export default function DispatchScan() {
         barcodes: scannedRef.current.map((batch) => batch.barcode_value),
         remarks: remarks || undefined,
         images: images.length > 0 ? images : undefined,
-        dispatch_order_id: Number(selectedOrderId),
+        dispatch_order_id: selectedOrderId,
       });
       const count = Number(response?.count || scannedRef.current.length);
       setMessageKind('success');

@@ -4,7 +4,7 @@ import jwt, { SignOptions } from 'jsonwebtoken';
 import { createHash, randomBytes } from 'crypto';
 import { DbContext, getContext, now, withTransaction } from '../config/database';
 import { JwtPayload, Role } from '../types';
-import { equalsIgnoreCase } from '../services/queryService';
+import { EntityId, equalsIgnoreCase } from '../services/queryService';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 const JWT_EXPIRES_IN: SignOptions['expiresIn'] = (process.env.JWT_EXPIRES_IN || '24h') as any;
@@ -20,7 +20,7 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function signAccessToken(user: { id: number; name: string; email: string }, role: Role, table: JwtPayload['table']): string {
+function signAccessToken(user: { id: EntityId; name: string; email: string }, role: Role, table: JwtPayload['table']): string {
   return jwt.sign(
     { userId: user.id, role, name: user.name, email: user.email, table },
     JWT_SECRET,
@@ -30,7 +30,7 @@ function signAccessToken(user: { id: number; name: string; email: string }, role
 
 async function issueRefreshToken(
   ctx: DbContext,
-  user: { id: number },
+  user: { id: EntityId },
   role: Role,
   table: JwtPayload['table'],
   deviceUuid?: string
@@ -54,9 +54,9 @@ async function findActiveUser(
   ctx: DbContext,
   role: Role,
   table: JwtPayload['table'],
-  id: number
+  id: EntityId
 ): Promise<Record<string, any> | null> {
-  const user = await ctx.findOne(table, { id: Number(id) }, {
+  const user = await ctx.findOne(table, { id }, {
     projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1 },
   });
   if (!user || Number(user.is_active) !== 1) return null;
@@ -83,7 +83,7 @@ export async function login(req: Request, res: Response): Promise<void> {
         res.status(403).json({ error: 'Account is deactivated. Contact an administrator.' });
         return;
       }
-      const account = user as unknown as { id: number; name: string; email: string };
+      const account = user as unknown as { id: EntityId; name: string; email: string };
       const token = signAccessToken(account, c.role, c.table);
       const refresh = await issueRefreshToken(ctx, account, c.role, c.table, device_uuid);
       res.json({
@@ -125,13 +125,13 @@ export async function refresh(req: Request, res: Response): Promise<void> {
         ctx,
         record.user_role as Role,
         record.user_table as JwtPayload['table'],
-        Number(record.user_id)
+        record.user_id as EntityId
       );
       if (!user) return null;
 
       await ctx.updateOne(
         'refresh_tokens',
-        { id: Number(record.id), revoked_at: null },
+        { id: record.id, revoked_at: null },
         { $set: { revoked_at: now() } }
       );
 
@@ -139,7 +139,7 @@ export async function refresh(req: Request, res: Response): Promise<void> {
       const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000);
       await ctx.insert('refresh_tokens', {
         token_hash: hashToken(next),
-        user_id: Number(record.user_id),
+        user_id: record.user_id,
         user_role: record.user_role,
         user_table: record.user_table,
         device_uuid: device_uuid || record.device_uuid,
@@ -147,7 +147,7 @@ export async function refresh(req: Request, res: Response): Promise<void> {
         revoked_at: null,
       });
 
-      const account = user as unknown as { id: number; name: string; email: string };
+      const account = user as unknown as { id: EntityId; name: string; email: string };
       return {
         token: signAccessToken(account, record.user_role as Role, record.user_table as JwtPayload['table']),
         refreshToken: next,

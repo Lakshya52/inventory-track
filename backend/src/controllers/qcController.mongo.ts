@@ -4,6 +4,8 @@ import {
   DbContext,
   daysAgo,
   getContext,
+  idKey,
+  isValidId,
   startOfDay,
   startOfWeek,
   withTransaction,
@@ -29,11 +31,11 @@ async function enrichPendingBatches(ctx: DbContext, batches: Record<string, any>
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => batch.product_id)
   );
-  const stats = await batchQrStats(ctx, batches.map((batch) => Number(batch.id)));
+  const stats = await batchQrStats(ctx, batches.map((batch) => batch.id));
   return batches.map((batch) => {
-    const product = products.get(Number(batch.product_id));
+    const product = products.get(idKey(batch.product_id));
     return {
       id: batch.id,
       batch_number: batch.batch_number,
@@ -41,7 +43,7 @@ async function enrichPendingBatches(ctx: DbContext, batches: Record<string, any>
       quantity: batch.quantity,
       uom: batch.uom,
       storage_location: batch.storage_location,
-      qr_count: stats.get(Number(batch.id))?.count ?? 0,
+      qr_count: stats.get(idKey(batch.id))?.count ?? 0,
       created_at: batch.created_at,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
@@ -57,24 +59,24 @@ async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[]): 
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => Number(record.batch_id))
+    records.map((record) => record.batch_id)
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => batch.product_id)
   );
-  const testers = await mapNames(ctx, 'qc_users', records.map((record) => Number(record.tester_id)));
+  const testers = await mapNames(ctx, 'qc_users', records.map((record) => record.tester_id));
   return records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...record,
       batch_number: batch?.batch_number ?? null,
       barcode_value: batch?.barcode_value ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      tester_name: testers.get(Number(record.tester_id)) ?? null,
+      tester_name: testers.get(idKey(record.tester_id)) ?? null,
     };
   });
 }
@@ -185,14 +187,16 @@ export async function reopenFailedBatch(req: Request, res: Response): Promise<vo
     return;
   }
   const result = await withTransaction(async (ctx: DbContext) => {
-    const batch = await ctx.findOne('batches', { id: Number(req.params.id) }, { projection: { _id: 0 } });
+    const id = req.params.id;
+    if (!isValidId(id)) return { error: 'Invalid batch id', statusCode: 400 } as const;
+    const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0 } });
     if (!batch) return { error: 'Batch not found', statusCode: 404 } as const;
     if (batch.status !== 'QC_FAILED') {
       return { error: 'Only QC-failed batches can be sent back for re-QC', statusCode: 409 } as const;
     }
     const update = await ctx.updateOne(
       'batches',
-      { id: Number(batch.id), status: 'QC_FAILED' },
+      { id: batch.id, status: 'QC_FAILED' },
       { $set: { status: 'CREATED' } }
     );
     if (update.matchedCount !== 1) {
@@ -205,7 +209,7 @@ export async function reopenFailedBatch(req: Request, res: Response): Promise<vo
       action: 'BATCH_SENT_FOR_REQC',
       description: `Batch ${batch.batch_number} sent back for QC: ${reason.slice(0, 1000)}`,
     });
-    return { batch_id: Number(batch.id), status: 'CREATED' } as const;
+    return { batch_id: batch.id, status: 'CREATED' } as const;
   });
   if ('error' in result) {
     res.status(result.statusCode ?? 500).json({ error: result.error });

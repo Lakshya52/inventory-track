@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Printer, Package, Eye, AlertTriangle } from 'lucide-react';
+import type { EntityId } from '../types';
 
 function itemLocation(item: any): string {
   return item.location || item.location_code || item.location_description || '-';
@@ -30,7 +31,7 @@ export default function PackingList() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleViewPacking = useCallback(async (orderId: number) => {
+  const handleViewPacking = useCallback(async (orderId: EntityId) => {
     setLoading(true);
     setError('');
     try {
@@ -48,8 +49,8 @@ export default function PackingList() {
   }, [user?.role]);
 
   useEffect(() => {
-    const orderId = Number(searchParams.get('order'));
-    if (Number.isFinite(orderId) && orderId > 0) void handleViewPacking(orderId);
+    const orderId = searchParams.get('order');
+    if (orderId) void handleViewPacking(orderId);
   }, [searchParams, handleViewPacking]);
 
   const handlePrint = () => {

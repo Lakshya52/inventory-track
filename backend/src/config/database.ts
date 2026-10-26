@@ -20,6 +20,8 @@ export { DbContext } from './database.mongo';
 export const now = mongo.now;
 export const stripId = mongo.stripId;
 export const stripIds = mongo.stripIds;
+export const idKey = mongo.idKey;
+export const isValidId = mongo.isValidId;
 export const isDuplicateKey = mongo.isDuplicateKey;
 export const parseDateValue = mongo.parseDateValue;
 export const startOfDay = mongo.startOfDay;

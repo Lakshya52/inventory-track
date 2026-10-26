@@ -35,6 +35,7 @@ function resolveApiUrl(): string {
 
 export const API_URL = resolveApiUrl();
 export const APP_VERSION = '1.0.0';
-export const REQUEST_TIMEOUT_MS = 20_000;
+// Allow time for the hosted API to respond when starting from an idle service.
+export const REQUEST_TIMEOUT_MS = 45_000;
 export const SYNC_INTERVAL_MS = 60_000;
 export const MAX_SYNC_BATCH = 50;

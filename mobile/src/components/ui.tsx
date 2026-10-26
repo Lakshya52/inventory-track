@@ -9,11 +9,9 @@ import {
   TextInputProps,
   View,
   ViewStyle,
-  Animated,
 } from 'react-native';
 import { SafeAreaView, type Edges } from 'react-native-safe-area-context';
-import { colors, radius, shadows, spacing, statusColors } from '../theme';
-import { LinearGradient } from 'expo-linear-gradient';
+import { colors, radius, spacing, statusColors } from '../theme';
 
 export function Screen({
   children,
@@ -46,7 +44,7 @@ export function SectionHeader({
 }) {
   return (
     <View style={styles.sectionHeader}>
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={styles.sectionTitle}>{title}</Text>
         {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
       </View>
@@ -64,6 +62,7 @@ export function Button({
   icon,
   style,
   small = false,
+  large = false,
 }: {
   title: string;
   onPress: () => void;
@@ -73,6 +72,7 @@ export function Button({
   icon?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   small?: boolean;
+  large?: boolean;
 }) {
   const palette = {
     primary: { background: colors.primary, text: '#ffffff', border: colors.primary },
@@ -85,9 +85,13 @@ export function Button({
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
       style={({ pressed }) => [
         styles.button,
         small && styles.buttonSmall,
+        large && styles.buttonLarge,
         {
           backgroundColor: palette.background,
           borderColor: palette.border,
@@ -96,16 +100,10 @@ export function Button({
         style,
       ]}
     >
-      {loading ? (
-        <ActivityIndicator size="small" color={palette.text} />
-      ) : (
-        <>
-          {icon}
-          <Text style={[styles.buttonText, { color: palette.text }, small && styles.buttonTextSmall]}>
-            {title}
-          </Text>
-        </>
-      )}
+      {loading ? <ActivityIndicator size="small" color={palette.text} /> : icon}
+      <Text style={[styles.buttonText, { color: palette.text }, small && styles.buttonTextSmall, large && styles.buttonTextLarge]}>
+        {title}
+      </Text>
     </Pressable>
   );
 }
@@ -145,14 +143,17 @@ export function StatCard({
 export function Field({
   label,
   hint,
+  containerStyle,
   ...props
-}: TextInputProps & { label?: string; hint?: string }) {
+}: TextInputProps & { label?: string; hint?: string; containerStyle?: StyleProp<ViewStyle> }) {
   return (
-    <View style={{ gap: 6 }}>
+    <View style={[styles.fieldContainer, containerStyle]}>
       {label ? <Text style={styles.fieldLabel}>{label}</Text> : null}
       <TextInput
         placeholderTextColor={colors.textFaint}
         {...props}
+        accessibilityLabel={props.accessibilityLabel || label}
+        accessibilityHint={props.accessibilityHint || hint}
         style={[styles.input, props.style]}
       />
       {hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
@@ -200,18 +201,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  // Simplified Card: minimal border, no shadow, reduced padding
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
-    padding: spacing.md,
-    // removed border and shadow for cleaner look
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  // Simplified SectionHeader: compact layout, no extra spacing
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    // removed gap and marginBottom for tighter spacing
+    gap: spacing.sm,
   },
   sectionTitle: {
     fontSize: 16,
@@ -219,13 +219,14 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   sectionSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textMuted,
     marginTop: 2,
   },
-  // Simplified Button: flat design, consistent height, primary accent only
   button: {
-    minHeight: 44,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 48,
     borderRadius: radius.sm,
     backgroundColor: colors.primary,
     alignItems: 'center',
@@ -233,16 +234,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   buttonSmall: {
-    minHeight: 36,
+    minHeight: 42,
     paddingHorizontal: spacing.sm,
-    borderRadius: radius.xs,
+    borderRadius: radius.sm,
+  },
+  buttonLarge: {
+    minHeight: 64,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
   },
   buttonText: {
     fontSize: 14,
     fontWeight: '700',
+    flexShrink: 1,
+    textAlign: 'center',
   },
   buttonTextSmall: {
-    fontSize: 12,
+    fontSize: 13,
+  },
+  buttonTextLarge: {
+    fontSize: 16,
   },
   badge: {
     alignSelf: 'flex-start',
@@ -251,16 +262,17 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   badgeText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
-  // Simplified StatCard: flat design, no border or shadow, compact padding
   statCard: {
     flex: 1,
     minWidth: '44%',
     borderRadius: radius.md,
     padding: spacing.sm,
-    // removed border and shadow for cleaner look
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
   },
   statIcon: {
     width: 34,
@@ -276,7 +288,7 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   statLabel: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
     color: colors.textMuted,
     marginTop: 2,
@@ -291,26 +303,29 @@ const styles = StyleSheet.create({
     width: 4,
     opacity: 0.65,
   },
+  fieldContainer: {
+    gap: 6,
+  },
   fieldLabel: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
     color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
   },
   fieldHint: {
-    fontSize: 11,
+    fontSize: 12,
     color: colors.textFaint,
   },
   input: {
-    minHeight: 46,
+    minHeight: 52,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    fontSize: 14,
+    fontSize: 15,
     color: colors.text,
   },
   empty: {
@@ -320,13 +335,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   emptyTitle: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
     color: colors.textMuted,
     textAlign: 'center',
   },
   emptyMessage: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textFaint,
     textAlign: 'center',
     marginTop: 4,
@@ -339,7 +354,7 @@ const styles = StyleSheet.create({
     paddingVertical: 60,
   },
   loadingText: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textMuted,
   },
   keyValue: {
@@ -349,12 +364,12 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   keyValueLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textMuted,
   },
   keyValueValue: {
     flex: 1,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
     color: colors.text,
     textAlign: 'right',

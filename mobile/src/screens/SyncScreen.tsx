@@ -203,7 +203,7 @@ export default function SyncScreen() {
         </Card>
 
         {error ? (
-          <Pressable onPress={clearError} style={styles.errorBox}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Dismiss sync error" onPress={clearError} style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={18} color={colors.danger} />
             <View style={{ flex: 1 }}>
               <Text style={styles.errorTitle}>The last sync did not finish</Text>
@@ -313,7 +313,7 @@ const styles = StyleSheet.create({
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4, color: colors.primary },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },
-  subtitle: { fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 18 },
+  subtitle: { fontSize: 13, color: colors.textMuted, marginTop: 4, lineHeight: 19 },
   heroIcon: {
     width: 50,
     height: 50,
@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   statusDot: { width: 10, height: 10, borderRadius: 5 },
   statusTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
-  statusHint: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  statusHint: { fontSize: 13, color: colors.textMuted, marginTop: 3, lineHeight: 18 },
   countRow: { flexDirection: 'row', gap: spacing.sm },
   countBox: {
     flex: 1,
@@ -335,14 +335,14 @@ const styles = StyleSheet.create({
   },
   countValue: { fontSize: 22, fontWeight: '800', color: colors.text },
   countLabel: {
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '700',
     color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginTop: 2,
   },
-  footerHint: { fontSize: 11, color: colors.textFaint, textAlign: 'center', lineHeight: 16 },
+  footerHint: { fontSize: 12, color: colors.textFaint, textAlign: 'center', lineHeight: 18 },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -351,8 +351,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.dangerSoft,
   },
-  errorTitle: { fontSize: 12, fontWeight: '800', color: colors.danger },
-  errorText: { fontSize: 11, lineHeight: 16, color: colors.danger, marginTop: 2 },
+  errorTitle: { fontSize: 14, fontWeight: '800', color: colors.danger },
+  errorText: { fontSize: 13, lineHeight: 18, color: colors.danger, marginTop: 3 },
   operationCard: {
     gap: spacing.sm,
     padding: spacing.md,
@@ -370,10 +370,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  operationType: { fontSize: 13, fontWeight: '800', color: colors.text },
-  operationRef: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
+  operationType: { fontSize: 14, fontWeight: '800', color: colors.text },
+  operationRef: { fontSize: 13, color: colors.textMuted, marginTop: 2, lineHeight: 18 },
   operationMetaRow: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm },
-  operationMeta: { fontSize: 10, color: colors.textFaint },
+  operationMeta: { fontSize: 12, color: colors.textFaint },
   operationError: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -382,9 +382,9 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: colors.dangerSoft,
   },
-  operationErrorText: { flex: 1, fontSize: 11, lineHeight: 16, color: colors.danger },
+  operationErrorText: { flex: 1, fontSize: 13, lineHeight: 18, color: colors.danger },
   operationActions: { flexDirection: 'row', gap: spacing.sm },
-  waitingHint: { fontSize: 11, color: colors.textFaint },
+  waitingHint: { fontSize: 13, color: colors.textFaint },
   tipCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -393,6 +393,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.primarySoft,
   },
-  tipTitle: { fontSize: 12, fontWeight: '800', color: colors.primaryDark },
-  tipText: { fontSize: 11, lineHeight: 16, color: colors.primaryDark, marginTop: 2, opacity: 0.85 },
+  tipTitle: { fontSize: 14, fontWeight: '800', color: colors.primaryDark },
+  tipText: { fontSize: 13, lineHeight: 18, color: colors.primaryDark, marginTop: 3, opacity: 0.85 },
 });

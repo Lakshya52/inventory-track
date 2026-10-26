@@ -1,12 +1,12 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
-import { ShelfLocation } from '../types';
+import { EntityId, ShelfLocation } from '../types';
 import { MapPin, Plus, Pencil, Trash2, X, Power } from 'lucide-react';
 
 export default function ShelfLocations() {
   const [locations, setLocations] = useState<ShelfLocation[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<EntityId | null>(null);
   const [code, setCode] = useState('');
   const [desc, setDesc] = useState('');
   const [warehouse, setWarehouse] = useState('');
@@ -39,7 +39,7 @@ export default function ShelfLocations() {
     } catch (err: any) { setError(err.message); }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: EntityId) => {
     if (!window.confirm('Delete this location?')) return;
     try {
       await api.shelfLocations.delete(id);

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { getContext, isDuplicateKey } from '../config/database';
+import { getContext, isDuplicateKey, isValidId } from '../config/database';
 
 type UserTypeInfo = { table: string; role: string };
 
@@ -111,7 +111,8 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   const info = normalizeType(req.params.type);
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid user id' }); return; }
   const { name, email } = req.body;
   if (!name || !email) {
     res.status(400).json({ error: 'Name and email are required' });
@@ -139,7 +140,8 @@ export async function changePassword(req: Request, res: Response): Promise<void>
   const info = normalizeType(req.params.type);
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid user id' }); return; }
   const { password } = req.body;
   if (!password || String(password).length < 6) {
     res.status(400).json({ error: 'Password must be at least 6 characters' });
@@ -159,9 +161,10 @@ export async function setUserStatus(req: Request, res: Response): Promise<void> 
   const info = normalizeType(req.params.type);
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid user id' }); return; }
   const active = req.body.is_active === true || req.body.is_active === 1 || req.body.is_active === '1';
-  const isSelf = info.role === req.user?.role && id === req.user?.userId;
+  const isSelf = info.role === req.user?.role && String(id) === String(req.user?.userId);
 
   if (isSelf && !active) {
     res.status(400).json({ error: 'You cannot deactivate your own account' });
@@ -184,8 +187,9 @@ export async function deleteUser(req: Request, res: Response): Promise<void> {
   const info = normalizeType(req.params.type);
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
-  const id = Number(req.params.id);
-  if (info.role === req.user?.role && id === req.user?.userId) {
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid user id' }); return; }
+  if (info.role === req.user?.role && String(id) === String(req.user?.userId)) {
     res.status(400).json({ error: 'You cannot delete your own account' });
     return;
   }

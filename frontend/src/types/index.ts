@@ -5,8 +5,11 @@ export type BatchStatus = 'CREATED' | 'QC_PASSED' | 'QC_FAILED'
 
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
+/** IDs are numeric on MySQL and strings (Mongo ObjectIds) on MongoDB. */
+export type EntityId = string | number;
+
 export interface User {
-  id: number;
+  id: EntityId;
   name: string;
   email: string;
   role: Role;
@@ -15,7 +18,7 @@ export interface User {
 }
 
 export interface Product {
-  id: number;
+  id: EntityId;
   name: string;
   description: string | null;
   sku: string;
@@ -34,8 +37,8 @@ export interface Product {
 }
 
 export interface Batch {
-  id: number;
-  product_id: number;
+  id: EntityId;
+  product_id: EntityId;
   batch_number: string;
   batch_group_id?: string | null;
   quantity: number;
@@ -44,10 +47,10 @@ export interface Batch {
   manufacturing_date: string | null;
   expiry_date: string | null;
   storage_location: string | null;
-  shelf_location_id?: number | null;
+  shelf_location_id?: EntityId | null;
   location_code?: string | null;
   qr_count?: number;
-  qr_job_id?: number | null;
+  qr_job_id?: EntityId | null;
   notes: string | null;
   status: BatchStatus;
   barcode_value: string;
@@ -56,19 +59,19 @@ export interface Batch {
   product_sku?: string;
   product_grade?: string | null;
   product_description?: string | null;
-  vendor_id?: number | null;
+  vendor_id?: EntityId | null;
   vendor_name?: string | null;
-  grade_id?: number | null;
+  grade_id?: EntityId | null;
   grade_name?: string | null;
-  bag_quantity_id?: number | null;
+  bag_quantity_id?: EntityId | null;
   bag_quantity?: number | null;
   bag_quantity_unit?: string | null;
   fg_details_completed_at?: string | null;
 }
 
 export interface ActivityLog {
-  id: number;
-  user_id: number | null;
+  id: EntityId;
+  user_id: EntityId | null;
   user_name: string | null;
   user_role: string | null;
   action: string;
@@ -95,30 +98,30 @@ export interface DashboardStats {
 }
 
 export interface QcRecord {
-  id: number;
-  batch_id: number;
-  tester_id: number;
+  id: EntityId;
+  batch_id: EntityId;
+  tester_id: EntityId;
   result: 'PASS' | 'FAIL';
   remarks: string | null;
   created_at: string;
 }
 
 export interface DispatchRecord {
-  id: number;
-  batch_id: number;
-  dispatcher_id: number;
+  id: EntityId;
+  batch_id: EntityId;
+  dispatcher_id: EntityId;
   remarks: string | null;
   created_at: string;
 }
 
 export interface DispatchOrder {
-  id: number;
-  batch_id: number;
-  raised_by: number;
+  id: EntityId;
+  batch_id: EntityId;
+  raised_by: EntityId;
   status: DispatchOrderStatus;
-  admin_id: number | null;
+  admin_id: EntityId | null;
   admin_remarks: string | null;
-  client_id: number;
+  client_id: EntityId;
   driver_name: string;
   vehicle_number: string;
   created_at: string;
@@ -131,7 +134,7 @@ export interface DispatchOrder {
 }
 
 export interface Vendor {
-  id: number;
+  id: EntityId;
   vendor_code: string;
   name: string;
   contact_person: string | null;
@@ -169,7 +172,7 @@ export interface AdminStats {
 }
 
 export interface ShelfLocation {
-  id: number;
+  id: EntityId;
   location_code: string;
   description: string | null;
   warehouse: string | null;
@@ -180,7 +183,7 @@ export interface ShelfLocation {
 }
 
 export interface Client {
-  id: number;
+  id: EntityId;
   name: string;
   contact_person: string | null;
   email: string | null;
@@ -192,9 +195,9 @@ export interface Client {
 }
 
 export interface PackingListItem {
-  id: number;
-  dispatch_order_id: number;
-  batch_id: number;
+  id: EntityId;
+  dispatch_order_id: EntityId;
+  batch_id: EntityId;
   product_name: string | null;
   batch_number: string | null;
   quantity: number | null;
@@ -205,9 +208,9 @@ export interface PackingListItem {
 }
 
 export interface FixRecord {
-  id: number;
-  batch_id: number;
-  fixed_by: number;
+  id: EntityId;
+  batch_id: EntityId;
+  fixed_by: EntityId;
   description: string | null;
   created_at: string;
   batch_number?: string;

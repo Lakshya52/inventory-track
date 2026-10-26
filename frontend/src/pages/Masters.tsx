@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../services/api';
+import type { EntityId } from '../types';
 import {
   Check, FlaskConical, PackageCheck, Pencil, Plus, RefreshCw,
   Search, Save, Trash2, X,
@@ -8,7 +9,7 @@ import {
 type MasterKind = 'grades' | 'bag-quantities';
 type StatusFilter = 'all' | 'active' | 'inactive';
 type MasterItem = {
-  id: number;
+  id: EntityId;
   name: string;
   quantity?: number;
   unit?: string;
@@ -30,7 +31,7 @@ export default function Masters() {
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('');
   const [unit, setUnit] = useState('');
-  const [editId, setEditId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<EntityId | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

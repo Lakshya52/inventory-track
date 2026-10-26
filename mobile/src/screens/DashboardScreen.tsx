@@ -1,9 +1,10 @@
 import React, { useCallback, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
 import { useSync } from '../sync/SyncContext';
+import { api } from '../api/client';
 import {
   getDispatchLocalStats,
   getDispatchRecords,
@@ -27,30 +28,63 @@ export default function DashboardScreen() {
   const [pendingSearch, setPendingSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [adminData, setAdminData] = useState<any>(null);
 
   const role = session?.user.role;
-  const userId = session?.user.id || 0;
+  const userId = session?.user.id;
 
   const load = useCallback(async () => {
-    if (!role || role === 'ADMIN') return;
+    if (!role) return;
     setLoadError('');
     try {
+      if (role === 'ADMIN') {
+        setAdminData(await api.dashboard.admin());
+        return;
+      }
       if (role === 'QC') {
         const [localStats, records, batches] = await Promise.all([
-          getQcLocalStats(userId),
-          getQcRecords(5, 0, userId),
+          getQcLocalStats(userId!),
+          getQcRecords(5, 0, userId!),
           getBatchesByStatus(['CREATED'], 200),
         ]);
-        setStats(localStats);
-        setRecent(records);
+        let currentStats: any = localStats;
+        let currentRecords: any[] = records;
+        try {
+          const [serverStats, serverRecords] = await Promise.all([api.qc.stats(), api.qc.records({ limit: 5, scope: 'mine' })]);
+          currentStats = {
+            ...localStats,
+            today: serverStats.myTestsToday ?? localStats.today,
+            week: serverStats.myTestsThisWeek ?? localStats.week,
+            pending: serverStats.pendingQc ?? localStats.pending,
+            total: serverStats.myTotalTests ?? localStats.total,
+            passRate: serverStats.myPassRate,
+          };
+          if (Array.isArray(serverRecords?.items)) currentRecords = serverRecords.items.slice(0, 5);
+        } catch { /* Offline snapshots remain available from the device cache. */ }
+        setStats(currentStats);
+        setRecent(currentRecords as any);
         setPendingBatches(batches);
       } else {
         const [localStats, records] = await Promise.all([
-          getDispatchLocalStats(userId),
+          getDispatchLocalStats(userId!),
           getDispatchRecords(5),
         ]);
-        setStats(localStats);
-        setRecent(records);
+        let currentStats: any = localStats;
+        let currentRecords: any[] = records;
+        try {
+          const [serverStats, serverRecords] = await Promise.all([api.dispatch.stats(), api.dispatch.records()]);
+          currentStats = {
+            ...localStats,
+            ready: serverStats.readyToDispatch ?? localStats.ready,
+            pendingOrders: serverStats.pendingOrders ?? localStats.pendingOrders,
+            approvedOrders: serverStats.approvedOrders ?? localStats.approvedOrders,
+            dispatchedToday: serverStats.dispatchedToday ?? localStats.dispatchedToday,
+            totalDispatches: serverStats.myTotalDispatches ?? localStats.totalDispatches,
+          };
+          if (Array.isArray(serverRecords?.items)) currentRecords = serverRecords.items.slice(0, 5);
+        } catch { /* Offline snapshots remain available from the device cache. */ }
+        setStats(currentStats);
+        setRecent(currentRecords as any);
       }
     } catch (err: any) {
       setLoadError(err?.message || 'Could not load the dashboard from this device.');
@@ -63,7 +97,7 @@ export default function DashboardScreen() {
     }, [load])
   );
 
-  if (role === 'ADMIN' || !role) {
+  if (!role) {
     return <LimitedAccessScreen />;
   }
 
@@ -80,7 +114,7 @@ export default function DashboardScreen() {
   };
 
   const passRate = stats?.total
-    ? Math.round((stats.passed / stats.total) * 100)
+    ? (stats.passRate ?? Math.round((stats.passed / stats.total) * 100))
     : 0;
   const qcCards = [
     { label: 'My Tests Today', value: stats?.today ?? 0, icon: 'flask-outline' as const, accent: colors.info, soft: colors.infoSoft },
@@ -98,6 +132,33 @@ export default function DashboardScreen() {
   ];
 
   const cards = role === 'QC' ? qcCards : dispatchCards;
+
+  if (role === 'ADMIN') {
+    const statsData = adminData?.stats || {};
+    const adminCards = [
+      { label: 'Products', value: statsData.totalProducts ?? 0, icon: 'flask-outline', color: colors.primary, soft: colors.primarySoft },
+      { label: 'Inventory value', value: `₹${Number(statsData.inventoryValue || 0).toLocaleString('en-IN')}`, icon: 'cash-outline', color: colors.success, soft: colors.successSoft },
+      { label: 'Active users', value: `${statsData.activeUsers ?? 0}/${statsData.totalUsers ?? 0}`, icon: 'people-outline', color: colors.purple, soft: colors.purpleSoft },
+      { label: 'QC passed', value: statsData.qcPassed ?? 0, icon: 'checkmark-circle-outline', color: colors.success, soft: colors.successSoft },
+      { label: 'QC failed', value: statsData.qcFailed ?? 0, icon: 'close-circle-outline', color: colors.danger, soft: colors.dangerSoft },
+      { label: 'Pending requests', value: statsData.pendingRequests ?? 0, icon: 'time-outline', color: colors.warning, soft: colors.warningSoft },
+      { label: 'Active locations', value: `${statsData.activeLocations ?? 0}/${statsData.totalLocations ?? 0}`, icon: 'location-outline', color: colors.info, soft: colors.infoSoft },
+    ];
+    const actions = [
+      { title: 'Review orders', href: '/orders', icon: 'clipboard-outline' },
+      { title: 'Manage records', href: '/manage', icon: 'grid-outline' },
+      { title: 'Open reports', href: '/reports', icon: 'bar-chart-outline' },
+      { title: 'Production', href: '/production', icon: 'construct-outline' },
+    ];
+    return <Screen><ScrollView style={styles.screen} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}>
+      <View style={styles.hero}><View style={{ flex: 1 }}><Text style={styles.eyebrow}>ADMIN DASHBOARD</Text><Text style={styles.title}>Hello, {session?.user.name?.split(' ')[0] || 'there'}</Text><Text style={styles.subtitle}>Live totals from the shared inventory server.</Text></View><View style={styles.heroActions}><Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code to view product details" onPress={() => router.push('/(tabs)/qr-lookup')} style={({ pressed }) => [styles.lookupButton, pressed && styles.lookupPressed]}><Ionicons name="scan-outline" size={24} color={colors.primary} /></Pressable><View style={styles.connectionDot}><Ionicons name={online ? 'wifi-outline' : 'cloud-offline-outline'} size={22} color={online ? colors.success : colors.warning} /></View></View></View>
+      {loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
+      <View style={styles.statGrid}>{adminCards.map((card) => <StatCard key={card.label} label={card.label} value={card.value} icon={<Ionicons name={card.icon as any} size={18} color={card.color} />} accent={card.color} soft={card.soft} />)}</View>
+      <View style={styles.adminActions}>{actions.map((action) => <Button key={action.title} title={action.title} variant="secondary" icon={<Ionicons name={action.icon as any} size={16} color={colors.primary} />} onPress={() => router.push(action.href as any)} style={styles.adminAction} />)}</View>
+      <Card style={{ gap: spacing.sm }}><SectionHeader title="Pending dispatch requests" subtitle={`${adminData?.pendingRequests?.length || 0} need review`} />{(adminData?.pendingRequests || []).slice(0, 5).map((item: any, index: number) => <View key={String(item.id ?? item._id ?? index)} style={styles.activityRow}><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{item.product_name || 'Dispatch request'}</Text><Text style={styles.activityMeta}>{item.batch_number} · {item.raised_by_name || 'Dispatch team'}</Text></View><Badge status={item.status || 'PENDING'} /></View>)}{!adminData?.pendingRequests?.length ? <EmptyState title="Nothing waiting" message="New dispatch requests will appear here." /> : null}<Button title="Review requests" variant="secondary" onPress={() => router.push('/orders')} /></Card>
+      <Card style={{ gap: spacing.sm }}><SectionHeader title="Recent activity" subtitle="Latest server events" />{(adminData?.recentActivity || []).slice(0, 6).map((item: any, index: number) => <View key={String(item.id ?? item._id ?? index)} style={styles.activityRow}><Ionicons name="pulse-outline" size={17} color={colors.info} /><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{item.action || item.event || 'Update'}</Text><Text style={styles.activityMeta} numberOfLines={2}>{item.description || item.created_at || ''}</Text></View></View>)}{!adminData?.recentActivity?.length ? <EmptyState title="No recent activity" /> : null}</Card>
+    </ScrollView></Screen>;
+  }
   const needle = pendingSearch.trim().toLowerCase();
   const filteredPending = !needle
     ? pendingBatches
@@ -122,12 +183,17 @@ export default function DashboardScreen() {
               {online ? 'Online — queued work syncs automatically.' : 'Offline — your work is saved on this device.'}
             </Text>
           </View>
-          <View style={[styles.connectionDot, { backgroundColor: online ? colors.successSoft : colors.warningSoft }]}>
-            <Ionicons
-              name={online ? 'wifi-outline' : 'cloud-offline-outline'}
-              size={24}
-              color={online ? colors.success : colors.warning}
-            />
+          <View style={styles.heroActions}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code to view product details" onPress={() => router.push('/(tabs)/qr-lookup')} style={({ pressed }) => [styles.lookupButton, pressed && styles.lookupPressed]}>
+              <Ionicons name="scan-outline" size={24} color={colors.primary} />
+            </Pressable>
+            <View style={[styles.connectionDot, { backgroundColor: online ? colors.successSoft : colors.warningSoft }]}>
+              <Ionicons
+                name={online ? 'wifi-outline' : 'cloud-offline-outline'}
+                size={22}
+                color={online ? colors.success : colors.warning}
+              />
+            </View>
           </View>
         </View>
 
@@ -175,15 +241,15 @@ export default function DashboardScreen() {
 
         <View style={styles.actions}>
           <Button
-            title={role === 'QC' ? 'Open QC group scan' : 'Open dispatch group scan'}
-            onPress={() => router.push('/scan')}
-            style={{ flex: 1 }}
+            title={role === 'QC' ? 'Start QC scan' : 'Start dispatch scan'}
+            large
+            onPress={() => router.push({ pathname: '/scan', params: { autostart: '1' } })}
+            icon={<Ionicons name="camera-outline" size={22} color="#fff" />}
           />
           <Button
             title="History"
             variant="secondary"
             onPress={() => router.push('/history')}
-            style={{ flex: 1 }}
           />
         </View>
 
@@ -268,7 +334,7 @@ export default function DashboardScreen() {
                     Showing 8 of {filteredPending.length}. Search to narrow the queue or open QC Scan.
                   </Text>
                 ) : null}
-                <Button title="Open QC group scan" variant="secondary" onPress={() => router.push('/scan')} />
+                <Button title="Open QC group scan" variant="secondary" onPress={() => router.push({ pathname: '/scan', params: { autostart: '1' } })} />
               </View>
             )}
           </Card>
@@ -284,14 +350,19 @@ const styles = StyleSheet.create({
   hero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingTop: spacing.sm },
   eyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4, color: colors.primary },
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },
-  subtitle: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
+  subtitle: { fontSize: 13, color: colors.textMuted, marginTop: 4, lineHeight: 19 },
   connectionDot: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  heroActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  lookupButton: { width: 48, height: 48, borderRadius: 16, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' },
+  lookupPressed: { opacity: 0.72 },
   syncCard: { padding: spacing.md },
   syncRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  syncTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  syncHint: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  syncTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  syncHint: { fontSize: 12, color: colors.textMuted, marginTop: 3, lineHeight: 17 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  actions: { flexDirection: 'row', gap: spacing.sm },
+  actions: { gap: spacing.sm },
+  adminActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  adminAction: { flexGrow: 1, minWidth: '46%' },
   activityRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 6 },
   activityIcon: {
     width: 34,
@@ -301,11 +372,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  activityTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  activityMeta: { fontSize: 11, color: colors.textFaint, marginTop: 1 },
-  activityTime: { fontSize: 11, color: colors.textFaint },
+  activityTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  activityMeta: { fontSize: 12, color: colors.textFaint, marginTop: 2 },
+  activityTime: { fontSize: 12, color: colors.textFaint },
   pendingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs },
-  moreHint: { fontSize: 11, color: colors.textMuted, textAlign: 'center' },
+  moreHint: { fontSize: 12, color: colors.textMuted, textAlign: 'center', lineHeight: 17 },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',

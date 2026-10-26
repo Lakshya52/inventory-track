@@ -130,5 +130,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.dangerSoft,
   },
   errorText: { flex: 1, color: colors.danger, fontSize: 12 },
-  hint: { fontSize: 11, lineHeight: 17, color: colors.textFaint, textAlign: 'center' },
+  hint: { fontSize: 12, lineHeight: 18, color: colors.textFaint, textAlign: 'center' },
 });

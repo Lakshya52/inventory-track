@@ -1,12 +1,13 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../auth/AuthContext';
+import { api } from '../api/client';
 import { useSync } from '../sync/SyncContext';
 import { newOperationId } from '../auth/authStorage';
-import { getBatchByBarcode, getBatchesByStatus, queueBulkOperation } from '../db/database';
+import { cacheBatchForScannedQr, getBatchByBarcode, getBatchesByStatus, queueBulkOperation } from '../db/database';
 import { Badge, Button, Card, EmptyState, Field, Screen, SectionHeader } from '../components/ui';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { colors, radius, spacing } from '../theme';
@@ -18,13 +19,13 @@ type MessageKind = 'success' | 'error' | 'info';
 type ScannedQr = { batch: Batch; qrValue: string };
 
 function expectedQrCount(batch: Batch): number {
-  if (Array.isArray(batch.unit_qr_codes)) return batch.unit_qr_codes.length;
+  if (Array.isArray(batch.unit_qr_codes) && batch.unit_qr_codes.length > 0) return batch.unit_qr_codes.length;
   if (typeof batch.unit_qr_codes === 'string') {
     try {
       const codes = JSON.parse(batch.unit_qr_codes);
-      if (Array.isArray(codes)) return codes.length;
+      if (Array.isArray(codes) && codes.length > 0) return codes.length;
     } catch {
-      return Math.max(1, Math.floor(Number(batch.quantity) || 1));
+      // Fall back to the server's label count or batch quantity below.
     }
   }
   return Math.max(1, Math.floor(Number(batch.qr_count ?? batch.quantity) || 1));
@@ -33,6 +34,9 @@ function expectedQrCount(batch: Batch): number {
 export default function QCScanScreen() {
   const { session } = useAuth();
   const { online, pendingCount, syncing, sync } = useSync();
+  const { autostart } = useLocalSearchParams<{ autostart?: string }>();
+  const router = useRouter();
+  const isFocused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
   const [pending, setPending] = useState<Batch[]>([]);
   const [group, setGroup] = useState<ScannedQr[]>([]);
@@ -48,6 +52,7 @@ export default function QCScanScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const groupRef = useRef<ScannedQr[]>([]);
   const lastScanRef = useRef<{ value: string; at: number } | null>(null);
+  const autoStartHandledRef = useRef(false);
 
   const loadPending = useCallback(async () => {
     const rows = await getBatchesByStatus(['CREATED'], 200);
@@ -57,6 +62,7 @@ export default function QCScanScreen() {
   useFocusEffect(
     useCallback(() => {
       void loadPending();
+      return () => setScanning(false);
     }, [loadPending])
   );
 
@@ -80,9 +86,24 @@ export default function QCScanScreen() {
   const addByBarcode = useCallback(async (value: string) => {
     const barcode = value.trim();
     if (!barcode) return;
-    const batch = await getBatchByBarcode(barcode);
+    let batch = await getBatchByBarcode(barcode);
+    if (!batch && online) {
+      try {
+        batch = await api.batchByBarcode(barcode);
+        try {
+          await cacheBatchForScannedQr(batch, barcode);
+        } catch (cacheError) {
+          console.warn('Could not cache the scanned QR locally; continuing with the server result.', cacheError);
+        }
+      } catch (lookupError: any) {
+        showMessage(lookupError?.status === 404
+          ? 'This QR code is not registered on the server. Check the label or sync with your administrator.'
+          : lookupError?.message || 'Could not look up this QR code. Check the connection and try again.', 'error');
+        return;
+      }
+    }
     if (!batch) {
-      showMessage('That QR code is not on this device yet. Sync while online, then try again.', 'error');
+      showMessage('This QR code is not saved on this device. Connect and sync before scanning it.', 'error');
       return;
     }
     if (batch.status !== 'CREATED') {
@@ -101,7 +122,7 @@ export default function QCScanScreen() {
       `${batch.batch_number} added. ${groupRef.current.length} QR code${groupRef.current.length === 1 ? '' : 's'} ready.`,
       'success'
     );
-  }, [addBatch]);
+  }, [addBatch, online]);
 
   const onBarcodeScanned = useCallback(({ data }: { data: string }) => {
     const now = Date.now();
@@ -112,7 +133,7 @@ export default function QCScanScreen() {
     void addByBarcode(data);
   }, [addByBarcode]);
 
-  const startScanning = async () => {
+  const startScanning = useCallback(async () => {
     if (!permission?.granted) {
       const next = await requestPermission();
       if (!next.granted) {
@@ -120,9 +141,21 @@ export default function QCScanScreen() {
         return;
       }
     }
+    if (!isFocused) return;
     groupRef.current = group;
     setScanning(true);
-  };
+  }, [group, isFocused, permission?.granted, requestPermission]);
+
+  useEffect(() => {
+    if (autostart !== '1') {
+      autoStartHandledRef.current = false;
+      return;
+    }
+    if (!isFocused || autoStartHandledRef.current) return;
+    autoStartHandledRef.current = true;
+    router.setParams({ autostart: '' });
+    void startScanning();
+  }, [autostart, isFocused, router, startScanning]);
 
   const removeBatch = (qrValue: string) => {
     const next = groupRef.current.filter((item) => item.qrValue !== qrValue);
@@ -147,14 +180,14 @@ export default function QCScanScreen() {
     }
     const selected = groupRef.current;
     const batchIds = [...new Set(selected.map((item) => item.batch.id))];
-    const scannedCounts = new Map<number, number>();
-    selected.forEach(({ batch }) => scannedCounts.set(batch.id, (scannedCounts.get(batch.id) || 0) + 1));
+    const scannedCounts = new Map<string, number>();
+    selected.forEach(({ batch }) => scannedCounts.set(String(batch.id), (scannedCounts.get(String(batch.id)) || 0) + 1));
     const incomplete = [...scannedCounts].find(([batchId, count]) => {
-      const batch = selected.find((item) => item.batch.id === batchId)?.batch;
+      const batch = selected.find((item) => String(item.batch.id) === batchId)?.batch;
       return !batch || count !== expectedQrCount(batch);
     });
     if (incomplete) {
-      const batch = selected.find((item) => item.batch.id === incomplete[0])?.batch;
+      const batch = selected.find((item) => String(item.batch.id) === incomplete[0])?.batch;
       showMessage(
         `Scan every QR for ${batch?.batch_number || 'the batch'} (${incomplete[1]}/${batch ? expectedQrCount(batch) : '?'} scanned) before submitting QC.`,
         'error'
@@ -200,7 +233,7 @@ export default function QCScanScreen() {
   const filteredPending = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return pending.filter((batch) => {
-      if (group.some((item) => item.batch.id === batch.id)) return false;
+    if (group.some((item) => String(item.batch.id) === String(batch.id))) return false;
       if (!needle) return true;
       return [batch.batch_number, batch.product_name, batch.product_sku, batch.barcode_value]
         .filter(Boolean)
@@ -266,15 +299,16 @@ export default function QCScanScreen() {
         <Card style={{ gap: spacing.md }}>
           <SectionHeader
             title="Add QR codes"
-            subtitle={`${online ? 'Online' : 'Offline'} · ${pendingCount} queued change${pendingCount === 1 ? '' : 's'}`}
+            subtitle={`Tap once to open the camera and scan QC labels · ${pendingCount} queued`}
             right={<Badge status="CREATED" label="QC pending" />}
           />
 
           <View style={styles.scanButtons}>
             <Button
-              title={scanning ? 'Stop camera' : 'Scan with camera'}
+              title={scanning ? 'Stop scanning' : 'Start QC scan'}
+              large
               variant={scanning ? 'secondary' : 'primary'}
-              icon={<Ionicons name={scanning ? 'stop-circle-outline' : 'camera-outline'} size={18} color={scanning ? colors.text : '#fff'} />}
+              icon={<Ionicons name={scanning ? 'stop-circle-outline' : 'camera-outline'} size={22} color={scanning ? colors.text : '#fff'} />}
               onPress={() => {
                 if (scanning) setScanning(false);
                 else void startScanning();
@@ -283,7 +317,7 @@ export default function QCScanScreen() {
             />
           </View>
 
-          {scanning ? (
+          {scanning && isFocused ? (
             <View style={styles.cameraWrap}>
               <CameraView
                 style={styles.camera}
@@ -328,7 +362,7 @@ export default function QCScanScreen() {
           {group.length === 0 ? (
             <EmptyState
               title="No QR codes in this group"
-              message="Scan a label or tap Add on a pending batch below. All codes must still be waiting for QC."
+              message="Tap Start QC scan. Each valid label is added to this group as soon as it is scanned."
             />
           ) : (
             <View style={{ gap: spacing.sm }}>
@@ -343,7 +377,7 @@ export default function QCScanScreen() {
                       {batch.batch_number} · {qrValue}
                     </Text>
                   </View>
-                  <Pressable onPress={() => removeBatch(qrValue)} hitSlop={8} style={styles.removeButton}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${qrValue} from QC group`} onPress={() => removeBatch(qrValue)} style={styles.removeButton}>
                     <Ionicons name="close-outline" size={18} color={colors.danger} />
                   </Pressable>
                 </View>
@@ -353,6 +387,8 @@ export default function QCScanScreen() {
 
           <View style={styles.resultRow}>
             <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ selected: result === 'PASS' }}
               onPress={() => setResult('PASS')}
               style={[
                 styles.resultButton,
@@ -363,6 +399,8 @@ export default function QCScanScreen() {
               <Text style={[styles.resultText, result === 'PASS' && { color: colors.success }]}>PASS ALL</Text>
             </Pressable>
             <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ selected: result === 'FAIL' }}
               onPress={() => setResult('FAIL')}
               style={[
                 styles.resultButton,
@@ -430,14 +468,14 @@ export default function QCScanScreen() {
           ) : (
             filteredPending.slice(0, 40).map((batch) => (
               <View key={batch.id} style={styles.pendingRow}>
-                <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ minWidth: 0 }}>
                   <Text style={styles.pendingTitle} numberOfLines={1}>{batch.product_name}</Text>
                   <Text style={styles.pendingMeta} numberOfLines={1}>
                     {batch.batch_number} · {batch.product_sku}
                   </Text>
                   <Text style={styles.pendingAge}>waiting {formatAge(batch.age_minutes)}</Text>
                 </View>
-                <Text style={styles.pendingAge}>Scan its {expectedQrCount(batch)} QR label{expectedQrCount(batch) === 1 ? '' : 's'} to add this batch.</Text>
+                  <Text style={styles.pendingAge}>{expectedQrCount(batch)} QR label{expectedQrCount(batch) === 1 ? '' : 's'} required</Text>
               </View>
             ))
           )}
@@ -473,14 +511,14 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: radius.md,
   },
-  messageText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  messageText: { flex: 1, fontSize: 13, lineHeight: 19, fontWeight: '600' },
   scanButtons: { flexDirection: 'row', gap: spacing.sm },
   cameraWrap: {
     borderRadius: radius.lg,
     overflow: 'hidden',
     backgroundColor: '#0f172a',
   },
-  camera: { width: '100%', height: 260 },
+  camera: { width: '100%', height: 320 },
   cameraOverlay: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -489,7 +527,7 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     backgroundColor: 'rgba(15,23,42,0.85)',
   },
-  cameraText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  cameraText: { color: '#fff', fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   manualRow: { flexDirection: 'row', alignItems: 'flex-end', gap: spacing.sm },
   batchRow: {
     flexDirection: 'row',
@@ -507,9 +545,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  batchTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  batchMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
-  removeButton: { padding: 4 },
+  batchTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  batchMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  removeButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   quickRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   resultRow: { flexDirection: 'row', gap: spacing.sm },
   resultButton: {
@@ -523,18 +561,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 2,
   },
-  resultText: { fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.4 },
-  footerHint: { fontSize: 11, color: colors.textFaint, textAlign: 'center', lineHeight: 16 },
+  resultText: { fontSize: 13, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.4 },
+  footerHint: { fontSize: 12, color: colors.textFaint, textAlign: 'center', lineHeight: 18 },
   pendingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     gap: spacing.sm,
     paddingVertical: spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  pendingTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
-  pendingMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
-  pendingAge: { fontSize: 10, color: colors.textFaint, marginTop: 2 },
+  pendingTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  pendingMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  pendingAge: { fontSize: 12, color: colors.textFaint, marginTop: 3 },
   userLine: { fontSize: 10, color: colors.textFaint, textAlign: 'center' },
 });

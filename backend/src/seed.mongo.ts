@@ -6,7 +6,7 @@ import { ensureAdminSchema } from './config/schema.mongo';
 /**
  * Collections wiped by the demo seed. The list mirrors the MySQL seed plus the
  * child tables that MySQL removes through ON DELETE CASCADE. Device and token
- * collections are cleared too because numeric user IDs restart at 1 here.
+ * collections are cleared because the referenced demo users are recreated.
  */
 const SEED_COLLECTIONS = [
   'activity_logs',
@@ -35,8 +35,6 @@ export async function seed(): Promise<void> {
   for (const name of SEED_COLLECTIONS) {
     await ctx.deleteMany(name, {});
   }
-  await ctx.collection('counters').deleteMany({ _id: { $in: SEED_COLLECTIONS as any } });
-
   const adminHash = await bcrypt.hash('admin@123', 10);
   const qcHash = await bcrypt.hash('qc@123', 10);
   const dispatchHash = await bcrypt.hash('dispatch@123', 10);

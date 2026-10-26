@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { endOfDay, getContext, parseDateValue, startOfDay } from '../config/database';
+import { endOfDay, getContext, idKey, parseDateValue, startOfDay } from '../config/database';
 import { mapByIds } from '../services/queryService';
 
 function dateRange(req: Request): Record<string, Date> | null {
@@ -110,17 +110,17 @@ export async function qcReport(req: Request, res: Response): Promise<void> {
     projection: { _id: 0 },
   });
 
-  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => Number(record.batch_id)));
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => idKey(record.batch_id)));
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id))
   );
-  const testers = await mapByIds<Record<string, any>>(ctx, 'qc_users', records.map((record) => Number(record.tester_id)));
+  const testers = await mapByIds<Record<string, any>>(ctx, 'qc_users', records.map((record) => idKey(record.tester_id)));
 
   res.json(records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       id: record.id,
       batch_id: record.batch_id,
@@ -135,7 +135,7 @@ export async function qcReport(req: Request, res: Response): Promise<void> {
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
       grade: product?.grade ?? null,
-      tester_name: testers.get(Number(record.tester_id))?.name ?? 'Unknown',
+      tester_name: testers.get(idKey(record.tester_id))?.name ?? 'Unknown',
     };
   }));
 }
@@ -152,30 +152,30 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
     projection: { _id: 0 },
   });
 
-  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => Number(record.batch_id)));
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => idKey(record.batch_id)));
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id))
   );
   const dispatchers = await mapByIds<Record<string, any>>(
     ctx,
     'dispatch_users',
-    records.map((record) => Number(record.dispatcher_id))
+    records.map((record) => idKey(record.dispatcher_id))
   );
   const orders = await mapByIds<Record<string, any>>(
     ctx,
     'dispatch_orders',
-    records.map((record) => Number(record.dispatch_order_id))
+    records.map((record) => idKey(record.dispatch_order_id))
   );
-  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', [...orders.values()].map((order) => Number(order.client_id)));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
+  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', [...orders.values()].map((order) => idKey(order.client_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => idKey(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => idKey(batch.bag_quantity_id)));
 
   res.json(records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
-    const order = orders.get(Number(record.dispatch_order_id));
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
+    const order = orders.get(idKey(record.dispatch_order_id));
     return {
       id: record.id,
       batch_id: record.batch_id,
@@ -189,14 +189,14 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
       storage_location: batch?.storage_location ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      grade: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
-      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
-      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
-      client_name: clients.get(Number(order?.client_id))?.name ?? null,
+      grade: grades.get(idKey(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
+      client_name: clients.get(idKey(order?.client_id))?.name ?? null,
       container_number: order?.container_number ?? null,
       vehicle_number: order?.vehicle_number ?? null,
       dispatch_order_id: order?.id ?? null,
-      dispatcher_name: dispatchers.get(Number(record.dispatcher_id))?.name ?? 'Unknown',
+      dispatcher_name: dispatchers.get(idKey(record.dispatcher_id))?.name ?? 'Unknown',
     };
   }));
 }
@@ -216,26 +216,26 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
     projection: { _id: 0 },
   });
 
-  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', orders.map((order) => Number(order.batch_id)));
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', orders.map((order) => idKey(order.batch_id)));
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id))
   );
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
-  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', orders.map((order) => Number(order.client_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => idKey(batch.grade_id)));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => idKey(batch.bag_quantity_id)));
+  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', orders.map((order) => idKey(order.client_id)));
   const raisedBy = await mapByIds<Record<string, any>>(
     ctx,
     'dispatch_users',
-    orders.map((order) => Number(order.raised_by))
+    orders.map((order) => idKey(order.raised_by))
   );
-  const admins = await mapByIds<Record<string, any>>(ctx, 'admins', orders.map((order) => Number(order.admin_id)));
+  const admins = await mapByIds<Record<string, any>>(ctx, 'admins', orders.map((order) => idKey(order.admin_id)));
 
   res.json(orders.map((order) => {
-    const batch = batches.get(Number(order.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
-    const client = clients.get(Number(order.client_id));
+    const batch = batches.get(idKey(order.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
+    const client = clients.get(idKey(order.client_id));
     return {
       id: order.id,
       batch_id: order.batch_id,
@@ -254,18 +254,18 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
       product_grade: product?.grade ?? null,
-      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
-      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
-      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
-      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
-      grade: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
+      grade_name: grades.get(idKey(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(idKey(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
+      grade: grades.get(idKey(batch?.grade_id))?.name ?? product?.grade ?? null,
       client_name: client?.name ?? null,
       client_contact: client?.contact_person ?? null,
       client_email: client?.email ?? null,
       client_phone: client?.phone ?? null,
       client_address: client?.address ?? null,
-      raised_by_name: raisedBy.get(Number(order.raised_by))?.name ?? 'Unknown',
-      admin_name: admins.get(Number(order.admin_id))?.name ?? null,
+      raised_by_name: raisedBy.get(idKey(order.raised_by))?.name ?? 'Unknown',
+      admin_name: admins.get(idKey(order.admin_id))?.name ?? null,
     };
   }));
 }
@@ -291,9 +291,9 @@ export async function inventory(_req: Request, res: Response): Promise<void> {
     ]),
   ]);
 
-  const statsByProduct = new Map(batchStats.map((row) => [Number(row._id), row]));
+  const statsByProduct = new Map(batchStats.map((row) => [idKey(row._id), row]));
   res.json(products.map((product) => {
-    const stats = statsByProduct.get(Number(product.id));
+    const stats = statsByProduct.get(idKey(product.id));
     return {
       id: product.id,
       name: product.name,
@@ -332,11 +332,11 @@ export async function batchesReport(req: Request, res: Response): Promise<void> 
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    rows.map((batch) => Number(batch.product_id))
+    rows.map((batch) => idKey(batch.product_id))
   );
 
   res.json(rows.map((batch) => {
-    const product = products.get(Number(batch.product_id));
+    const product = products.get(idKey(batch.product_id));
     return {
       ...batch,
       product_name: product?.name ?? null,

@@ -1,8 +1,9 @@
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
+import type { EntityId } from '../types';
 
 export interface QrLabel {
-  id: number;
+  id: EntityId;
   qr_value: string;
   serial_no: number;
   batch_number: string;
@@ -11,7 +12,7 @@ export interface QrLabel {
 }
 
 export interface QrJob {
-  id: number;
+  id: EntityId;
   job_code: string;
   product_name: string;
   product_sku: string;

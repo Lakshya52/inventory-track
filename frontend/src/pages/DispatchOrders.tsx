@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import type { EntityId } from '../types';
 import {
   ClipboardList, CheckCircle, XCircle, Plus, Eye, Search, Truck, FileText, AlertTriangle,
 } from 'lucide-react';
@@ -78,7 +79,7 @@ export default function DispatchOrders() {
     setMessageKind(kind);
   };
 
-  const handleApprove = async (id: number) => {
+  const handleApprove = async (id: EntityId) => {
     setActionLoading(true);
     try {
       await api.dispatchOrders.approve(id, remarks || undefined);
@@ -93,7 +94,7 @@ export default function DispatchOrders() {
     }
   };
 
-  const handleReject = async (id: number) => {
+  const handleReject = async (id: EntityId) => {
     setActionLoading(true);
     try {
       await api.dispatchOrders.reject(id, remarks || undefined);
@@ -116,8 +117,8 @@ export default function DispatchOrders() {
     setActionLoading(true);
     try {
       const results = await Promise.allSettled(selectedBatchIds.map((id) => api.dispatchOrders.raise({
-        batch_id: Number(id),
-        client_id: Number(clientId),
+        batch_id: id,
+        client_id: clientId,
         driver_name: driverName.trim(),
         vehicle_number: vehicleNumber.trim(),
         container_number: containerNumber.trim(),

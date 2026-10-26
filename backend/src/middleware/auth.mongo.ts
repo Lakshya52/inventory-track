@@ -29,7 +29,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     }
 
     const ctx = await getContext();
-    const user = await ctx.findOne(decoded.table, { id: Number(decoded.userId) }, {
+    const user = await ctx.findOne(decoded.table, { id: decoded.userId }, {
       projection: { _id: 0, id: 1, is_active: 1 },
     });
     if (!user) {

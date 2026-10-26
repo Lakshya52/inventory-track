@@ -1,12 +1,12 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
-import { Client } from '../types';
+import { Client, EntityId } from '../types';
 import { Handshake, Plus, Pencil, Trash2, X } from 'lucide-react';
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<EntityId | null>(null);
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [email, setEmail] = useState('');
@@ -37,7 +37,7 @@ export default function Clients() {
     } catch (err: any) { setError(err.message); }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: EntityId) => {
     if (!window.confirm('Delete this client?')) return;
     try {
       await api.clients.delete(id);

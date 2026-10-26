@@ -1,14 +1,17 @@
 export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 
+/** SQL databases may return numeric IDs; MongoDB returns ObjectId strings. */
+export type EntityId = string | number;
+
 export interface User {
-  id: number;
+  id: EntityId;
   name: string;
   email: string;
   role: Role;
 }
 
 export interface MobileProduct {
-  id: number;
+  id: EntityId;
   name: string;
   sku: string;
   price?: number;
@@ -19,14 +22,14 @@ export interface MobileProduct {
 }
 
 export interface MobileVendor {
-  id: number;
+  id: EntityId;
   name: string;
   vendor_code?: string;
   is_active?: number | boolean;
 }
 
 export interface MobileMasterOption {
-  id: number;
+  id: EntityId;
   name?: string;
   quantity?: number;
   unit?: string;
@@ -34,13 +37,13 @@ export interface MobileMasterOption {
 }
 
 export interface MobileShelfLocation {
-  id: number;
+  id: EntityId;
   location_code: string;
   is_active?: number | boolean;
 }
 
 export interface QrLabel {
-  id: number;
+  id: EntityId;
   qr_value: string;
   serial_no: number;
   batch_number?: string;
@@ -48,7 +51,7 @@ export interface QrLabel {
 }
 
 export interface QrPrintJob {
-  id: number;
+  id: EntityId;
   job_code: string;
   product_name: string;
   product_sku: string;
@@ -61,7 +64,7 @@ export interface QrJobDetails {
 }
 
 export interface CreatedBatch {
-  id: number;
+  id: EntityId;
   batch_number: string;
   barcode_value: string;
   qr_job: QrPrintJob;
@@ -69,7 +72,7 @@ export interface CreatedBatch {
 }
 
 export interface CreateBatchesResponse {
-  id: number;
+  id: EntityId;
   barcode_value: string;
   batch_group_id: string;
   batch_count: number;
@@ -87,13 +90,13 @@ export interface AuthSession {
 }
 
 export interface Batch {
-  id: number;
-  product_id: number;
+  id: EntityId;
+  product_id: EntityId;
   batch_number: string;
   quantity: number;
   uom: string | null;
   storage_location: string | null;
-  shelf_location_id?: number | null;
+  shelf_location_id?: EntityId | null;
   location_code?: string | null;
   unit_qr_codes?: string | string[] | null;
   qr_count?: number;
@@ -108,12 +111,12 @@ export interface Batch {
   manufacturing_date?: string | null;
   expiry_date?: string | null;
   notes?: string | null;
-  qr_job_id?: number | null;
-  vendor_id?: number | null;
+  qr_job_id?: EntityId | null;
+  vendor_id?: EntityId | null;
   vendor_name?: string | null;
-  grade_id?: number | null;
+  grade_id?: EntityId | null;
   grade_name?: string | null;
-  bag_quantity_id?: number | null;
+  bag_quantity_id?: EntityId | null;
   bag_quantity?: number | null;
   bag_quantity_unit?: string | null;
   fg_details_completed_at?: string | null;
@@ -121,6 +124,13 @@ export interface Batch {
   molecular_formula?: string | null;
   product_grade?: string | null;
   product_purity?: string | null;
+  product_description?: string | null;
+  product_physical_state?: string | null;
+  product_storage_conditions?: string | null;
+  hsn_code?: string | null;
+  manufacturer?: string | null;
+  scanned_qr?: string | null;
+  matched_by_batch_number?: boolean;
   hazard_classification?: string | null;
   storage_conditions?: string | null;
   age_minutes?: number;
@@ -128,9 +138,9 @@ export interface Batch {
 }
 
 export interface QcRecord {
-  id: number;
-  batch_id: number;
-  tester_id: number;
+  id: EntityId;
+  batch_id: EntityId;
+  tester_id: EntityId;
   result: 'PASS' | 'FAIL';
   remarks: string | null;
   images: string | null;
@@ -142,15 +152,16 @@ export interface QcRecord {
 }
 
 export interface DispatchOrder {
-  id: number;
-  batch_id: number;
-  raised_by: number;
+  id: EntityId;
+  batch_id: EntityId;
+  raised_by: EntityId;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
-  admin_id: number | null;
+  admin_id: EntityId | null;
   admin_remarks: string | null;
-  client_id?: number | null;
+  client_id?: EntityId | null;
   driver_name?: string | null;
   vehicle_number?: string | null;
+  container_number?: string | null;
   client_name?: string | null;
   created_at: string;
   updated_at: string;
@@ -166,13 +177,13 @@ export interface DispatchOrder {
 }
 
 export interface DispatchRecord {
-  id: number;
-  batch_id: number;
-  dispatcher_id: number;
+  id: EntityId;
+  batch_id: EntityId;
+  dispatcher_id: EntityId;
   remarks: string | null;
   images: string | null;
   created_at: string;
-  dispatch_order_id: number | null;
+  dispatch_order_id: EntityId | null;
   batch_number: string;
   product_name: string;
   product_sku: string;
@@ -196,14 +207,14 @@ export interface OutboxOperation {
   created_at: string;
   next_attempt_at: string | null;
   entity_type: string | null;
-  entity_id: number | null;
+  entity_id: EntityId | null;
 }
 
 export interface SyncResult {
   operation_id: string;
   status: 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'FAILED';
   entity_type: string | null;
-  entity_id: number | null;
+  entity_id: EntityId | null;
   data?: Record<string, any> | null;
   error?: string | null;
   error_code?: string | null;

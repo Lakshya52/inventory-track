@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getContext, isDuplicateKey } from '../config/database';
+import { getContext, isDuplicateKey, isValidId } from '../config/database';
 
 export async function list(_req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
@@ -34,7 +34,8 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid location id' }); return; }
   const { location_code, description, warehouse, rack, shelf, is_active } = req.body;
   const ctx = await getContext();
   await ctx.updateOne('shelf_locations', { id }, {
@@ -51,7 +52,8 @@ export async function update(req: Request, res: Response): Promise<void> {
 }
 
 export async function remove(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid location id' }); return; }
   const ctx = await getContext();
   await ctx.deleteOne('shelf_locations', { id });
   res.json({ message: 'Location deleted' });

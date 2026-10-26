@@ -6,14 +6,17 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  StyleProp,
   Text,
   View,
+  ViewStyle,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import { File, Paths } from 'expo-file-system';
 import QRCode from 'qrcode';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../api/client';
@@ -25,6 +28,7 @@ import { formatAge, formatDate } from '../utils/format';
 import type {
   Batch,
   CreateBatchesResponse,
+  EntityId,
   MobileMasterOption,
   MobileProduct,
   MobileShelfLocation,
@@ -43,6 +47,20 @@ type PickerState = {
   onSelect: (value: string) => void;
 } | null;
 
+type CreationSuccess = {
+  response: CreateBatchesResponse;
+  productName: string;
+  productSku: string;
+  batchNumber: string;
+  batchCount: number;
+  unitsPerBatch: number;
+  totalUnits: number;
+  unitPrice: number;
+  manufacturingDate: string;
+  expiryDate: string;
+  location: string;
+};
+
 const filters: { value: BatchFilter; label: string }[] = [
   { value: 'ALL', label: 'All' },
   { value: 'CREATED', label: 'Waiting QC' },
@@ -56,8 +74,9 @@ function isActive(row: { is_active?: boolean | number }): boolean {
 }
 
 function dateFromDateOnly(value: string): Date | null {
-  if (!isValidDate(value)) return null;
-  const [year, month, day] = value.split('-').map(Number);
+  const dateOnly = value.slice(0, 10);
+  if (!isValidDate(dateOnly)) return null;
+  const [year, month, day] = dateOnly.split('-').map(Number);
   return new Date(year, month - 1, day);
 }
 
@@ -66,6 +85,13 @@ function dateOnlyFromDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function formatDateOnly(value?: string | null): string {
+  const date = value ? dateFromDateOnly(value) : null;
+  return date
+    ? date.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'Not set';
 }
 
 function makeBatchNumber(sku: string, batches: Batch[]): string {
@@ -152,13 +178,13 @@ async function createdBatchLabelSets(
     if (batch.qr_job && Array.isArray(batch.labels)) {
       return { job: batch.qr_job, labels: batch.labels };
     }
-    const stored = batches.find((item) => Number(item.id) === Number(batch.id));
+    const stored = batches.find((item) => String(item.id) === String(batch.id));
     if (!stored?.qr_job_id) {
       throw new Error(
         `Batch ${batch.batch_number} was created, but the server has not generated its unit QR labels yet. Deploy the latest backend, then retry.`
       );
     }
-    const detail = await api.getQrJob(Number(stored.qr_job_id));
+    const detail = await api.getQrJob(stored.qr_job_id);
     if (!detail.job || !Array.isArray(detail.labels) || detail.labels.length === 0) {
       throw new Error(`The server returned no QR labels for batch ${batch.batch_number}.`);
     }
@@ -173,7 +199,11 @@ async function downloadLabelSets(
   const file = await Print.printToFileAsync({ html });
   try {
     if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(file.uri, {
+      // Print writes under its own cache subdirectory. Copy to the app cache root
+      // so Android's share provider can grant the receiving app read access.
+      const shareFile = new File(Paths.cache, `qr-labels-${Date.now()}.pdf`);
+      await new File(file.uri).copy(shareFile);
+      await Sharing.shareAsync(shareFile.uri, {
         mimeType: 'application/pdf',
         dialogTitle: 'Save QR labels PDF',
         UTI: 'com.adobe.pdf',
@@ -187,21 +217,45 @@ async function downloadLabelSets(
   return 'printed';
 }
 
+async function printLabelSets(sets: { job: QrPrintJob; labels: QrLabel[] }[]): Promise<void> {
+  const html = await labelSetsHtml(sets);
+  const file = await Print.printToFileAsync({ html });
+  await Print.printAsync({ uri: file.uri });
+}
+
+async function downloadLabelSetsOnly(sets: { job: QrPrintJob; labels: QrLabel[] }[]): Promise<void> {
+  const html = await labelSetsHtml(sets);
+  const file = await Print.printToFileAsync({ html });
+  if (!(await Sharing.isAvailableAsync())) {
+    throw new Error('Sharing is not available on this device. Choose Print now and select Save as PDF.');
+  }
+  // Share from the app cache root so Android grants the receiving app access.
+  const shareFile = new File(Paths.cache, `qr-labels-${Date.now()}.pdf`);
+  await new File(file.uri).copy(shareFile);
+  await Sharing.shareAsync(shareFile.uri, {
+    mimeType: 'application/pdf',
+    dialogTitle: 'Save QR labels PDF',
+    UTI: 'com.adobe.pdf',
+  });
+}
+
 function SelectField({
   label,
   value,
   placeholder,
   onPress,
+  containerStyle,
 }: {
   label: string;
   value: string;
   placeholder: string;
   onPress: () => void;
+  containerStyle?: StyleProp<ViewStyle>;
 }) {
   return (
-    <View style={{ gap: spacing.xs }}>
+    <View style={[styles.selectFieldContainer, containerStyle]}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <Pressable onPress={onPress} style={styles.selectField}>
+      <Pressable accessibilityRole="button" accessibilityLabel={`${label}: ${value || placeholder}`} onPress={onPress} style={styles.selectField}>
         <Text style={[styles.selectText, !value && { color: colors.textFaint }]} numberOfLines={1}>
           {value || placeholder}
         </Text>
@@ -226,7 +280,7 @@ function OptionPicker({
         <View style={styles.pickerSheet}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>{picker.title}</Text>
-            <Pressable onPress={onClose} hitSlop={10}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close" style={styles.closeButton} onPress={onClose}>
               <Ionicons name="close-outline" size={24} color={colors.textMuted} />
             </Pressable>
           </View>
@@ -236,6 +290,8 @@ function OptionPicker({
               return (
                 <Pressable
                   key={option.value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
                   onPress={() => {
                     picker.onSelect(option.value);
                     onClose();
@@ -274,10 +330,16 @@ export default function BatchesScreen() {
   const [locations, setLocations] = useState<MobileShelfLocation[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<BatchFilter>('ALL');
+  const [batchPage, setBatchPage] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingAction, setLoadingAction] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [createError, setCreateError] = useState('');
+  const [creationSuccess, setCreationSuccess] = useState<CreationSuccess | null>(null);
+  const [successPrintError, setSuccessPrintError] = useState('');
+  const [successSyncWarning, setSuccessSyncWarning] = useState('');
+  const [printingCreated, setPrintingCreated] = useState(false);
   const [picker, setPicker] = useState<PickerState>(null);
 
   const [createVisible, setCreateVisible] = useState(false);
@@ -300,7 +362,7 @@ export default function BatchesScreen() {
   const [finishLocationId, setFinishLocationId] = useState('');
   const [reopenBatch, setReopenBatch] = useState<Batch | null>(null);
   const [reopenReason, setReopenReason] = useState('');
-  const [printJob, setPrintJob] = useState<number | null>(null);
+  const [printJob, setPrintJob] = useState<EntityId | null>(null);
 
   const load = useCallback(async () => {
     setError('');
@@ -315,6 +377,7 @@ export default function BatchesScreen() {
           api.listShelfLocations(),
         ]);
         setBatches(batchRows);
+        setBatchPage(1);
         setProducts(productRows);
         setVendors(vendorRows.filter(isActive));
         setGrades(gradeRows.filter(isActive));
@@ -327,6 +390,7 @@ export default function BatchesScreen() {
     }
     try {
       setBatches(await searchBatches('', undefined, 500));
+      setBatchPage(1);
     } catch (err: any) {
       setError(err?.message || 'Could not load batches from this device.');
     }
@@ -368,6 +432,14 @@ export default function BatchesScreen() {
     });
   }, [batches, filter, search]);
 
+  const batchPageSize = 10;
+  const batchPageCount = Math.max(1, Math.ceil(filteredBatches.length / batchPageSize));
+  const currentBatchPage = Math.min(batchPage, batchPageCount);
+  const pageBatches = filteredBatches.slice(
+    (currentBatchPage - 1) * batchPageSize,
+    currentBatchPage * batchPageSize
+  );
+
   const stats = useMemo(() => ({
     total: batches.length,
     waiting: batches.filter((batch) => batch.status === 'CREATED').length,
@@ -394,41 +466,57 @@ export default function BatchesScreen() {
 
   const createBatches = async () => {
     if (!online) {
-      setError('Creating batches requires a connection. Your existing batch list remains available offline.');
+      setCreateError('Connect to the server to create QC batches.');
       return;
     }
+    setCreateError('');
     const count = Number(batchCount);
     const units = Number(quantity);
     const price = Number(unitPrice || 0);
     if (!selectedProduct) {
-      setError('Choose a product before creating the batch.');
+      setCreateError('Choose a product before creating the batch.');
       return;
     }
     if (!batchNumber.trim()) {
-      setError('Enter a batch number.');
+      setCreateError('Enter a batch number.');
       return;
     }
     if (!Number.isInteger(count) || count < 1 || count > 100) {
-      setError('Number of batches must be a whole number from 1 to 100.');
+      setCreateError('Number of batches must be a whole number from 1 to 100.');
       return;
     }
     if (!Number.isInteger(units) || units < 1 || units > 1000 || units * count > 10000) {
-      setError('Products per batch must be 1–1,000 and one generation cannot exceed 10,000 products.');
+      setCreateError('Products per batch must be 1–1,000 and one generation cannot exceed 10,000 products.');
       return;
     }
     if (!Number.isFinite(price) || price < 0) {
-      setError('Enter a valid non-negative unit price.');
+      setCreateError('Enter a valid non-negative unit price.');
       return;
     }
-    if (!isValidDate(manufacturingDate) || !isValidDate(expiryDate)) {
-      setError('Enter valid manufacturing and expiry dates in YYYY-MM-DD format.');
+    if (!manufacturingDate) {
+      setCreateError('Select a manufacturing date.');
+      return;
+    }
+    if (!isValidDate(manufacturingDate)) {
+      setCreateError('The manufacturing date is invalid. Select it again.');
+      return;
+    }
+    if (!expiryDate) {
+      setCreateError('Select an expiry date.');
+      return;
+    }
+    if (!isValidDate(expiryDate)) {
+      setCreateError('The expiry date is invalid. Select it again.');
+      return;
+    }
+    if (manufacturingDate >= expiryDate) {
+      setCreateError('Manufacturing date must be before the expiry date.');
       return;
     }
 
     setLoadingAction(true);
     setError('');
     setNotice('');
-    let qrDownloadError = '';
     try {
       const created = await api.createBatches({
         product_id: selectedProduct.id,
@@ -439,31 +527,63 @@ export default function BatchesScreen() {
         manufacturing_date: manufacturingDate,
         expiry_date: expiryDate,
         notes: notes.trim() || undefined,
-        shelf_location_id: createLocationId ? Number(createLocationId) : undefined,
+        shelf_location_id: createLocationId || undefined,
       });
+      setCreationSuccess({
+        response: created,
+        productName: selectedProduct.name,
+        productSku: selectedProduct.sku,
+        batchNumber: batchNumber.trim(),
+        batchCount: count,
+        unitsPerBatch: units,
+        totalUnits: count * units,
+        unitPrice: price,
+        manufacturingDate,
+        expiryDate,
+        location: locations.find((item) => String(item.id) === createLocationId)?.location_code || 'Not set',
+      });
+      setSuccessPrintError('');
+      setSuccessSyncWarning('');
       setCreateVisible(false);
       resetCreateForm();
-      setNotice(`${created.message} Preparing the QR labels PDF...`);
-      try {
-        const labelSets = await createdBatchLabelSets(created);
-        const output = await downloadLabelSets(labelSets);
-        setNotice(output === 'shared'
-          ? `${created.batches.length} batch${created.batches.length === 1 ? '' : 'es'} created. QR PDF opened for saving or sharing.`
-          : `${created.batches.length} batch${created.batches.length === 1 ? '' : 'es'} created. Save the QR PDF from the print dialog.`);
-      } catch (err: any) {
-        qrDownloadError = `Batches were created, but the QR PDF could not be opened: ${err?.message || 'The print dialog is unavailable.'}`;
-      }
       try {
         await sync();
         await load();
       } catch (err: any) {
-        setError(`Batches and QR labels were created, but refresh failed: ${err?.message || 'Could not sync batches.'}`);
+        setSuccessSyncWarning(`Created successfully. Refresh did not finish: ${err?.message || 'Try syncing again.'}`);
       }
-      if (qrDownloadError) setError(qrDownloadError);
     } catch (err: any) {
-      setError(err?.message || 'Could not create QC batches.');
+      setCreateError(err?.message || 'Could not create QC batches. Check the details and try again.');
     } finally {
       setLoadingAction(false);
+    }
+  };
+
+  const printCreatedLabels = async () => {
+    if (!creationSuccess) return;
+    setPrintingCreated(true);
+    setSuccessPrintError('');
+    try {
+      const labelSets = await createdBatchLabelSets(creationSuccess.response);
+      await printLabelSets(labelSets);
+    } catch (err: any) {
+      setSuccessPrintError(err?.message || 'Could not prepare the QR label PDF. Try again.');
+    } finally {
+      setPrintingCreated(false);
+    }
+  };
+
+  const downloadCreatedLabels = async () => {
+    if (!creationSuccess) return;
+    setPrintingCreated(true);
+    setSuccessPrintError('');
+    try {
+      const labelSets = await createdBatchLabelSets(creationSuccess.response);
+      await downloadLabelSetsOnly(labelSets);
+    } catch (err: any) {
+      setSuccessPrintError(err?.message || 'Could not prepare the QR label PDF. Try again.');
+    } finally {
+      setPrintingCreated(false);
     }
   };
 
@@ -482,10 +602,10 @@ export default function BatchesScreen() {
     setNotice('');
     try {
       const result = await api.finishGoods(finishBatch.id, {
-        vendor_id: Number(vendorId),
-        grade_id: Number(gradeId),
-        bag_quantity_id: Number(bagQuantityId),
-        shelf_location_id: finishLocationId ? Number(finishLocationId) : undefined,
+        vendor_id: vendorId,
+        grade_id: gradeId,
+        bag_quantity_id: bagQuantityId,
+        shelf_location_id: finishLocationId || undefined,
       });
       setFinishBatch(null);
       setNotice(`Finished-goods details saved. The batch's ${result.labels.length} QR labels are unchanged.`);
@@ -544,9 +664,9 @@ export default function BatchesScreen() {
     setNotice('');
     try {
       const labelSets = await Promise.all(readyGroup.map(async (batch) => {
-        const detail = await api.getQrJob(Number(batch.qr_job_id));
+        const detail = await api.getQrJob(batch.qr_job_id!);
         return api.reprintQrLabels(
-          Number(batch.qr_job_id),
+          batch.qr_job_id!,
           detail.labels.map((label) => label.id)
         );
       }));
@@ -618,7 +738,7 @@ export default function BatchesScreen() {
           setBatchNumber(makeBatchNumber(product.sku, batches));
           setUnitPrice(product.price && product.price > 0 ? String(product.price) : '');
         }
-        setError('');
+        setCreateError('');
       },
     });
   };
@@ -637,9 +757,17 @@ export default function BatchesScreen() {
   };
 
   const savePickedDate = (field: BatchDateField, date: Date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      setCreateError(`Choose a valid ${field === 'manufacturing' ? 'manufacturing' : 'expiry'} date.`);
+      return;
+    }
     const value = dateOnlyFromDate(date);
+    const otherDate = field === 'manufacturing' ? expiryDate : manufacturingDate;
     if (field === 'manufacturing') setManufacturingDate(value);
     else setExpiryDate(value);
+    setCreateError(otherDate && (field === 'manufacturing' ? value >= otherDate : otherDate >= value)
+      ? 'Manufacturing date must be before the expiry date.'
+      : '');
   };
 
   const handleDateValueChange = (selectedDate: Date) => {
@@ -666,15 +794,17 @@ export default function BatchesScreen() {
             <Text style={styles.title}>Batches</Text>
             <Text style={styles.subtitle}>
               {isQc
-                ? 'Create QC batches with instant QR downloads, complete passed batches, and manage labels.'
+                ? 'Create batches, review the key dates and locations, and manage their QR labels.'
                 : 'Browse batches synced to this device.'}
             </Text>
           </View>
           {isQc ? (
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel="Create a new batch"
               onPress={() => {
                 setError('');
+                setCreateError('');
                 if (!online) {
                   setError('Connect to the server to create a QC batch.');
                   return;
@@ -730,15 +860,15 @@ export default function BatchesScreen() {
           <Metric label="QC failed" value={stats.failed} tint={colors.danger} />
         </View>
 
-        <Card style={{ gap: spacing.md }}>
+        <View style={styles.inventorySection}>
           <SectionHeader
             title="Batch inventory"
-            subtitle={`${filteredBatches.length} shown · ${batches.length} total`}
+            subtitle={`${filteredBatches.length} batches · ${batches.length} total`}
             right={<Badge status={online ? 'APPLIED' : 'PENDING'} label={online ? 'Live' : 'On device'} />}
           />
           <Field
             value={search}
-            onChangeText={setSearch}
+            onChangeText={(value) => { setSearch(value); setBatchPage(1); }}
             placeholder="Search product, SKU, batch, or barcode"
             autoCapitalize="none"
           />
@@ -750,7 +880,7 @@ export default function BatchesScreen() {
                   key={item.value}
                   accessibilityRole="button"
                   accessibilityState={{ selected }}
-                  onPress={() => setFilter(item.value)}
+                  onPress={() => { setFilter(item.value); setBatchPage(1); }}
                   style={[styles.filterChip, selected && styles.filterChipSelected]}
                 >
                   <Text style={[styles.filterChipText, selected && styles.filterChipTextSelected]}>{item.label}</Text>
@@ -768,7 +898,7 @@ export default function BatchesScreen() {
             />
           ) : (
             <View style={{ gap: spacing.sm }}>
-              {filteredBatches.map((batch) => {
+              {pageBatches.map((batch) => {
                 const group = batch.batch_group_id
                   ? batches
                       .filter((item) => item.batch_group_id === batch.batch_group_id)
@@ -797,9 +927,30 @@ export default function BatchesScreen() {
                   />
                 );
               })}
+              {batchPageCount > 1 ? (
+                <View style={styles.pagination}>
+                  <Button
+                    title="Previous"
+                    small
+                    variant="secondary"
+                    disabled={currentBatchPage <= 1}
+                    onPress={() => setBatchPage((value) => Math.max(1, value - 1))}
+                  />
+                  <Text style={styles.paginationText}>
+                    {((currentBatchPage - 1) * batchPageSize) + 1}–{Math.min(currentBatchPage * batchPageSize, filteredBatches.length)} of {filteredBatches.length}
+                  </Text>
+                  <Button
+                    title="Next"
+                    small
+                    variant="secondary"
+                    disabled={currentBatchPage >= batchPageCount}
+                    onPress={() => setBatchPage((value) => Math.min(batchPageCount, value + 1))}
+                  />
+                </View>
+              ) : null}
             </View>
           )}
-        </Card>
+        </View>
       </ScrollView>
 
       <Modal visible={createVisible} animationType="slide" onRequestClose={() => setCreateVisible(false)}>
@@ -813,17 +964,11 @@ export default function BatchesScreen() {
                 <Text style={styles.eyebrow}>BATCH MANAGEMENT</Text>
                 <Text style={styles.modalTitle}>Create QC batches</Text>
               </View>
-              <Pressable onPress={() => setCreateVisible(false)} hitSlop={10}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close" style={styles.closeButton} onPress={() => { setCreateVisible(false); setCreateError(''); }}>
                 <Ionicons name="close-outline" size={26} color={colors.textMuted} />
               </Pressable>
             </View>
             <Card style={{ gap: spacing.md }}>
-              {error ? (
-                <View style={styles.errorBox}>
-                  <Ionicons name="alert-circle-outline" size={17} color={colors.danger} />
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
               <Text style={styles.helperText}>
                 Each batch is tracked separately. Unit QR labels are available immediately after creation; finished-goods details can be added after QC passes.
               </Text>
@@ -844,21 +989,23 @@ export default function BatchesScreen() {
               <Field
                 label="Batch number *"
                 value={batchNumber}
-                onChangeText={setBatchNumber}
+                onChangeText={(value) => { setBatchNumber(value); setCreateError(''); }}
                 placeholder="Auto-generated after choosing product"
                 autoCapitalize="characters"
               />
               <View style={styles.twoColumns}>
                 <Field
+                  containerStyle={{ flex: 1, minWidth: 0 }}
                   label="Number of batches *"
                   value={batchCount}
-                  onChangeText={setBatchCount}
+                  onChangeText={(value) => { setBatchCount(value); setCreateError(''); }}
                   keyboardType="number-pad"
                 />
                 <Field
+                  containerStyle={{ flex: 1, minWidth: 0 }}
                   label="Units per batch *"
                   value={quantity}
-                  onChangeText={setQuantity}
+                  onChangeText={(value) => { setQuantity(value); setCreateError(''); }}
                   keyboardType="number-pad"
                 />
               </View>
@@ -869,12 +1016,14 @@ export default function BatchesScreen() {
               </Text>
               <View style={styles.twoColumns}>
                 <Field
+                  containerStyle={{ flex: 1, minWidth: 0 }}
                   label="Unit price (₹)"
                   value={unitPrice}
-                  onChangeText={setUnitPrice}
+                  onChangeText={(value) => { setUnitPrice(value); setCreateError(''); }}
                   keyboardType="decimal-pad"
                 />
                 <SelectField
+                  containerStyle={{ flex: 1, minWidth: 0 }}
                   label="Shelf location"
                   value={locations.find((item) => String(item.id) === createLocationId)?.location_code || ''}
                   placeholder="No location"
@@ -885,20 +1034,22 @@ export default function BatchesScreen() {
                       ...locations.map((location) => ({ value: String(location.id), label: location.location_code })),
                     ],
                     createLocationId,
-                    setCreateLocationId
+                    (value) => { setCreateLocationId(value); setCreateError(''); }
                   )}
                 />
               </View>
               <View style={styles.twoColumns}>
                 <SelectField
+                  containerStyle={{ flex: 1, minWidth: 0 }}
                   label="Manufacturing date *"
-                  value={manufacturingDate}
+                  value={manufacturingDate ? formatDateOnly(manufacturingDate) : ''}
                   placeholder="Select date"
                   onPress={() => openDatePicker('manufacturing')}
                 />
                 <SelectField
+                  containerStyle={{ flex: 1, minWidth: 0 }}
                   label="Expiry date *"
-                  value={expiryDate}
+                  value={expiryDate ? formatDateOnly(expiryDate) : ''}
                   placeholder="Select date"
                   onPress={() => openDatePicker('expiry')}
                 />
@@ -912,6 +1063,12 @@ export default function BatchesScreen() {
                 numberOfLines={3}
                 style={{ minHeight: 78, textAlignVertical: 'top' }}
               />
+              {createError ? (
+                <View style={styles.errorBox} accessibilityRole="alert">
+                  <Ionicons name="alert-circle-outline" size={17} color={colors.danger} />
+                  <Text style={styles.errorText}>{createError}</Text>
+                </View>
+              ) : null}
               <Button
                 title={loadingAction ? 'Creating batches...' : 'Create QC batches'}
                 loading={loadingAction}
@@ -919,6 +1076,103 @@ export default function BatchesScreen() {
                 onPress={() => void createBatches()}
               />
             </Card>
+          </ScrollView>
+        </Screen>
+      </Modal>
+
+      <Modal visible={!!creationSuccess} animationType="slide" onRequestClose={() => setCreationSuccess(null)}>
+        <Screen>
+          <View style={styles.successHeader}>
+            <View style={styles.successHeaderSpacer} />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss batch creation success"
+              hitSlop={10}
+              style={styles.successCloseButton}
+              onPress={() => {
+                setCreationSuccess(null);
+                setSuccessPrintError('');
+                setSuccessSyncWarning('');
+              }}
+            >
+              <Ionicons name="close" size={24} color={colors.textMuted} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.formContent}>
+            <View style={styles.successHero}>
+              <View style={styles.successIcon}>
+                <Ionicons name="checkmark" size={30} color={colors.success} />
+              </View>
+              <Text style={styles.modalTitle}>Batch created</Text>
+              <Text style={styles.modalSubtitle}>
+                {creationSuccess?.batchCount === 1 ? 'Your batch is' : `${creationSuccess?.batchCount} batches are`} ready for QC.
+              </Text>
+            </View>
+            {creationSuccess ? (
+              <>
+                <Card style={{ gap: spacing.md }}>
+                  <SectionHeader title="Batch details" subtitle={creationSuccess.productName} />
+                  <View style={styles.summaryGrid}>
+                    <BatchDetail label="Product SKU" value={creationSuccess.productSku || 'Not set'} />
+                    <BatchDetail label="Batch count" value={String(creationSuccess.batchCount)} />
+                    <BatchDetail label="Starting batch number" value={creationSuccess.batchNumber} />
+                    <BatchDetail label="Units per batch" value={String(creationSuccess.unitsPerBatch)} />
+                    <BatchDetail label="Unit QR labels" value={String(creationSuccess.totalUnits)} />
+                    <BatchDetail label="Unit price" value={`₹${creationSuccess.unitPrice.toFixed(2)}`} />
+                    <BatchDetail label="Manufacturing date" value={formatDateOnly(creationSuccess.manufacturingDate)} />
+                    <BatchDetail label="Expiry date" value={formatDateOnly(creationSuccess.expiryDate)} />
+                    <BatchDetail label="Shelf location" value={creationSuccess.location} />
+                  </View>
+                </Card>
+                <Card style={{ gap: spacing.sm }}>
+                  <SectionHeader title="Created batch numbers" />
+                  {creationSuccess.response.batches.slice(0, 5).map((batch) => (
+                    <View key={String(batch.id)} style={styles.createdBatchRow}>
+                      <Ionicons name="cube-outline" size={17} color={colors.primary} />
+                      <Text style={styles.createdBatchNumber}>{batch.batch_number}</Text>
+                    </View>
+                  ))}
+                  {creationSuccess.response.batches.length > 5 ? (
+                    <Text style={styles.helperText}>And {creationSuccess.response.batches.length - 5} more batch numbers.</Text>
+                  ) : null}
+                  <Text style={styles.helperText}>Each batch has {creationSuccess.unitsPerBatch} unique unit QR labels.</Text>
+                </Card>
+              </>
+            ) : null}
+            {successSyncWarning ? (
+              <View style={styles.warningBox}>
+                <Ionicons name="cloud-offline-outline" size={17} color={colors.warning} />
+                <Text style={styles.warningText}>{successSyncWarning}</Text>
+              </View>
+            ) : null}
+            {successPrintError ? (
+              <View style={styles.errorBox} accessibilityRole="alert">
+                <Ionicons name="alert-circle-outline" size={17} color={colors.danger} />
+                <Text style={styles.errorText}>{successPrintError}</Text>
+              </View>
+            ) : null}
+            <View style={styles.actionRow}>
+              <Button
+                title={printingCreated ? 'Preparing PDF...' : 'Download'}
+                variant="secondary"
+                style={{ flex: 1 }}
+                loading={printingCreated}
+                disabled={printingCreated}
+                icon={!printingCreated ? <Ionicons name="download-outline" size={17} color={colors.text} /> : undefined}
+                onPress={() => void downloadCreatedLabels()}
+              />
+              <Button
+                title={printingCreated ? 'Preparing PDF...' : 'Print now'}
+                loading={printingCreated}
+                disabled={printingCreated}
+                style={{ flex: 1 }}
+                icon={!printingCreated ? <Ionicons name="print-outline" size={17} color="#fff" /> : undefined}
+                onPress={() => void printCreatedLabels()}
+              />
+            </View>
+            <Text style={styles.downloadLaterHint}>
+              You can download these QR labels later from the Batches page.
+            </Text>
           </ScrollView>
         </Screen>
       </Modal>
@@ -946,7 +1200,7 @@ export default function BatchesScreen() {
                 <Text style={styles.modalTitle}>
                   {datePicker === 'manufacturing' ? 'Manufacturing date' : 'Expiry date'}
                 </Text>
-                <Pressable onPress={() => setDatePicker(null)} hitSlop={10}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close date picker" style={styles.closeButton} onPress={() => setDatePicker(null)}>
                   <Ionicons name="close-outline" size={24} color={colors.textMuted} />
                 </Pressable>
               </View>
@@ -988,7 +1242,7 @@ export default function BatchesScreen() {
                 <Text style={styles.modalTitle}>Finish goods</Text>
                 <Text style={styles.modalSubtitle}>{finishBatch?.batch_number} · {finishBatch?.product_name}</Text>
               </View>
-              <Pressable onPress={() => setFinishBatch(null)} hitSlop={10}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close" style={styles.closeButton} onPress={() => setFinishBatch(null)}>
                 <Ionicons name="close-outline" size={26} color={colors.textMuted} />
               </Pressable>
             </View>
@@ -1188,24 +1442,32 @@ function BatchCard({
         </View>
         <Badge status={batch.status} label={statusLabel} />
       </View>
-      <View style={styles.batchDetails}>
-        <Text style={styles.batchNumber}>{batch.batch_number}</Text>
-        <Text style={styles.batchMeta}>{batch.quantity} {batch.uom || 'units'}</Text>
-        <Text style={styles.batchMeta}>
-          {batch.vendor_name || 'Supplier not set'} · {batch.grade_name || batch.product_grade || 'Grade not set'}
-        </Text>
-        {batch.bag_quantity ? (
-          <Text style={styles.batchMeta}>Bag size: {batch.bag_quantity} {batch.bag_quantity_unit || ''}</Text>
-        ) : null}
-        <View style={styles.dateRow}>
-          <Text style={styles.batchDate}>MFG {batch.manufacturing_date ? formatDate(batch.manufacturing_date) : '-'}</Text>
-          <Text style={styles.batchDate}>EXP {batch.expiry_date ? formatDate(batch.expiry_date) : '-'}</Text>
+      <View style={styles.batchMainInfo}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.fieldLabel}>BATCH NUMBER</Text>
+          <Text style={styles.batchNumber} numberOfLines={2}>{batch.batch_number}</Text>
         </View>
-        <Text style={styles.batchDate}>
-          {batch.location_code || batch.storage_location || 'Location not set'}
-          {batch.status === 'CREATED' ? ` · Waiting ${formatAge(batch.age_minutes)}` : ''}
-        </Text>
+        <View style={styles.quantityPill}>
+          <Text style={styles.quantityValue}>{batch.quantity} {batch.uom || 'units'}</Text>
+          <Text style={styles.quantityLabel}>Quantity</Text>
+        </View>
       </View>
+      <View style={styles.batchInfoGrid}>
+        <BatchDetail label="Manufacturing" value={formatDateOnly(batch.manufacturing_date)} />
+        <BatchDetail label="Expiry" value={formatDateOnly(batch.expiry_date)} />
+        <BatchDetail label="Supplier" value={batch.vendor_name || 'Not set'} />
+        <BatchDetail label="Grade" value={batch.grade_name || batch.product_grade || 'Not set'} />
+        <BatchDetail label="Shelf location" value={batch.location_code || batch.storage_location || 'Not set'} />
+        {batch.bag_quantity ? (
+          <BatchDetail label="Bag size" value={`${batch.bag_quantity} ${batch.bag_quantity_unit || ''}`.trim()} />
+        ) : null}
+      </View>
+      {batch.status === 'CREATED' ? (
+        <View style={styles.waitingNote}>
+          <Ionicons name="time-outline" size={15} color={colors.warning} />
+          <Text style={styles.waitingText}>Waiting for QC · {formatAge(batch.age_minutes)}</Text>
+        </View>
+      ) : null}
       {((isQc && (canFinish || canReopen)) || (canManageQr && canPrint)) ? (
         <View style={styles.batchActions}>
           {isQc && canFinish ? (
@@ -1272,6 +1534,15 @@ function BatchCard({
   );
 }
 
+function BatchDetail({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.detailCell}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue} numberOfLines={2}>{value || 'Not set'}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
@@ -1280,7 +1551,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 2 },
   subtitle: { fontSize: 12, lineHeight: 17, color: colors.textMuted, marginTop: 4 },
   createButton: {
-    minHeight: 42,
+    minHeight: 50,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1289,7 +1560,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
   },
-  createButtonText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  createButtonText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   heroIcon: {
     width: 48,
     height: 48,
@@ -1309,7 +1580,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  statusBannerText: { flex: 1, fontSize: 11, color: colors.textMuted },
+  statusBannerText: { flex: 1, fontSize: 13, lineHeight: 18, color: colors.textMuted },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1343,9 +1614,15 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   metricValue: { fontSize: 19, fontWeight: '800' },
-  metricLabel: { fontSize: 8, lineHeight: 11, color: colors.textMuted, textAlign: 'center', marginTop: 3 },
+  metricLabel: { fontSize: 10, lineHeight: 13, color: colors.textMuted, textAlign: 'center', marginTop: 4 },
   filterRow: { gap: spacing.sm, paddingVertical: spacing.xs },
+  inventorySection: { gap: spacing.md },
+  pagination: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, paddingTop: spacing.xs },
+  paginationText: { flex: 1, textAlign: 'center', color: colors.textMuted, fontSize: 12, fontWeight: '700' },
   filterChip: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.pill,
@@ -1354,7 +1631,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   filterChipSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-  filterChipText: { color: colors.textMuted, fontSize: 11, fontWeight: '700' },
+  filterChipText: { color: colors.textMuted, fontSize: 13, fontWeight: '700' },
   filterChipTextSelected: { color: colors.primaryDark },
   batchCard: {
     borderWidth: 1,
@@ -1373,16 +1650,47 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  batchProduct: { fontSize: 13, fontWeight: '800', color: colors.text },
-  batchSku: { fontSize: 10, color: colors.textMuted, marginTop: 2 },
-  batchDetails: { gap: 3, paddingLeft: 44 },
-  batchNumber: { fontSize: 12, fontWeight: '700', color: colors.primaryDark },
-  batchMeta: { fontSize: 10, color: colors.textMuted },
-  dateRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: spacing.md },
-  batchDate: { fontSize: 10, color: colors.textFaint },
-  createdDate: { fontSize: 9, color: colors.textFaint, textAlign: 'right' },
+  batchProduct: { fontSize: 14, fontWeight: '800', color: colors.text },
+  batchSku: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
+  batchMainInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  batchNumber: { fontSize: 14, fontWeight: '800', color: colors.primaryDark, marginTop: 3 },
+  quantityPill: {
+    minWidth: 86,
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  quantityValue: { color: colors.primaryDark, fontSize: 13, fontWeight: '800' },
+  quantityLabel: { color: colors.textMuted, fontSize: 10, marginTop: 2 },
+  batchInfoGrid: { flexDirection: 'row', flexWrap: 'wrap', rowGap: spacing.sm, marginHorizontal: -spacing.xs },
+  detailCell: { width: '50%', paddingHorizontal: spacing.xs, gap: 2 },
+  detailLabel: { color: colors.textFaint, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+  detailValue: { color: colors.text, fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  waitingNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.warningSoft,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  waitingText: { color: colors.warning, fontSize: 12, fontWeight: '700' },
+  batchDate: { fontSize: 12, color: colors.textFaint },
+  createdDate: { fontSize: 11, color: colors.textFaint, textAlign: 'right' },
   batchActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.xs },
-  groupProgress: { alignSelf: 'center', fontSize: 10, color: colors.textFaint },
+  groupProgress: { alignSelf: 'center', fontSize: 12, color: colors.textFaint },
   completedNote: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1391,8 +1699,31 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     padding: spacing.sm,
   },
-  completedText: { fontSize: 10, color: colors.success, fontWeight: '600' },
+  completedText: { fontSize: 12, color: colors.success, fontWeight: '600' },
   formContent: { padding: spacing.lg, gap: spacing.md, paddingBottom: 40 },
+  successHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg },
+  successHeaderSpacer: { width: 44, height: 44 },
+  successCloseButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  successHero: { alignItems: 'center', gap: spacing.xs, paddingVertical: spacing.md },
+  successIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.successSoft,
+    marginBottom: spacing.xs,
+  },
+  summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', rowGap: spacing.md, marginHorizontal: -spacing.xs },
+  createdBatchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    minHeight: 36,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  createdBatchNumber: { flex: 1, color: colors.text, fontSize: 13, fontWeight: '700' },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1401,20 +1732,21 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: 20, fontWeight: '800', color: colors.text, marginTop: 2 },
   modalSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs },
-  helperText: { fontSize: 11, lineHeight: 16, color: colors.textMuted },
+  helperText: { fontSize: 13, lineHeight: 19, color: colors.textMuted },
+  downloadLaterHint: { color: colors.textFaint, fontSize: 12, textAlign: 'center', lineHeight: 18, paddingHorizontal: spacing.md },
   productInfo: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   productInfoText: {
     color: colors.textMuted,
-    fontSize: 10,
+    fontSize: 12,
     backgroundColor: colors.surfaceAlt,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: radius.sm,
   },
-  twoColumns: { flexDirection: 'row', gap: spacing.sm },
-  fieldLabel: { fontSize: 11, fontWeight: '700', color: colors.textMuted, letterSpacing: 0.2 },
+  twoColumns: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, letterSpacing: 0.2 },
   selectField: {
-    minHeight: 46,
+    minHeight: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1425,6 +1757,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     paddingHorizontal: spacing.md,
   },
+  selectFieldContainer: { gap: spacing.xs },
   selectText: { flex: 1, fontSize: 13, color: colors.text },
   warningBox: {
     flexDirection: 'row',
@@ -1434,7 +1767,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.warningSoft,
   },
-  warningText: { flex: 1, fontSize: 11, lineHeight: 16, color: colors.warning },
+  warningText: { flex: 1, fontSize: 13, lineHeight: 18, color: colors.warning },
   actionRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   modalShade: {
     flex: 1,
@@ -1477,5 +1810,6 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   optionLabel: { fontSize: 13, color: colors.text, fontWeight: '600' },
-  optionDetail: { fontSize: 10, color: colors.textMuted, marginTop: 2 },
+  optionDetail: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
+  closeButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
 });

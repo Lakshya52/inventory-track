@@ -1,5 +1,5 @@
 import React from 'react';
-import { Tabs } from 'expo-router/js-tabs';
+import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/AuthContext';
@@ -12,6 +12,20 @@ export default function TabsLayout() {
 
   if (!session) return null;
 
+  const role = session.user.role;
+  const visible = (route: string): boolean => {
+    if (role === 'ADMIN') return ['index', 'orders', 'manage', 'reports', 'more'].includes(route);
+    if (role === 'QC') return ['index', 'batches', 'scan', 'history', 'more'].includes(route);
+    return ['index', 'scan', 'orders', 'history', 'more'].includes(route);
+  };
+  const tabOptions = (route: string, title: string, icon: string, selectedIcon: string) => ({
+    href: visible(route) ? undefined : null,
+    title,
+    tabBarIcon: ({ color, size, focused }: { color: any; size: number; focused: boolean }) => (
+      <Ionicons name={(focused ? selectedIcon : icon) as any} size={route === 'scan' ? size + 3 : size} color={color || colors.textFaint} />
+    ),
+  });
+
   return (
     <Tabs
       screenOptions={{
@@ -19,13 +33,13 @@ export default function TabsLayout() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textFaint,
         tabBarHideOnKeyboard: true,
-        tabBarLabelStyle: { fontSize: 10, fontWeight: '700' },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
-          paddingTop: 6,
+          paddingTop: 8,
           paddingBottom: bottomPadding,
-          height: 52 + bottomPadding,
+          height: 60 + bottomPadding,
         },
         tabBarBadgeStyle: {
           backgroundColor: colors.danger,
@@ -39,39 +53,19 @@ export default function TabsLayout() {
     >
       <Tabs.Screen
         name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons name={focused ? 'home' : 'home-outline'} size={size} color={color as string} />
-          ),
-        }}
+        options={tabOptions('index', 'Home', 'home-outline', 'home')}
       />
       <Tabs.Screen
         name="batches"
-        options={{
-          title: 'Batches',
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons name={focused ? 'albums' : 'albums-outline'} size={size} color={color as string} />
-          ),
-        }}
+        options={tabOptions('batches', 'Batches', 'albums-outline', 'albums')}
       />
       <Tabs.Screen
         name="scan"
-        options={{
-          title: 'QR Code',
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons name={focused ? 'qr-code' : 'qr-code-outline'} size={size} color={color as string} />
-          ),
-        }}
+        options={tabOptions('scan', 'Scan', 'qr-code-outline', 'qr-code')}
       />
       <Tabs.Screen
         name="history"
-        options={{
-          title: 'History',
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons name={focused ? 'time' : 'time-outline'} size={size} color={color as string} />
-          ),
-        }}
+        options={tabOptions('history', 'History', 'time-outline', 'time')}
       />
       <Tabs.Screen
         name="sync"
@@ -79,19 +73,22 @@ export default function TabsLayout() {
           href: null,
         }}
       />
+      <Tabs.Screen name="products" options={{ href: null }} />
+      <Tabs.Screen name="qr-lookup" options={{ href: null }} />
       <Tabs.Screen
         name="profile"
         options={{
-          title: 'Profile',
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons
-              name={focused ? 'person-circle' : 'person-circle-outline'}
-              size={size}
-              color={color as string}
-            />
-          ),
+          href: null,
         }}
       />
+      <Tabs.Screen name="orders" options={tabOptions('orders', 'Orders', 'clipboard-outline', 'clipboard')} />
+      <Tabs.Screen name="manage" options={tabOptions('manage', 'Manage', 'grid-outline', 'grid')} />
+      <Tabs.Screen name="reports" options={tabOptions('reports', 'Reports', 'bar-chart-outline', 'bar-chart')} />
+      <Tabs.Screen name="more" options={tabOptions('more', 'More', 'ellipsis-horizontal-circle-outline', 'ellipsis-horizontal-circle')} />
+      <Tabs.Screen name="settings" options={{ href: null }} />
+      <Tabs.Screen name="production" options={{ href: null }} />
+      <Tabs.Screen name="qr-jobs" options={{ href: null }} />
+      <Tabs.Screen name="manage/[section]" options={{ href: null }} />
     </Tabs>
   );
 }

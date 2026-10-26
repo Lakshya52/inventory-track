@@ -1,4 +1,6 @@
-import { DbContext } from '../config/database';
+import { DbContext, idKey } from '../config/database';
+
+export type EntityId = string | number;
 
 /** Escape user-provided text before using it inside a MongoDB regular expression. */
 export function escapeRegex(value: string): string {
@@ -29,24 +31,27 @@ export function toNullableNumber(value: unknown): number | null {
 export async function mapByIds<T extends Record<string, any> = Record<string, any>>(
   ctx: DbContext,
   collection: string,
-  ids: Array<number | null | undefined>
-): Promise<Map<number, T>> {
+  ids: Array<EntityId | null | undefined>
+): Promise<Map<string, T>> {
   const unique = [...new Set(
     ids
-      .filter((id): id is number => id !== null && id !== undefined && Number.isFinite(Number(id)))
-      .map((id) => Number(id))
+      .filter((id): id is EntityId => id !== null && id !== undefined && String(id) !== '')
+      .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
-  const documents = await ctx.find<T & { id: number }>(collection, { id: { $in: unique } } as any, { projection: { _id: 0 } });
-  return new Map(documents.map((document) => [Number(document.id), document as T]));
+  const documents = await ctx.find<T & { id: EntityId }>(
+    collection,
+    { _id: { $in: unique } } as any
+  );
+  return new Map(documents.map((document) => [idKey(document.id), document as T]));
 }
 
 export async function mapNames(
   ctx: DbContext,
   collection: string,
-  ids: Array<number | null | undefined>
-): Promise<Map<number, string>> {
-  const documents = await mapByIds<{ id: number; name: string }>(ctx, collection, ids);
+  ids: Array<EntityId | null | undefined>
+): Promise<Map<string, string>> {
+  const documents = await mapByIds<{ id: EntityId; name: string }>(ctx, collection, ids);
   return new Map([...documents.entries()].map(([id, document]) => [id, document.name]));
 }
 
@@ -58,13 +63,13 @@ export async function batchIdsForSearch(
   ctx: DbContext,
   term: string,
   extraFilter: Record<string, any> = {}
-): Promise<number[]> {
+): Promise<string[]> {
   if (!term) return [];
   const pattern = contains(term);
   const products = await ctx.find('products', {
     $or: [{ name: pattern }, { sku: pattern }],
-  }, { projection: { id: 1 } });
-  const productIds = products.map((product) => Number(product.id));
+  }, { projection: { _id: 0, id: 1 } });
+  const productIds = products.map((product) => idKey(product.id));
   const batches = await ctx.find('batches', {
     ...extraFilter,
     $or: [
@@ -72,8 +77,8 @@ export async function batchIdsForSearch(
       { barcode_value: pattern },
       { product_id: { $in: productIds } },
     ],
-  }, { projection: { id: 1 } });
-  return batches.map((batch) => Number(batch.id));
+  }, { projection: { _id: 0, id: 1 } });
+  return batches.map((batch) => idKey(batch.id));
 }
 
 export function mergeDefined(...values: Array<Record<string, any> | null | undefined>): Record<string, any> {
@@ -94,12 +99,12 @@ export function pagination(page: number, limit: number, offset: number): { page:
 /** Per-batch label count and the print job that produced the labels. */
 export async function batchQrStats(
   ctx: DbContext,
-  batchIds: Array<number | null | undefined>
-): Promise<Map<number, { count: number; jobId: number | null }>> {
+  batchIds: Array<EntityId | null | undefined>
+): Promise<Map<string, { count: number; jobId: EntityId | null }>> {
   const unique = [...new Set(
     batchIds
-      .filter((id): id is number => id !== null && id !== undefined)
-      .map((id) => Number(id))
+      .filter((id): id is EntityId => id !== null && id !== undefined && String(id) !== '')
+      .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
   const rows = await ctx.aggregate('qr_labels', [
@@ -113,29 +118,32 @@ export async function batchQrStats(
     },
   ]);
   return new Map(rows.map((row) => [
-    Number(row._id),
-    { count: Number(row.count || 0), jobId: row.jobId === null || row.jobId === undefined ? null : Number(row.jobId) },
+    idKey(row._id),
+    {
+      count: Number(row.count || 0),
+      jobId: row.jobId === null || row.jobId === undefined ? null : (row.jobId as EntityId),
+    },
   ]));
 }
 
 /** All unit QR values keyed by batch ID (used by the offline pull endpoint). */
 export async function batchQrValues(
   ctx: DbContext,
-  batchIds: Array<number | null | undefined>
-): Promise<Map<number, string[]>> {
+  batchIds: Array<EntityId | null | undefined>
+): Promise<Map<string, string[]>> {
   const unique = [...new Set(
     batchIds
-      .filter((id): id is number => id !== null && id !== undefined)
-      .map((id) => Number(id))
+      .filter((id): id is EntityId => id !== null && id !== undefined && String(id) !== '')
+      .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
   const labels = await ctx.find('qr_labels', { batch_id: { $in: unique } }, {
     sort: { serial_no: 1 },
     projection: { _id: 0, batch_id: 1, qr_value: 1 },
   });
-  const result = new Map<number, string[]>();
+  const result = new Map<string, string[]>();
   for (const label of labels) {
-    const batchId = Number(label.batch_id);
+    const batchId = idKey(label.batch_id);
     const values = result.get(batchId) || [];
     values.push(String(label.qr_value));
     result.set(batchId, values);

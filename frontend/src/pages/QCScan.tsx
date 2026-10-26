@@ -248,10 +248,11 @@ export default function QCScan() {
       setMessage('Scan at least one QR code and select PASS or FAIL.');
       return;
     }
-    const batchCounts = new Map<number, { batch: any; count: number }>();
+    const batchCounts = new Map<string, { batch: any; count: number }>();
     for (const item of scannedRef.current) {
-      const current = batchCounts.get(Number(item.id));
-      batchCounts.set(Number(item.id), { batch: item, count: (current?.count || 0) + 1 });
+      const id = String(item.id);
+      const current = batchCounts.get(id);
+      batchCounts.set(id, { batch: item, count: (current?.count || 0) + 1 });
     }
     const incomplete = [...batchCounts.values()].find(({ batch, count }) => count !== expectedQrCount(batch));
     if (incomplete) {

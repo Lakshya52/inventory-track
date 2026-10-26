@@ -54,10 +54,11 @@ const styles = StyleSheet.create({
   infoBox: {
     flexDirection: 'row',
     alignItems: 'center',
+    minHeight: 48,
     gap: 6,
     padding: spacing.sm,
     backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
   },
-  infoText: { fontSize: 12, color: colors.textMuted },
+  infoText: { flex: 1, fontSize: 13, color: colors.textMuted },
 });

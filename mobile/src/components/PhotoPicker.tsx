@@ -59,23 +59,25 @@ export function PhotoPicker({
           <View key={`${uri}-${index}`} style={styles.thumbWrap}>
             <Image source={{ uri }} style={styles.thumb} />
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Remove photo ${index + 1}`}
               onPress={() => onChange(uris.filter((_, itemIndex) => itemIndex !== index))}
               style={styles.remove}
               hitSlop={6}
             >
-              <Ionicons name="close-circle" size={20} color={colors.danger} />
+              <Ionicons name="close-circle" size={24} color={colors.danger} />
             </Pressable>
           </View>
         ))}
         {uris.length < max ? (
-          <Pressable onPress={addFromCamera} style={styles.addBox}>
-            <Ionicons name="camera-outline" size={20} color={colors.primary} />
+          <Pressable accessibilityRole="button" accessibilityLabel="Take a photo" onPress={addFromCamera} style={styles.addBox}>
+            <Ionicons name="camera-outline" size={24} color={colors.primary} />
             <Text style={styles.addText}>Camera</Text>
           </Pressable>
         ) : null}
       </View>
       {uris.length < max ? (
-        <Button title="Add from gallery" variant="ghost" small onPress={addFromLibrary} />
+        <Button title={`Choose from gallery · ${remaining} left`} variant="ghost" onPress={addFromLibrary} />
       ) : null}
     </View>
   );
@@ -84,20 +86,20 @@ export function PhotoPicker({
 const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   label: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
     color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
   },
-  count: { fontSize: 11, color: colors.textFaint },
+  count: { fontSize: 12, color: colors.textFaint },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  thumbWrap: { width: 68, height: 68 },
-  thumb: { width: 68, height: 68, borderRadius: radius.md, backgroundColor: colors.surfaceAlt },
-  remove: { position: 'absolute', top: -6, right: -6, backgroundColor: colors.surface, borderRadius: 10 },
+  thumbWrap: { width: 80, height: 80 },
+  thumb: { width: 80, height: 80, borderRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  remove: { position: 'absolute', top: -4, right: -4, width: 38, height: 38, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderRadius: 20 },
   addBox: {
-    width: 68,
-    height: 68,
+    width: 80,
+    height: 80,
     borderRadius: radius.md,
     borderWidth: 1,
     borderStyle: 'dashed',
@@ -106,5 +108,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 2,
   },
-  addText: { fontSize: 10, color: colors.primary, fontWeight: '600' },
+  addText: { fontSize: 12, color: colors.primary, fontWeight: '700' },
 });

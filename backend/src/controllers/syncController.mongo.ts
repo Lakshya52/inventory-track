@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { DbContext, daysAgo, getContext, startOfDay } from '../config/database';
+import { DbContext, daysAgo, getContext, idKey, startOfDay } from '../config/database';
 import { applyOperation, registerDevice, touchDeviceSync } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import { batchAgeMinutes, batchQrValues, mapByIds, mapNames } from '../services/queryService';
@@ -62,18 +62,18 @@ async function enrichBatches(ctx: DbContext, batches: Record<string, any>[]): Pr
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => idKey(batch.product_id))
   );
   const locations = await mapByIds<Record<string, any>>(
     ctx,
     'shelf_locations',
     batches.map((batch) => batch.shelf_location_id)
   );
-  const qrValues = await batchQrValues(ctx, batches.map((batch) => Number(batch.id)));
+  const qrValues = await batchQrValues(ctx, batches.map((batch) => idKey(batch.id)));
 
   return batches.map((batch) => {
-    const product = products.get(Number(batch.product_id));
-    const location = locations.get(Number(batch.shelf_location_id));
+    const product = products.get(idKey(batch.product_id));
+    const location = locations.get(idKey(batch.shelf_location_id));
     return {
       ...batch,
       product_name: product?.name ?? null,
@@ -89,7 +89,7 @@ async function enrichBatches(ctx: DbContext, batches: Record<string, any>[]): Pr
       hsn_code: product?.hsn_code ?? null,
       product_price: product?.price ?? null,
       location_code: location?.location_code ?? null,
-      unit_qr_codes: qrValues.get(Number(batch.id)) || [],
+      unit_qr_codes: qrValues.get(idKey(batch.id)) || [],
     };
   });
 }
@@ -98,16 +98,16 @@ async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[]): 
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => Number(record.batch_id))
+    records.map((record) => idKey(record.batch_id))
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id))
   );
   return records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...record,
       batch_number: batch?.batch_number ?? null,
@@ -121,27 +121,27 @@ async function enrichDispatchOrders(ctx: DbContext, orders: Record<string, any>[
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    orders.map((order) => Number(order.batch_id))
+    orders.map((order) => idKey(order.batch_id))
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id))
   );
-  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => Number(order.raised_by)));
-  const clients = await mapNames(ctx, 'clients', orders.map((order) => Number(order.client_id)));
+  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => idKey(order.raised_by)));
+  const clients = await mapNames(ctx, 'clients', orders.map((order) => idKey(order.client_id)));
 
   return orders.map((order) => {
-    const batch = batches.get(Number(order.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(order.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...order,
       batch_number: batch?.batch_number ?? null,
       barcode_value: batch?.barcode_value ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      raised_by_name: raisedBy.get(Number(order.raised_by)) ?? null,
-      client_name: clients.get(Number(order.client_id)) ?? null,
+      raised_by_name: raisedBy.get(idKey(order.raised_by)) ?? null,
+      client_name: clients.get(idKey(order.client_id)) ?? null,
     };
   });
 }
@@ -150,16 +150,16 @@ async function enrichDispatchRecords(ctx: DbContext, records: Record<string, any
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => Number(record.batch_id))
+    records.map((record) => idKey(record.batch_id))
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id))
   );
   return records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...record,
       batch_number: batch?.batch_number ?? null,
@@ -194,11 +194,11 @@ async function workQueue(
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => idKey(batch.product_id))
   );
 
   return batches.map((batch) => {
-    const product = products.get(Number(batch.product_id));
+    const product = products.get(idKey(batch.product_id));
     const base: Record<string, any> = {
       ...batch,
       product_name: product?.name ?? null,

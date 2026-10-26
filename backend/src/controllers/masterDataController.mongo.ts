@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
-import { getContext, isDuplicateKey } from '../config/database';
+import { getContext, idKey, isDuplicateKey, isValidId } from '../config/database';
+import { EntityId } from '../services/queryService';
 
 type MasterKind = 'grades' | 'bag-quantities';
 type MasterValues = { name: string; quantity?: number; unit?: string; is_active?: number };
@@ -40,17 +41,16 @@ async function findMatchingMaster(
   collection: 'grades' | 'bag_quantities',
   kind: MasterKind,
   values: MasterValues,
-  excludeId?: number
+  excludeId?: EntityId
 ): Promise<Record<string, any> | undefined> {
   const items = await ctx.find(collection, {}, {
     projection: { _id: 0, id: 1, name: 1, quantity: 1, unit: 1, is_active: 1 },
   });
-  return items.find(item => Number(item.id) !== excludeId && isSameMaster(item, kind, values));
+  return items.find(item => (excludeId === undefined || idKey(item.id) !== idKey(excludeId)) && isSameMaster(item, kind, values));
 }
 
-function parseId(value: string): number | null {
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
+function parseId(value: string): string | null {
+  return isValidId(value) ? value : null;
 }
 
 export async function list(req: Request, res: Response): Promise<void> {
@@ -81,8 +81,8 @@ export async function create(req: Request, res: Response): Promise<void> {
       res.status(409).json({ error: 'That master value already exists and is active' });
       return;
     }
-    await ctx.updateOne(collection, { id: Number(existing.id) }, { $set: values });
-    res.json({ id: Number(existing.id), ...values, reactivated: true });
+    await ctx.updateOne(collection, { id: existing.id }, { $set: values });
+    res.json({ id: existing.id, ...values, reactivated: true });
     return;
   }
   try {

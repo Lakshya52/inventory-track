@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { DbContext, getContext, startOfDay, startOfWeek } from '../config/database';
+import { DbContext, getContext, idKey, startOfDay, startOfWeek } from '../config/database';
 import { applyOperation } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import {
@@ -30,47 +30,47 @@ async function enrichDispatchRecords(
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => Number(record.batch_id))
+    records.map((record) => record.batch_id)
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => batch.product_id)
   );
-  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => Number(batch.vendor_id)));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => batch.vendor_id));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => batch.grade_id));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => batch.bag_quantity_id));
   const dispatchers = options.withDispatcherName
-    ? await mapNames(ctx, 'dispatch_users', records.map((record) => Number(record.dispatcher_id)))
-    : new Map<number, string>();
+    ? await mapNames(ctx, 'dispatch_users', records.map((record) => record.dispatcher_id))
+    : new Map<string, string>();
   const orderIds = records
     .map((record) => record.dispatch_order_id)
     .filter((id) => id !== null && id !== undefined);
   const orders = options.withOrderStatus && orderIds.length > 0
-    ? await mapByIds<Record<string, any>>(ctx, 'dispatch_orders', orderIds.map((id) => Number(id)))
-    : new Map<number, Record<string, any>>();
+    ? await mapByIds<Record<string, any>>(ctx, 'dispatch_orders', orderIds)
+    : new Map<string, Record<string, any>>();
 
   return records.map((record) => {
-    const batch = batches.get(Number(record.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(record.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...record,
       batch_number: batch?.batch_number ?? null,
       barcode_value: batch?.barcode_value ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      vendor_name: vendors.get(Number(batch?.vendor_id))?.name ?? null,
-      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
-      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
-      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
-      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
+      vendor_name: vendors.get(idKey(batch?.vendor_id))?.name ?? null,
+      grade_name: grades.get(idKey(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(idKey(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
       ...(options.withDispatcherName
-        ? { dispatcher_name: dispatchers.get(Number(record.dispatcher_id)) ?? null }
+        ? { dispatcher_name: dispatchers.get(idKey(record.dispatcher_id)) ?? null }
         : {}),
       ...(options.withOrderStatus
         ? {
             order_status: record.dispatch_order_id
-              ? orders.get(Number(record.dispatch_order_id))?.status ?? null
+              ? orders.get(idKey(record.dispatch_order_id))?.status ?? null
               : null,
           }
         : {}),
@@ -82,34 +82,34 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    orders.map((order) => Number(order.batch_id))
+    orders.map((order) => order.batch_id)
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => Number(batch.product_id))
+    [...batches.values()].map((batch) => batch.product_id)
   );
-  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => Number(batch.vendor_id)));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => Number(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => Number(batch.bag_quantity_id)));
-  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => Number(order.raised_by)));
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => batch.vendor_id));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => batch.grade_id));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => batch.bag_quantity_id));
+  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => order.raised_by));
   const approvers = await Promise.all(orders.map(async (order) => {
     if (order.approved_by_role === 'QC') {
-      const user = await ctx.findOne('qc_users', { id: Number(order.approved_by_id) }, { projection: { _id: 0, name: 1 } });
-      return [Number(order.id), user?.name ?? null] as const;
+      const user = await ctx.findOne('qc_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } });
+      return [idKey(order.id), user?.name ?? null] as const;
     }
     const user = order.admin_id
-      ? await ctx.findOne('admins', { id: Number(order.admin_id) }, { projection: { _id: 0, name: 1 } })
+      ? await ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } })
       : null;
-    return [Number(order.id), user?.name ?? null] as const;
+    return [idKey(order.id), user?.name ?? null] as const;
   }));
-  const clients = await mapNames(ctx, 'clients', orders.map((order) => Number(order.client_id)));
+  const clients = await mapNames(ctx, 'clients', orders.map((order) => order.client_id));
   const approverNames = new Map(approvers);
-  const qrStats = await batchQrStats(ctx, orders.map((order) => Number(order.batch_id)));
+  const qrStats = await batchQrStats(ctx, orders.map((order) => order.batch_id));
 
   return orders.map((order) => {
-    const batch = batches.get(Number(order.batch_id));
-    const product = batch ? products.get(Number(batch.product_id)) : undefined;
+    const batch = batches.get(idKey(order.batch_id));
+    const product = batch ? products.get(idKey(batch.product_id)) : undefined;
     return {
       ...order,
       batch_number: batch?.batch_number ?? null,
@@ -118,18 +118,18 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       uom: batch?.uom ?? null,
       batch_status: batch?.status ?? null,
       storage_location: batch?.storage_location ?? null,
-      vendor_name: vendors.get(Number(batch?.vendor_id))?.name ?? null,
-      grade_name: grades.get(Number(batch?.grade_id))?.name ?? product?.grade ?? null,
-      bag_quantity_name: bagQuantities.get(Number(batch?.bag_quantity_id))?.name ?? null,
-      bag_quantity: bagQuantities.get(Number(batch?.bag_quantity_id))?.quantity ?? null,
-      bag_quantity_unit: bagQuantities.get(Number(batch?.bag_quantity_id))?.unit ?? null,
-      qr_count: qrStats.get(Number(order.batch_id))?.count ?? 0,
+      vendor_name: vendors.get(idKey(batch?.vendor_id))?.name ?? null,
+      grade_name: grades.get(idKey(batch?.grade_id))?.name ?? product?.grade ?? null,
+      bag_quantity_name: bagQuantities.get(idKey(batch?.bag_quantity_id))?.name ?? null,
+      bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
+      bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
+      qr_count: qrStats.get(idKey(order.batch_id))?.count ?? 0,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
-      raised_by_name: raisedBy.get(Number(order.raised_by)) ?? null,
-      admin_name: approverNames.get(Number(order.id)) ?? null,
-      approver_name: approverNames.get(Number(order.id)) ?? null,
-      client_name: clients.get(Number(order.client_id)) ?? null,
+      raised_by_name: raisedBy.get(idKey(order.raised_by)) ?? null,
+      admin_name: approverNames.get(idKey(order.id)) ?? null,
+      approver_name: approverNames.get(idKey(order.id)) ?? null,
+      client_name: clients.get(idKey(order.client_id)) ?? null,
     };
   });
 }
@@ -138,10 +138,10 @@ async function enrichReadyBatches(ctx: DbContext, batches: Record<string, any>[]
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => Number(batch.product_id))
+    batches.map((batch) => batch.product_id)
   );
   return batches.map((batch) => {
-    const product = products.get(Number(batch.product_id));
+    const product = products.get(idKey(batch.product_id));
     return {
       id: batch.id,
       batch_number: batch.batch_number,
@@ -178,7 +178,7 @@ export async function submit(req: Request, res: Response): Promise<void> {
       images,
       expected_status: req.body.expected_status || undefined,
       direct: req.body.direct === true || req.body.direct === 'true',
-      dispatch_order_id: Number(req.body.dispatch_order_id) || undefined,
+      dispatch_order_id: req.body.dispatch_order_id || undefined,
     },
   };
 
@@ -230,7 +230,7 @@ export async function submitBulk(req: Request, res: Response): Promise<void> {
       remarks: req.body.remarks || null,
       images,
       direct: req.body.direct === true || req.body.direct === 'true',
-      dispatch_order_id: Number(req.body.dispatch_order_id) || undefined,
+      dispatch_order_id: req.body.dispatch_order_id || undefined,
     },
   };
 
@@ -287,7 +287,7 @@ export async function approvedOrders(req: Request, res: Response): Promise<void>
   const filter: Record<string, any> = {
     status: 'APPROVED',
     dispatched_at: null,
-    batch_id: { $in: approvedBatches.map((batch) => Number(batch.id)) },
+    batch_id: { $in: approvedBatches.map((batch) => idKey(batch.id)) },
   };
   if (personalOnly(req)) filter.raised_by = req.user!.userId;
 
@@ -342,19 +342,19 @@ export async function stats(req: Request, res: Response): Promise<void> {
     sort: { updated_at: 1 },
     projection: { _id: 0 },
   });
-  const qcPassedBatchIds = qcPassedBatches.map((batch) => Number(batch.id));
+  const qcPassedBatchIds = qcPassedBatches.map((batch) => idKey(batch.id));
   const labels = qcPassedBatchIds.length > 0
     ? await ctx.find('qr_labels', { batch_id: { $in: qcPassedBatchIds } }, {
       projection: { _id: 0, batch_id: 1 },
     })
     : [];
-  const qrCounts = new Map<number, number>();
+  const qrCounts = new Map<string, number>();
   labels.forEach((label) => {
-    const batchId = Number(label.batch_id);
+    const batchId = idKey(label.batch_id);
     qrCounts.set(batchId, (qrCounts.get(batchId) || 0) + 1);
   });
   const dispatchReadyBatches = qcPassedBatches.filter(
-    (batch) => (qrCounts.get(Number(batch.id)) || 0) === Number(batch.quantity)
+    (batch) => (qrCounts.get(idKey(batch.id)) || 0) === Number(batch.quantity)
   );
   const readyToDispatch = dispatchReadyBatches.length;
 
@@ -366,7 +366,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
     ...orderFilter,
     status: 'APPROVED',
     dispatched_at: null,
-    batch_id: { $in: approvedBatches.map((batch) => Number(batch.id)) },
+    batch_id: { $in: approvedBatches.map((batch) => idKey(batch.id)) },
   };
   const approvedOrdersCount = await ctx.count('dispatch_orders', approvedFilter);
 

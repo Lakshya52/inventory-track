@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
-import { DbContext, getContext, now, withTransaction } from '../config/database';
-import { contains, mapByIds } from '../services/queryService';
+import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
+import { contains, EntityId, mapByIds } from '../services/queryService';
 
 async function jobStats(
   ctx: DbContext,
-  jobIds: number[]
-): Promise<Map<number, { total_prints: number; label_count: number; last_printed_at: Date | null }>> {
+  jobIds: EntityId[]
+): Promise<Map<string, { total_prints: number; label_count: number; last_printed_at: Date | null }>> {
   if (jobIds.length === 0) return new Map();
   const rows = await ctx.aggregate('qr_labels', [
     { $match: { print_job_id: { $in: jobIds } } },
@@ -19,7 +19,7 @@ async function jobStats(
     },
   ]);
   return new Map(rows.map((row) => [
-    Number(row._id),
+    idKey(row._id),
     {
       total_prints: Number(row.total_prints || 0),
       label_count: Number(row.label_count || 0),
@@ -32,26 +32,26 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    jobs.map((job) => Number(job.product_id))
+    jobs.map((job) => job.product_id)
   );
   const qcCreators = await mapByIds<Record<string, any>>(
     ctx,
     'qc_users',
-    jobs.filter((job) => job.created_by_role === 'QC').map((job) => Number(job.created_by))
+    jobs.filter((job) => job.created_by_role === 'QC').map((job) => job.created_by)
   );
   const adminCreators = await mapByIds<Record<string, any>>(
     ctx,
     'admins',
-    jobs.filter((job) => job.created_by_role === 'ADMIN').map((job) => Number(job.created_by))
+    jobs.filter((job) => job.created_by_role === 'ADMIN').map((job) => job.created_by)
   );
-  const stats = await jobStats(ctx, jobs.map((job) => Number(job.id)));
+  const stats = await jobStats(ctx, jobs.map((job) => job.id));
 
   return jobs.map((job) => {
-    const product = products.get(Number(job.product_id));
+    const product = products.get(idKey(job.product_id));
     const creator = job.created_by_role === 'ADMIN'
-      ? adminCreators.get(Number(job.created_by))
-      : qcCreators.get(Number(job.created_by));
-    const jobStat = stats.get(Number(job.id));
+      ? adminCreators.get(idKey(job.created_by))
+      : qcCreators.get(idKey(job.created_by));
+    const jobStat = stats.get(idKey(job.id));
     return {
       ...job,
       product_name: product?.name ?? null,
@@ -64,7 +64,7 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
   });
 }
 
-async function jobDetail(id: number): Promise<{ job: Record<string, any>; labels: Record<string, any>[] } | null> {
+async function jobDetail(id: EntityId): Promise<{ job: Record<string, any>; labels: Record<string, any>[] } | null> {
   const ctx = await getContext();
   const job = await ctx.findOne('qr_print_jobs', { id }, { projection: { _id: 0 } });
   if (!job) return null;
@@ -77,13 +77,13 @@ async function jobDetail(id: number): Promise<{ job: Record<string, any>; labels
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    labels.map((label) => Number(label.batch_id))
+    labels.map((label) => label.batch_id)
   );
 
   return {
     job: enrichedJob,
     labels: labels.map((label) => {
-      const batch = batches.get(Number(label.batch_id));
+      const batch = batches.get(idKey(label.batch_id));
       return {
         ...label,
         batch_number: batch?.batch_number ?? null,
@@ -111,7 +111,7 @@ export async function list(req: Request, res: Response): Promise<void> {
       $or: [{ name: contains(q) }, { sku: contains(q) }],
     }, { projection: { id: 1 } });
     filter.$or = [
-      { product_id: { $in: products.map((product) => Number(product.id)) } },
+      { product_id: { $in: products.map((product) => idKey(product.id)) } },
       { job_code: contains(q) },
     ];
   }
@@ -126,7 +126,11 @@ export async function list(req: Request, res: Response): Promise<void> {
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
-  const detail = await jobDetail(Number(req.params.id));
+  if (!isValidId(req.params.id)) {
+    res.status(400).json({ error: 'Invalid QR label job id' });
+    return;
+  }
+  const detail = await jobDetail(req.params.id);
   if (!detail) {
     res.status(404).json({ error: 'QR label job not found' });
     return;
@@ -135,12 +139,14 @@ export async function getById(req: Request, res: Response): Promise<void> {
 }
 
 export async function reprint(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) {
+    res.status(400).json({ error: 'Invalid QR label job id' });
+    return;
+  }
   const requestedQuantity = Number(req.body.quantity);
-  const requestedIds = Array.isArray(req.body.label_ids)
-    ? req.body.label_ids
-        .map((value: any) => Number(value))
-        .filter((value: number) => Number.isInteger(value) && value > 0)
+  const requestedIds: EntityId[] = Array.isArray(req.body.label_ids)
+    ? req.body.label_ids.filter((value: any) => isValidId(value))
     : [];
 
   const result = await withTransaction(async (ctx: DbContext) => {
@@ -170,7 +176,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     if (labels.length === 0) return { empty: true as const };
 
     for (const label of labels) {
-      await ctx.updateOne('qr_labels', { id: Number(label.id) }, {
+      await ctx.updateOne('qr_labels', { id: label.id }, {
         $inc: { print_count: 1 },
         $set: { last_printed_at: now() },
       });
@@ -183,7 +189,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       action: 'QR_CODES_REPRINTED',
       description: `${labels.length} QR label${labels.length === 1 ? '' : 's'} reprinted for ${job.job_code}`,
     });
-    return { jobId: id, selectedIds: labels.map((label) => Number(label.id)) };
+    return { jobId: id, selectedIds: labels.map((label) => label.id as EntityId) };
   });
 
   if (!result) {

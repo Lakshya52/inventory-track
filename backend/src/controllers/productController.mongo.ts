@@ -1,10 +1,10 @@
 import { Request, Response } from 'express';
-import { DbContext, getContext, isDuplicateKey, withTransaction } from '../config/database';
-import { contains } from '../services/queryService';
+import { DbContext, getContext, isDuplicateKey, isValidId, withTransaction } from '../config/database';
+import { contains, EntityId } from '../services/queryService';
 
-async function deleteProductCascade(ctx: DbContext, productId: number): Promise<void> {
+async function deleteProductCascade(ctx: DbContext, productId: EntityId): Promise<void> {
   const batches = await ctx.find('batches', { product_id: productId }, { projection: { id: 1 } });
-  const batchIds = batches.map((batch) => Number(batch.id));
+  const batchIds = batches.map((batch) => batch.id as EntityId);
   if (batchIds.length > 0) {
     await Promise.all([
       ctx.deleteMany('qc_records', { batch_id: { $in: batchIds } }),
@@ -16,7 +16,7 @@ async function deleteProductCascade(ctx: DbContext, productId: number): Promise<
     ]);
   }
   const jobs = await ctx.find('qr_print_jobs', { product_id: productId }, { projection: { id: 1 } });
-  const jobIds = jobs.map((job) => Number(job.id));
+  const jobIds = jobs.map((job) => job.id as EntityId);
   if (jobIds.length > 0) {
     await ctx.deleteMany('qr_labels', { print_job_id: { $in: jobIds } });
     await ctx.deleteMany('qr_print_jobs', { id: { $in: jobIds } });
@@ -32,7 +32,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     return;
   }
   const ctx = await getContext();
-  try {
+  try { 
     const id = await ctx.insert('products', {
       name,
       description: description || null,
@@ -72,8 +72,9 @@ export async function list(_req: Request, res: Response): Promise<void> {
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
+  if (!isValidId(req.params.id)) { res.status(400).json({ error: 'Invalid product id' }); return; }
   const ctx = await getContext();
-  const product = await ctx.findOne('products', { id: Number(req.params.id) }, { projection: { _id: 0 } });
+  const product = await ctx.findOne('products', { id: req.params.id }, { projection: { _id: 0 } });
   if (!product) { res.status(404).json({ error: 'Product not found' }); return; }
   res.json(product);
 }
@@ -89,7 +90,8 @@ export async function search(req: Request, res: Response): Promise<void> {
 }
 
 export async function remove(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid product id' }); return; }
   const ctx = await getContext();
   const existing = await ctx.findOne('products', { id }, { projection: { id: 1 } });
   if (!existing) {
@@ -107,7 +109,8 @@ export async function remove(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid product id' }); return; }
   const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
