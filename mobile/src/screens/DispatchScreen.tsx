@@ -174,16 +174,15 @@ export default function DispatchScreen() {
         return;
       }
     }
-    if (!isFocused) return;
     setScanning(true);
-  }, [isFocused, permission?.granted, requestPermission]);
+  }, [permission?.granted, requestPermission]);
 
   useEffect(() => {
     if (autostart !== '1') {
       autoStartHandledRef.current = false;
       return;
     }
-    if (!isFocused || autoStartHandledRef.current) return;
+    if (autoStartHandledRef.current) return;
     autoStartHandledRef.current = true;
     router.setParams({ autostart: '' });
     void startScanning();
@@ -384,7 +383,7 @@ export default function DispatchScreen() {
               <CameraView
                 style={styles.camera}
                 facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ['qr', 'code128', 'code39'] }}
+                                 barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                 onBarcodeScanned={onBarcodeScanned}
               />
               <View style={styles.cameraOverlay}>

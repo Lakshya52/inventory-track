@@ -141,17 +141,16 @@ export default function QCScanScreen() {
         return;
       }
     }
-    if (!isFocused) return;
     groupRef.current = group;
     setScanning(true);
-  }, [group, isFocused, permission?.granted, requestPermission]);
+  }, [group, permission?.granted, requestPermission]);
 
   useEffect(() => {
     if (autostart !== '1') {
       autoStartHandledRef.current = false;
       return;
     }
-    if (!isFocused || autoStartHandledRef.current) return;
+    if (autoStartHandledRef.current) return;
     autoStartHandledRef.current = true;
     router.setParams({ autostart: '' });
     void startScanning();
@@ -318,12 +317,12 @@ export default function QCScanScreen() {
             />
           </View>
 
-          {scanning && isFocused ? (
+          {scanning ? (
             <View style={styles.cameraWrap}>
               <CameraView
                 style={styles.camera}
                 facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ['qr', 'code128', 'code39'] }}
+                 barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                 onBarcodeScanned={onBarcodeScanned}
               />
               <View style={styles.cameraOverlay}>

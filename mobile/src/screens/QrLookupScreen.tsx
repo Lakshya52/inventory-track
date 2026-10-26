@@ -186,12 +186,12 @@ export default function QrLookupScreen() {
         {!batch ? (
           <Card style={styles.scanCard}>
             <SectionHeader title="Point at a QR label" subtitle="This lookup does not change QC or dispatch status." />
-            {cameraActive && isFocused ? (
+            {cameraActive ? (
               <View style={styles.cameraWrap}>
                 <CameraView
                   style={styles.camera}
                   facing="back"
-                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                   onBarcodeScanned={({ data }) => { void lookup(data); }}
                 />
                 <View style={styles.cameraOverlay}>
