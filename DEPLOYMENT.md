@@ -30,7 +30,13 @@ Remove any previously configured `UPLOAD_DIR` variable and disk mount from the
 Render service; they are no longer used.
 
 After deployment, copy the Render service URL, for example
-`https://inventory-track-api.onrender.com`.
+`https://inventory-track-q551.onrender.com`.
+
+The mobile EAS build profiles use this Render service URL for
+`EXPO_PUBLIC_API_URL`. If the Render service has a different URL, update
+`mobile/eas.json` before creating an APK or app bundle. Do not use a private
+LAN address there: Expo Go can reach a development backend through Metro, but
+an installed app needs a backend URL reachable from the device.
 
 ## 3. Deploy the frontend to Vercel
 
@@ -40,7 +46,7 @@ fallback. In the Vercel project environment variables, set:
 
 | Variable | Value |
 | --- | --- |
-| `API_URL` | Your Render service origin, e.g. `https://inventory-track-api.onrender.com` (no `/api` suffix) |
+| `API_URL` | Your Render service origin, e.g. `https://inventory-track-q551.onrender.com` (no `/api` suffix) |
 
 Redeploy after setting the variable. `API_URL` is embedded during the
 frontend build, so changing it requires a new deployment.

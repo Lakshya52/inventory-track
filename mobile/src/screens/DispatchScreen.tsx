@@ -383,8 +383,12 @@ export default function DispatchScreen() {
               <CameraView
                 style={styles.camera}
                 facing="back"
-                                 barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                 onBarcodeScanned={onBarcodeScanned}
+                onMountError={({ message }) => {
+                  setScanning(false);
+                  showMessage(`Camera could not start: ${message}`, 'error');
+                }}
               />
               <View style={styles.cameraOverlay}>
                 <Ionicons name="scan-outline" size={16} color="#fff" />
