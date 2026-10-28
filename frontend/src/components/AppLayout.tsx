@@ -98,16 +98,42 @@ export function AppLayout() {
     .flatMap(s => s.items)
     .find(i => isActive(i.path))?.label || 'Dashboard';
 
+  // sidebar JSX structure
   const sidebar = (
     <>
       <div className="flex items-center gap-3 px-4 h-16 border-b border-white/5 shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-linear-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
-          A
+        {/* if sidebar is collapsed then the profile icon will be clickable and able to toggle the sidebar */}
+        {collapsed ? (
+          <button className={`group w-8 h-8 rounded-lg bg-linear-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0  `} onClick={() => setCollapsed(false)}>
+
+            {/* if group is hovered then it should display the toggle icon and if not then it will display the tenant name */}
+            <span className="group-hover:hidden">
+              A {/* this to be change when the tenant name is available */}
+            </span>
+            <span className="hidden group-hover:block">
+              <ChevronRight size={18} />
+            </span>
+          </button>
+        ) : (
+
+        <div className={`w-8 h-8 rounded-lg bg-linear-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0  `}>
+          A {/* this to be change when the tenant name is available */}
         </div>
-        {!collapsed && <span className="text-white font-semibold text-sm tracking-wide">Aceone</span>}
+        )}
+
+
+        {!collapsed && <span className="text-white font-semibold text-sm tracking-wide">Aceone {/* tenant name will be displayed here */}</span>}
         <button className="lg:hidden ml-auto p-1 rounded-lg text-surface-400 hover:text-white hover:bg-white/5" onClick={() => setMobileOpen(false)}>
           <X size={18} />
         </button>
+
+        {/* collapse button that will displayed when the sidebar is expanded or after the lg breakpoint */}
+        {/* and hidden when the sidebar is collapsed */}
+        {!collapsed && (
+          <button className="hidden lg:flex ml-auto p-1 rounded-lg text-surface-400 hover:text-white hover:bg-white/5" onClick={() => setCollapsed(true)}>
+            <ChevronLeft size={18} />
+          </button>
+        )}
       </div>
 
       <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-6 scrollbar-thin">
@@ -161,10 +187,10 @@ export function AppLayout() {
           <LogOut size={16} className="shrink-0" />
           {!collapsed && <span>Logout</span>}
         </button>
-        <button onClick={() => setCollapsed(!collapsed)} className="hidden lg:flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-surface-500 hover:text-white hover:bg-white/5 transition-all w-full">
+        {/* <button onClick={() => setCollapsed(!collapsed)} className="hidden lg:flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-surface-500 hover:text-white hover:bg-white/5 transition-all w-full">
           {collapsed ? <ChevronRight size={16} className="shrink-0" /> : <ChevronLeft size={16} className="shrink-0" />}
           {!collapsed && <span>Collapse</span>}
-        </button>
+        </button> */}
       </div>
     </>
   );

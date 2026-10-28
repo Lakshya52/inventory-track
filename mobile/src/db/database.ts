@@ -399,12 +399,19 @@ async function upsertClient(db: SQLite.SQLiteDatabase, client: any): Promise<voi
 
 async function upsertBatch(db: SQLite.SQLiteDatabase, batch: any, additionalQrCodes: string[] = []): Promise<void> {
   let unitCodes: string[] = [];
+  // Work-queue rows from older servers omit unit_qr_codes. In that case keep
+  // whatever is already cached instead of clearing the batch's QR labels.
+  let hasUnitCodes = false;
   if (Array.isArray(batch.unit_qr_codes)) {
+    hasUnitCodes = true;
     unitCodes = batch.unit_qr_codes.filter((code: unknown): code is string => typeof code === 'string');
   } else if (typeof batch.unit_qr_codes === 'string') {
     try {
       const parsed = JSON.parse(batch.unit_qr_codes || '[]');
-      if (Array.isArray(parsed)) unitCodes = parsed.filter((code: unknown): code is string => typeof code === 'string');
+      if (Array.isArray(parsed)) {
+        hasUnitCodes = true;
+        unitCodes = parsed.filter((code: unknown): code is string => typeof code === 'string');
+      }
     } catch {
       // Keep malformed optional QR data from blocking the batch cache update.
     }
@@ -440,7 +447,7 @@ async function upsertBatch(db: SQLite.SQLiteDatabase, batch: any, additionalQrCo
        hazard_classification = excluded.hazard_classification,
        storage_conditions = excluded.storage_conditions,
        age_minutes = excluded.age_minutes, location_code = excluded.location_code,
-       unit_qr_codes = excluded.unit_qr_codes`,
+       unit_qr_codes = COALESCE(excluded.unit_qr_codes, batches.unit_qr_codes)`,
     [
       batch.id, batch.product_id, batch.batch_number, Number(batch.quantity || 0),
       batch.uom || null, batch.storage_location || null,
@@ -454,15 +461,20 @@ async function upsertBatch(db: SQLite.SQLiteDatabase, batch: any, additionalQrCo
       batch.molecular_formula || null, batch.product_grade || null,
       batch.product_purity || null, batch.hazard_classification || null,
       batch.storage_conditions || null, Number(batch.age_minutes || 0),
-      batch.location_code || batch.storage_location || null, JSON.stringify(unitCodes),
+      batch.location_code || batch.storage_location || null,
+      hasUnitCodes ? JSON.stringify(unitCodes) : null,
     ]
   );
-  await db.runAsync('DELETE FROM qr_labels WHERE batch_id = ?', [batch.id]);
-  for (const code of new Set([...unitCodes, ...additionalQrCodes].filter((code) => typeof code === 'string' && code))) {
-    await db.runAsync(
-      'INSERT INTO qr_labels (qr_value, batch_id) VALUES (?, ?) ON CONFLICT(qr_value) DO UPDATE SET batch_id = excluded.batch_id',
-      [code, batch.id]
-    );
+  if (hasUnitCodes || additionalQrCodes.length > 0) {
+    if (hasUnitCodes) {
+      await db.runAsync('DELETE FROM qr_labels WHERE batch_id = ?', [batch.id]);
+    }
+    for (const code of new Set([...unitCodes, ...additionalQrCodes].filter((code) => typeof code === 'string' && code))) {
+      await db.runAsync(
+        'INSERT INTO qr_labels (qr_value, batch_id) VALUES (?, ?) ON CONFLICT(qr_value) DO UPDATE SET batch_id = excluded.batch_id',
+        [code, batch.id]
+      );
+    }
   }
 }
 

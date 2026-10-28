@@ -246,6 +246,7 @@ export async function pull(req: Request, res: Response): Promise<void> {
       `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
               p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
               p.hazard_classification, p.storage_conditions,
+              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
               TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
        WHERE b.status = 'CREATED'
@@ -254,6 +255,7 @@ export async function pull(req: Request, res: Response): Promise<void> {
   } else if (user.role === 'DISPATCH') {
     workQueue = await query<RowDataPacket[]>(
       `SELECT b.*, p.name AS product_name, p.sku AS product_sku,
+              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
               TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
        WHERE b.status IN ('QC_PASSED', 'DISPATCH_REJECTED', 'DISPATCH_APPROVED')
@@ -262,6 +264,7 @@ export async function pull(req: Request, res: Response): Promise<void> {
   } else {
     workQueue = await query<RowDataPacket[]>(
       `SELECT b.*, p.name AS product_name, p.sku AS product_sku,
+              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
               TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
        WHERE b.status IN ('CREATED', 'QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED')

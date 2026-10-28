@@ -800,6 +800,13 @@ async function applyDispatchConfirmBulk(
   const images = imageList(payload);
   const barcodes = bulkBarcodes(payload);
   const requestedOrderId = Number(payload.dispatch_order_id);
+  // Web dispatch selects one approved order up front, while the offline mobile
+  // group scan only knows the approved batches. Enforce the selected order only
+  // when the client actually sent one; otherwise each batch is dispatched
+  // against its own approved order below.
+  const hasRequestedOrderId = payload.dispatch_order_id !== undefined &&
+    payload.dispatch_order_id !== null &&
+    String(payload.dispatch_order_id).trim() !== '';
   const batches = await getBatchesForUpdate(conn, barcodes);
 
   const directAllowed = payload.direct === true &&
@@ -845,7 +852,7 @@ async function applyDispatchConfirmBulk(
         });
       }
       orderId = Number(orders[0].id);
-      if (!Number.isInteger(requestedOrderId) || requestedOrderId !== orderId) {
+      if (hasRequestedOrderId && (!Number.isInteger(requestedOrderId) || requestedOrderId !== orderId)) {
         throw new SyncConflictError('Scan bags for one approved dispatch order at a time', {
           batch_id: batch.id,
           expected_order_id: orderId,

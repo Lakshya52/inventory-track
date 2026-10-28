@@ -1,0 +1,72 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css";
+
+@import "nativewind/theme";
+
+@theme {
+  --font-sans: "Manrope_400Regular";
+  --font-manrope: "Manrope_400Regular";
+  --font-manrope-medium: "Manrope_500Medium";
+  --font-manrope-semibold: "Manrope_600SemiBold";
+  --font-manrope-bold: "Manrope_700Bold";
+  --font-manrope-extrabold: "Manrope_900ExtraBold";
+
+  --color-navy: #011a87;
+  --color-navy-deep: #01136b;
+  --color-navy-pressed: #000e55;
+  --color-ink: #0e1b45;
+  --color-body: #16224a;
+  --color-muted: #5b6b82;
+  --color-faint: #8a98ac;
+
+  --color-canvas: #fefefe;
+  --color-canvas-alt: #f6f9ff;
+  --color-surface: #ffffff;
+  --color-input: #dfe2ef;
+  --color-line: #dce8f7;
+  --color-line-strong: #c9d9ee;
+
+  --color-navbar: #cbe9f6;
+  --color-navbar-line: #b9dff0;
+  
+  --color-success: #00e600;
+  --color-success-dark: #00b800;
+  --color-success-text: #178a52;
+  --color-success-soft: #e1f8ec;
+  --color-success-line: #bcebd5;
+
+  --color-danger: #ff0d0d;
+  --color-danger-text: #dd4350;
+  --color-danger-soft: #ffe8ea;
+  --color-danger-line: #f5b5bc;
+
+  --color-warn-text: #b26a16;
+  --color-warn-soft: #fff3e4;
+
+  --color-info-text: #2043a8;
+  --color-info-soft: #e6edff;
+
+  --color-violet-text: #6c4bc4;
+  --color-violet-soft: #efeaff;
+
+  --color-pastel-mint: #f1faf8;
+  --color-pastel-mint-line: #d2f5ed;
+  --color-pastel-mint-icon: #d2f5ed;
+
+  --color-pastel-blue: #f2f6fe;
+  --color-pastel-blue-line: #d4e4fd;
+  --color-pastel-blue-icon: #d4e4fd;
+
+  --color-pastel-purple: #f4f4fd;
+  --color-pastel-purple-line: #e6e5fd;
+  --color-pastel-purple-icon: #e6e5fd;
+
+  --color-pastel-peach: #fef8f3;
+  --color-pastel-peach-line: #ffe7d1;
+  --color-pastel-peach-icon: #ffe7d1;
+
+  --color-pastel-sky: #eef9fe;
+  --color-pastel-sky-line: #cbe9f6;
+  --color-pastel-sky-icon: #cbe9f6;
+}

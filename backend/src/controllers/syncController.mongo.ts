@@ -196,6 +196,9 @@ async function workQueue(
     'products',
     batches.map((batch) => idKey(batch.product_id))
   );
+  // The work queue is re-sent on every pull (no cursor), so carrying the unit
+  // QR codes here lets devices repair any batch cache that lost its labels.
+  const qrValues = await batchQrValues(ctx, batches.map((batch) => idKey(batch.id)));
 
   return batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
@@ -204,6 +207,7 @@ async function workQueue(
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
       age_minutes: batchAgeMinutes(batch[sortField]),
+      unit_qr_codes: qrValues.get(idKey(batch.id)) || [],
     };
     if (role === 'QC') {
       base.cas_number = product?.cas_number ?? null;

@@ -1,0 +1,21 @@
+import { Tabs } from 'expo-router/js-tabs';
+
+import { ADMIN_TABS } from '@/components/navigation/tabs';
+import { RoleGuard } from '@/components/navigation/role-guard';
+import { RoleTabBar } from '@/components/navigation/role-tab-bar';
+
+export default function AdminLayout() {
+  return (
+    <RoleGuard role="admin">
+      <Tabs
+        screenOptions={{ headerShown: false }}
+        tabBar={(props) => <RoleTabBar {...props} items={ADMIN_TABS} />}>
+        <Tabs.Screen name="home" />
+        <Tabs.Screen name="reports" />
+        <Tabs.Screen name="dispatches" />
+        <Tabs.Screen name="manage" />
+        <Tabs.Screen name="settings" />
+      </Tabs>
+    </RoleGuard>
+  );
+}
