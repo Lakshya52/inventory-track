@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { Printer, Package, Eye, AlertTriangle } from 'lucide-react';
+import { Printer, Package, Eye, AlertTriangle, Download } from 'lucide-react';
 import type { EntityId } from '../types';
 
 function itemLocation(item: any): string {
@@ -11,6 +11,13 @@ function itemLocation(item: any): string {
 
 function itemBarcode(item: any, packingData: any): string {
   return item.barcode || packingData.barcode || '-';
+}
+
+function packingStatus(status: string | null | undefined): { label: string; className: string } {
+  if (status === 'CLOSED_DISPATCHED') return { label: 'Dispatched', className: 'badge-success' };
+  if (status === 'CLOSED_NOT_DISPATCHED') return { label: 'Not dispatched', className: 'badge-danger' };
+  if (status === 'APPROVED') return { label: 'Approved', className: 'badge-info' };
+  return { label: status || '-', className: 'badge-neutral' };
 }
 
 function escapeHtml(value: unknown): string {
@@ -29,6 +36,7 @@ export default function PackingList() {
   const [orders, setOrders] = useState<any[]>([]);
   const [packingData, setPackingData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const handleViewPacking = useCallback(async (orderId: EntityId) => {
@@ -43,8 +51,20 @@ export default function PackingList() {
     }
   }, []);
 
+  const handleDownloadPdf = useCallback(async (order: any) => {
+    setDownloadingId(String(order.id));
+    setError('');
+    try {
+      await api.dispatchOrders.downloadPackingListPdf(order.id, `packing-list-${order.batch_number || order.id}.pdf`);
+    } catch (err: any) {
+      setError(err.message || 'Could not download packing list PDF');
+    } finally {
+      setDownloadingId(null);
+    }
+  }, []);
+
   useEffect(() => {
-    const loader = user?.role === 'ADMIN' ? api.dispatchOrders.all() : api.dispatchOrders.mine();
+    const loader = user?.role === 'DISPATCH' ? api.dispatchOrders.mine() : api.dispatchOrders.all();
     loader.then(setOrders).catch((err) => setError(err.message));
   }, [user?.role]);
 
@@ -79,6 +99,8 @@ export default function PackingList() {
       <div class="meta">
         <span><strong>Order ID:</strong> #${escapeHtml(packingData.order_id)}</span>
         <span><strong>Status:</strong> ${escapeHtml(packingData.status)}</span>
+        <span><strong>Seal number:</strong> ${escapeHtml(packingData.seal_number || '-')}</span>
+        <span><strong>Outcome:</strong> ${escapeHtml(packingData.outcome || packingStatus(packingData.status).label)}</span>
         <span><strong>Client:</strong> ${escapeHtml(packingData.client?.name || '-')}</span>
         <span><strong>Contact:</strong> ${escapeHtml(packingData.client?.contact_person || '-')}</span>
         <span><strong>Email:</strong> ${escapeHtml(packingData.client?.email || '-')}</span>
@@ -117,14 +139,16 @@ export default function PackingList() {
     win.document.close();
   };
 
-  const processedOrders = orders.filter((order) => order.status === 'APPROVED' && order.dispatched_at);
+  const processedOrders = orders.filter((order) =>
+    ['APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'].includes(order.status)
+  );
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <h1 className="page-title">Packing List</h1>
-          <p className="page-subtitle">Packing lists are available after all labeled bags for the approved order have been scanned and loading is complete.</p>
+          <p className="page-subtitle">Packing lists are downloadable immediately after QC approval and reflect the frozen snapshot taken at approval time.</p>
         </div>
       </div>
 
@@ -135,28 +159,41 @@ export default function PackingList() {
       )}
 
       <div className="card mb-6">
-        <div className="card-header"><h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Loaded orders</h3></div>
+        <div className="card-header"><h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Approved orders</h3></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot / Qty</th><th>Client</th><th>Driver / Vehicle</th><th>Container</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot / Qty</th><th>Client</th><th>Driver / Vehicle</th><th>Container</th><th>Seal / Outcome</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
             <tbody>
-              {processedOrders.map((order) => (
-                <tr key={order.id}>
-                  <td className="text-xs text-surface-400">{new Date(order.created_at).toLocaleDateString()}</td>
-                  <td><span className="font-medium text-surface-800">{order.product_name}</span><div className="text-xs text-surface-400">{order.grade_name || order.product_grade || '-'}</div></td>
-                  <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span><div className="text-xs text-surface-400">{order.quantity} bags · {order.bag_quantity_name || ''}</div></td>
-                  <td>{order.client_name || '-'}</td>
-                  <td className="text-xs">{order.driver_name || '-'} / {order.vehicle_number || '-'}</td>
-                  <td>{order.container_number || '-'}</td>
-                  <td><span className={`badge ${order.status === 'APPROVED' ? 'badge-success' : 'badge-danger'}`}>{order.status}</span></td>
-                  <td className="text-right">
-                    <button onClick={() => handleViewPacking(order.id)} disabled={loading} className="btn-primary btn-sm">
-                      <Eye size={14} /> {loading ? 'Loading...' : 'View / Print'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {processedOrders.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No completed loads available</div></div></td></tr>}
+              {processedOrders.map((order) => {
+                const status = packingStatus(order.status);
+                return (
+                  <tr key={order.id}>
+                    <td className="text-xs text-surface-400">{new Date(order.created_at).toLocaleDateString()}</td>
+                    <td><span className="font-medium text-surface-800">{order.product_name}</span><div className="text-xs text-surface-400">{order.grade_name || order.product_grade || '-'}</div></td>
+                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span><div className="text-xs text-surface-400">{order.quantity} bags · {order.bag_quantity_name || ''}</div></td>
+                    <td>{order.client_name || '-'}</td>
+                    <td className="text-xs">{order.driver_name || '-'} / {order.vehicle_number || '-'}</td>
+                    <td>{order.container_number || '-'}</td>
+                    <td className="text-xs">{order.seal_number || '-'}<div className="text-surface-400">{order.outcome || status.label}</div></td>
+                    <td><span className={`badge ${status.className}`}>{status.label}</span></td>
+                    <td className="text-right">
+                      <div className="flex flex-wrap items-center justify-end gap-1">
+                        <button onClick={() => handleViewPacking(order.id)} disabled={loading} className="btn-primary btn-sm">
+                          <Eye size={14} /> {loading ? 'Loading...' : 'View / Print'}
+                        </button>
+                        <button
+                          onClick={() => handleDownloadPdf(order)}
+                          disabled={downloadingId === String(order.id)}
+                          className="btn-secondary btn-sm"
+                        >
+                          <Download size={14} /> {downloadingId === String(order.id) ? 'Downloading…' : 'Download PDF'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {processedOrders.length === 0 && <tr><td colSpan={9}><div className="empty-state"><div className="empty-title">No approved packing lists yet</div></div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -167,7 +204,16 @@ export default function PackingList() {
           <div className="card-header">
             <div className="flex items-center justify-between w-full flex-wrap gap-2">
               <h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Packing List — Order #{packingData.order_id}</h3>
-              <button onClick={handlePrint} className="btn-primary btn-sm"><Printer size={14} /> Print / Save PDF</button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => handleDownloadPdf({ id: packingData.order_id, batch_number: packingData.batch_number })}
+                  disabled={downloadingId === String(packingData.order_id)}
+                  className="btn-secondary btn-sm"
+                >
+                  <Download size={14} /> {downloadingId === String(packingData.order_id) ? 'Downloading…' : 'Download PDF'}
+                </button>
+                <button onClick={handlePrint} className="btn-primary btn-sm"><Printer size={14} /> Print / Save PDF</button>
+              </div>
             </div>
           </div>
           <div className="p-4 border-b border-surface-200 flex flex-wrap gap-4 text-xs text-surface-500">
@@ -183,6 +229,8 @@ export default function PackingList() {
             <span><strong>Container:</strong> {packingData.container_number || '-'}</span>
             <span><strong>Grade:</strong> {packingData.grade || '-'}</span>
             <span><strong>Status:</strong> {packingData.status}</span>
+            <span><strong>Seal number:</strong> {packingData.seal_number || '-'}</span>
+            <span><strong>Outcome:</strong> {packingData.outcome || packingStatus(packingData.status).label}</span>
             <span><strong>Generated:</strong> {new Date(packingData.generated_at).toLocaleString()}</span>
             {packingData.raised_by_name && <span><strong>Raised by:</strong> {packingData.raised_by_name}</span>}
             {packingData.admin_remarks && <span><strong>Admin remarks:</strong> {packingData.admin_remarks}</span>}

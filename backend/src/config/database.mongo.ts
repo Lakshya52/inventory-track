@@ -62,6 +62,8 @@ const CREATED_AT_COLLECTIONS = new Set([
   'dispatch_records',
   'fix_records',
   'packing_list_items',
+  'loading_sessions',
+  'loading_scan_events',
   'activity_logs',
   'devices',
   'refresh_tokens',
@@ -78,6 +80,7 @@ const UPDATED_AT_COLLECTIONS = new Set([
   'dispatch_orders',
   'dispatch_records',
   'fix_records',
+  'loading_sessions',
   'devices',
 ]);
 
@@ -107,6 +110,9 @@ const REFERENCE_ID_FIELDS = new Set([
   'vendor_id',
   'shelf_location_id',
   'approved_by_id',
+  'loader_id',
+  'scanned_by',
+  'session_id',
 ]);
 
 /** True when the value can identify a document (ObjectId hex or legacy numeric). */

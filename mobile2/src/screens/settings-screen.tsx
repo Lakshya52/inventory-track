@@ -189,12 +189,15 @@ export function SettingsScreen() {
           <View
             className="mt-[45px] overflow-hidden rounded-[12px] border border-[#EDF2FA] bg-white"
             style={{ boxShadow: '0px 8px 24px rgba(14, 42, 85, 0.05)' }}>
-            <MenuRow icon={Building2} label="Manage Company" onPress={() => setCompanyOpen(true)} />
-            <MenuRow icon={LockKeyhole} label="Change Password" onPress={() => setPasswordOpen(true)} />
-            <MenuRow icon={CircleHelp} label="Help & Support" onPress={() => setHelpOpen(true)} />
-            <MenuRow icon={LogOut} label="Log out" onPress={logout} danger last />
+              {/* if user role is admin then only show company management */}
+              {profile.role === 'admin' && (
+                <MenuRow icon={Building2} label="Manage Company" onPress={() => setCompanyOpen(true)} />
+              )}
+              <MenuRow icon={LockKeyhole} label="Change Password" onPress={() => setPasswordOpen(true)} />
+              <MenuRow icon={CircleHelp} label="Help & Support" onPress={() => setHelpOpen(true)} />
+              <MenuRow icon={LogOut} label="Log out" onPress={logout} danger last />
+            </View>
           </View>
-        </View>
       </ScrollView>
 
       <FormSheet
@@ -219,21 +222,24 @@ export function SettingsScreen() {
         onClose={() => setPasswordOpen(false)}
       />
 
-      <BottomSheet visible={companyOpen} onClose={() => setCompanyOpen(false)} title="Manage Company">
-        <SheetInfoRow icon={Building2} title={profile.company} subtitle="Registered organisation" />
-        <SheetInfoRow icon={Building2} title="KLJ Industrial Estate" subtitle="Plot 24, Mumbai, Maharashtra" />
-        <SheetInfoRow icon={Building2} title="GSTIN" subtitle="27AAACK1234L1ZX" />
-        <SheetInfoRow icon={Building2} title="Workspace" subtitle="Admin · ProductScanning" />
-        <IconButton
-          icon={Pencil}
-          onPress={() => {
-            setCompanyOpen(false);
-            setEditOpen(true);
-          }}
-          className="mt-2 h-11 w-full rounded-[10px] bg-navy"
-          iconColor="#FFFFFF"
-        />
-      </BottomSheet>
+{/* if user role is admin then only show company management */}
+      {profile.role === 'admin' && (
+        <BottomSheet visible={companyOpen} onClose={() => setCompanyOpen(false)} title="Manage Company">
+          <SheetInfoRow icon={Building2} title={profile.company} subtitle="Registered organisation" />
+          <SheetInfoRow icon={Building2} title="KLJ Industrial Estate" subtitle="Plot 24, Mumbai, Maharashtra" />
+          <SheetInfoRow icon={Building2} title="GSTIN" subtitle="27AAACK1234L1ZX" />
+          <SheetInfoRow icon={Building2} title="Workspace" subtitle="Admin · ProductScanning" />
+          <IconButton
+            icon={Pencil}
+            onPress={() => {
+              setCompanyOpen(false);
+              setEditOpen(true);
+            }}
+            className="mt-2 h-11 w-full rounded-[10px] bg-navy"
+            iconColor="#FFFFFF"
+          />
+        </BottomSheet>
+      )}
 
       <BottomSheet visible={helpOpen} onClose={() => setHelpOpen(false)} title="Help & Support">
         <SheetInfoRow icon={CircleHelp} title="support@klj.com" subtitle="We reply within one business day" />

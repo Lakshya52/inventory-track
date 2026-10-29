@@ -1,8 +1,5 @@
 import { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
 import { DbContext, getContext, idKey, startOfDay, startOfWeek } from '../config/database';
-import { applyOperation } from '../services/syncService';
-import { SyncOperationInput } from '../types';
 import {
   batchAgeMinutes,
   batchIdsForSearch,
@@ -157,92 +154,17 @@ async function enrichReadyBatches(ctx: DbContext, batches: Record<string, any>[]
   });
 }
 
-export async function submit(req: Request, res: Response): Promise<void> {
-  const barcode_value = String(req.body.barcode_value || '').trim();
-  const files = (req.files as Express.Multer.File[]) || [];
-  const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
-  const images = files.length > 0 ? files.map((file) => file.filename) : bodyImages;
-
-  if (!barcode_value) {
-    res.status(400).json({ error: 'Barcode value is required' });
-    return;
-  }
-
-  const operation: SyncOperationInput = {
-    operation_id: req.body.client_operation_id || randomUUID(),
-    type: 'DISPATCH_CONFIRM',
-    client_timestamp: req.body.client_timestamp || new Date().toISOString(),
-    payload: {
-      barcode_value,
-      remarks: req.body.remarks || null,
-      images,
-      expected_status: req.body.expected_status || undefined,
-      direct: req.body.direct === true || req.body.direct === 'true',
-      dispatch_order_id: req.body.dispatch_order_id || undefined,
-    },
-  };
-
-  const applied = await applyOperation(req.user!, null, operation);
-  if (applied.status === 'APPLIED' || applied.status === 'DUPLICATE') {
-    res.json({ ...(applied.data || {}), duplicate: applied.status === 'DUPLICATE' });
-    return;
-  }
-  res.status(applied.status === 'CONFLICT' ? 409 : 400).json({
-    error: applied.error || 'Dispatch failed',
-    code: applied.error_code,
-    ...(applied.data || {}),
+export async function submit(_req: Request, res: Response): Promise<void> {
+  // SRS v2 completes dispatch through a loading session with a seal number.
+  res.status(410).json({
+    error: 'Direct dispatch submission is retired. Start a loading session and finalise with a seal number.',
   });
 }
 
-export async function submitBulk(req: Request, res: Response): Promise<void> {
-  let barcodes: string[] = [];
-  if (Array.isArray(req.body.barcodes)) {
-    barcodes = req.body.barcodes.map((value: any) => String(value || '').trim()).filter(Boolean);
-  } else if (typeof req.body.barcodes === 'string') {
-    try {
-      const parsed = JSON.parse(req.body.barcodes);
-      if (Array.isArray(parsed)) {
-        barcodes = parsed.map((value: any) => String(value || '').trim()).filter(Boolean);
-      }
-    } catch {
-      barcodes = [];
-    }
-  } else if (typeof req.body.barcode_value === 'string') {
-    barcodes = [req.body.barcode_value.trim()];
-  }
-  barcodes = [...new Set(barcodes)];
-
-  const files = (req.files as Express.Multer.File[]) || [];
-  const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
-  const images = files.length > 0 ? files.map((file) => file.filename) : bodyImages;
-
-  if (barcodes.length === 0) {
-    res.status(400).json({ error: 'At least one QR code is required' });
-    return;
-  }
-
-  const operation: SyncOperationInput = {
-    operation_id: req.body.client_operation_id || randomUUID(),
-    type: 'DISPATCH_CONFIRM_BULK',
-    client_timestamp: req.body.client_timestamp || new Date().toISOString(),
-    payload: {
-      barcodes,
-      remarks: req.body.remarks || null,
-      images,
-      direct: req.body.direct === true || req.body.direct === 'true',
-      dispatch_order_id: req.body.dispatch_order_id || undefined,
-    },
-  };
-
-  const applied = await applyOperation(req.user!, null, operation);
-  if (applied.status === 'APPLIED' || applied.status === 'DUPLICATE') {
-    res.json({ ...(applied.data || {}), duplicate: applied.status === 'DUPLICATE' });
-    return;
-  }
-  res.status(applied.status === 'CONFLICT' ? 409 : 400).json({
-    error: applied.error || 'Group dispatch failed',
-    code: applied.error_code,
-    ...(applied.data || {}),
+export async function submitBulk(_req: Request, res: Response): Promise<void> {
+  // SRS v2 completes dispatch through a loading session with a seal number.
+  res.status(410).json({
+    error: 'Bulk dispatch submission is retired. Start a loading session and finalise with a seal number.',
   });
 }
 

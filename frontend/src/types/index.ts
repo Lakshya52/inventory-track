@@ -1,9 +1,48 @@
 export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 
-export type BatchStatus = 'CREATED' | 'QC_PASSED' | 'QC_FAILED'
-  | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'DISPATCH_REJECTED' | 'DISPATCHED';
+export type BatchStatus = 'QC_PASSED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED'
+  | 'LOADING' | 'DISPATCHED' | 'NOT_DISPATCHED';
 
-export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
+  | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
+
+export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
+export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
+
+export interface LoadingSession {
+  id: EntityId;
+  dispatch_order_id: EntityId;
+  batch_id: EntityId;
+  loader_id: EntityId;
+  loader_name?: string | null;
+  status: 'ACTIVE' | 'CLOSED';
+  total: number;
+  scanned: number;
+  seal_number: string | null;
+  outcome: DispatchOutcome | null;
+  remarks: string | null;
+  started_at: string;
+  completed_at: string | null;
+  updated_at: string;
+  order_id?: EntityId;
+  batch_number?: string | null;
+  product_name?: string | null;
+  last_event?: {
+    result: LoadingScanResult;
+    qr_value: string;
+    scanned_at: string;
+  } | null;
+}
+
+export interface LoadingScanEvent {
+  id: EntityId;
+  session_id: EntityId;
+  qr_value: string;
+  batch_id: EntityId | null;
+  result: LoadingScanResult;
+  scanned_by: EntityId;
+  scanned_at: string;
+}
 
 /** IDs are numeric on MySQL and strings (Mongo ObjectIds) on MongoDB. */
 export type EntityId = string | number;
@@ -101,7 +140,8 @@ export interface QcRecord {
   id: EntityId;
   batch_id: EntityId;
   tester_id: EntityId;
-  result: 'PASS' | 'FAIL';
+  result: 'PASS';
+  method?: 'AUTO_PASS' | string;
   remarks: string | null;
   created_at: string;
 }
@@ -121,9 +161,15 @@ export interface DispatchOrder {
   status: DispatchOrderStatus;
   admin_id: EntityId | null;
   admin_remarks: string | null;
+  approved_by_id?: EntityId | null;
+  approved_by_role?: string | null;
+  approved_at?: string | null;
+  seal_number?: string | null;
+  dispatched_at?: string | null;
   client_id: EntityId;
   driver_name: string;
   vehicle_number: string;
+  container_number?: string | null;
   created_at: string;
   updated_at: string;
   batch_number?: string;
@@ -131,6 +177,9 @@ export interface DispatchOrder {
   product_sku?: string;
   raised_by_name?: string;
   admin_name?: string;
+  approver_name?: string;
+  client_name?: string;
+  batch_status?: BatchStatus;
 }
 
 export interface Vendor {

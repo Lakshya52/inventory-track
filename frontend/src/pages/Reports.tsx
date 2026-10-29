@@ -4,7 +4,7 @@ import { jsPDF } from 'jspdf';
 import { api, uploadUrl } from '../services/api';
 import {
   FileBarChart, Microscope, Truck, ClipboardList, Boxes, Layers,
-  Activity, Download, Search, CheckCircle, XCircle, Eye, X, Calendar,
+  Activity, Download, Search, CheckCircle, Eye, X,
   IndianRupee, AlertCircle,
 } from 'lucide-react';
 
@@ -21,18 +21,32 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
 ];
 
 const statusBadge: Record<string, string> = {
-  CREATED: 'badge-neutral',
   QC_PASSED: 'badge-success',
-  QC_FAILED: 'badge-danger',
   DISPATCH_ORDER_RAISED: 'badge-purple',
   DISPATCH_APPROVED: 'badge-info',
-  DISPATCH_REJECTED: 'badge-warning',
-  DISPATCHED: 'badge-info',
+  LOADING: 'badge-info',
+  DISPATCHED: 'badge-success',
+  NOT_DISPATCHED: 'badge-danger',
   PASS: 'badge-success',
-  FAIL: 'badge-danger',
   PENDING: 'badge-warning',
   APPROVED: 'badge-success',
   REJECTED: 'badge-danger',
+  CLOSED_DISPATCHED: 'badge-success',
+  CLOSED_NOT_DISPATCHED: 'badge-danger',
+};
+
+const statusLabel: Record<string, string> = {
+  QC_PASSED: 'QC Passed',
+  DISPATCH_ORDER_RAISED: 'Order Raised',
+  DISPATCH_APPROVED: 'Approved',
+  LOADING: 'Loading',
+  DISPATCHED: 'Dispatched',
+  NOT_DISPATCHED: 'Not Dispatched',
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  CLOSED_DISPATCHED: 'Dispatched',
+  CLOSED_NOT_DISPATCHED: 'Not Dispatched',
 };
 
 function parseImages(raw: unknown): string[] {
@@ -54,7 +68,7 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function downloadPdf(filename: string, title: string, headers: string[], rows: (string | number)[][]): void {
@@ -134,9 +148,6 @@ export default function Reports() {
   const [search, setSearch] = useState('');
   const [exportFormat, setExportFormat] = useState<'CSV' | 'PDF'>('CSV');
 
-  const [reviewRequest, setReviewRequest] = useState<any | null>(null);
-  const [remarks, setRemarks] = useState('');
-  const [actionMessage, setActionMessage] = useState('');
   const [imageViewer, setImageViewer] = useState<{ title: string; images: string[] } | null>(null);
 
   const setTab = (next: Tab) => {
@@ -288,36 +299,6 @@ export default function Reports() {
     else downloadCsv(`${filename}.csv`, headers, rows);
   };
 
-  const handleReview = (request: any) => {
-    setReviewRequest(request);
-    setRemarks(request.admin_remarks || '');
-    setActionMessage('');
-  };
-
-  const handleAction = async (action: 'approve' | 'reject') => {
-    if (!reviewRequest) return;
-    try {
-      if (action === 'approve') {
-        await api.dispatchOrders.approve(reviewRequest.id, remarks || undefined);
-        setActionMessage('Dispatch request approved');
-      } else {
-        await api.dispatchOrders.reject(reviewRequest.id, remarks || undefined);
-        setActionMessage('Dispatch request rejected');
-      }
-      setReviewRequest(null);
-      setRemarks('');
-      loadSummary();
-      const data = await api.reports.dispatchRequests({
-        from: from || undefined,
-        to: to || undefined,
-        status: requestStatus === 'ALL' ? undefined : requestStatus,
-      });
-      setRequests(data);
-    } catch (err: any) {
-      setActionMessage(`Error: ${err.message}`);
-    }
-  };
-
   const showFilters = ['qc', 'dispatch', 'requests', 'batches'].includes(tab);
   const showSearch = ['qc', 'dispatch', 'requests', 'inventory', 'batches', 'activity'].includes(tab);
 
@@ -412,8 +393,7 @@ export default function Reports() {
                 <label className="input-label">Result</label>
                 <select className="input min-w-[130px]" value={qcResult} onChange={e => setQcResult(e.target.value)}>
                   <option value="ALL">All results</option>
-                  <option value="PASS">Pass</option>
-                  <option value="FAIL">Fail</option>
+                  <option value="PASS">Pass (auto)</option>
                 </select>
               </div>
             )}
@@ -425,6 +405,8 @@ export default function Reports() {
                   <option value="PENDING">Pending</option>
                   <option value="APPROVED">Approved</option>
                   <option value="REJECTED">Rejected</option>
+                  <option value="CLOSED_DISPATCHED">Dispatched</option>
+                  <option value="CLOSED_NOT_DISPATCHED">Not Dispatched</option>
                 </select>
               </div>
             )}
@@ -433,13 +415,12 @@ export default function Reports() {
                 <label className="input-label">Status</label>
                 <select className="input min-w-[170px]" value={batchStatus} onChange={e => setBatchStatus(e.target.value)}>
                   <option value="ALL">All statuses</option>
-                  <option value="CREATED">Created</option>
                   <option value="QC_PASSED">QC Passed</option>
-                  <option value="QC_FAILED">QC Failed</option>
                   <option value="DISPATCH_ORDER_RAISED">Order Raised</option>
                   <option value="DISPATCH_APPROVED">Approved</option>
-                  <option value="DISPATCH_REJECTED">Rejected</option>
+                  <option value="LOADING">Loading</option>
                   <option value="DISPATCHED">Dispatched</option>
+                  <option value="NOT_DISPATCHED">Not Dispatched</option>
                 </select>
               </div>
             )}
@@ -468,7 +449,7 @@ export default function Reports() {
             </div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Product</th><th>Batch</th><th>Raised By</th><th>Action</th></tr></thead>
+                <thead><tr><th>Product</th><th>Batch</th><th>Raised By</th><th>Status</th></tr></thead>
                 <tbody>
                   {filteredRequests.slice(0, 8).map(r => (
                     <tr key={r.id}>
@@ -478,7 +459,7 @@ export default function Reports() {
                       </td>
                       <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
                       <td className="text-sm">{r.raised_by_name || '-'}</td>
-                      <td><button onClick={() => handleReview(r)} className="btn-primary btn-xs">Review</button></td>
+                      <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
                     </tr>
                   ))}
                   {filteredRequests.length === 0 && <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title">No pending requests</div></div></td></tr>}
@@ -622,14 +603,9 @@ export default function Reports() {
             <h3 className="section-title flex items-center gap-2"><ClipboardList size={16} className="text-amber-500" /> Dispatch Requests</h3>
             <span className="text-xs text-surface-400">{filteredRequests.length} records</span>
           </div>
-          {actionMessage && (
-            <div className={`mx-6 mt-4 p-3 rounded-xl text-sm ${actionMessage.startsWith('Error') ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
-              {actionMessage}
-            </div>
-          )}
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot</th><th>Bags</th><th>Client / Transport</th><th>Container</th><th>Raised By</th><th>Status</th><th>Approver Remarks</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot</th><th>Bags</th><th>Client / Transport</th><th>Container</th><th>Raised By</th><th>Status</th><th>QC Remarks</th><th>Reviewed By</th></tr></thead>
               <tbody>
                 {filteredRequests.map(r => (
                   <tr key={r.id}>
@@ -643,13 +619,9 @@ export default function Reports() {
                     </td>
                     <td>{r.container_number || '-'}</td>
                     <td className="text-sm">{r.raised_by_name || '-'}</td>
-                    <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{r.status}</span></td>
+                    <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
                     <td className="text-sm text-surface-500 max-w-[220px]">{r.admin_remarks || '-'}</td>
-                    <td>
-                      {r.status === 'PENDING'
-                        ? <button onClick={() => handleReview(r)} className="btn-primary btn-xs">Review</button>
-                        : <span className="text-xs text-surface-400">{r.admin_name ? `by ${r.admin_name}` : '-'}</span>}
-                    </td>
+                    <td className="text-xs text-surface-400">{r.approver_name ? `by ${r.approver_name}` : '-'}</td>
                   </tr>
                 ))}
                 {filteredRequests.length === 0 && <tr><td colSpan={10}><div className="empty-state"><div className="empty-title">No dispatch requests found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
@@ -742,39 +714,6 @@ export default function Reports() {
                 {filteredLogs.length === 0 && <tr><td colSpan={5}><div className="empty-state"><div className="empty-title">No activity found</div></div></td></tr>}
               </tbody>
             </table>
-          </div>
-        </div>
-      )}
-
-      {reviewRequest && (
-        <div className="modal-overlay" onClick={() => setReviewRequest(null)}>
-          <div className="modal-content max-w-lg" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2 className="text-base font-semibold text-surface-900">Review Dispatch Request</h2>
-                <p className="text-xs text-surface-400 mt-0.5">Order #{reviewRequest.id} · {reviewRequest.product_name} · {reviewRequest.batch_number}</p>
-              </div>
-              <button onClick={() => setReviewRequest(null)} className="btn-ghost btn-sm"><X size={16} /></button>
-            </div>
-            <div className="modal-body space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Product</div><div className="font-medium text-surface-800">{reviewRequest.product_name}</div></div>
-                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Batch</div><div className="font-mono text-xs text-surface-800">{reviewRequest.batch_number}</div></div>
-                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Quantity</div><div className="font-medium text-surface-800">{reviewRequest.quantity} {reviewRequest.uom || ''}</div></div>
-                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Raised By</div><div className="font-medium text-surface-800">{reviewRequest.raised_by_name || '-'}</div></div>
-                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Client</div><div className="font-medium text-surface-800">{reviewRequest.client_name || '-'}{reviewRequest.client_contact ? ` · ${reviewRequest.client_contact}` : ''}</div><div className="text-xs text-surface-500">{reviewRequest.client_phone || ''}</div></div>
-                <div className="bg-surface-50 rounded-xl p-3"><div className="text-xs text-surface-400">Driver / Vehicle</div><div className="font-medium text-surface-800">{reviewRequest.driver_name || '-'} / {reviewRequest.vehicle_number || '-'}</div></div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="input-label">Admin Remarks</label>
-                <textarea className="input" rows={3} value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="Optional remarks for the dispatch team" />
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button onClick={() => setReviewRequest(null)} className="btn-secondary">Cancel</button>
-              <button onClick={() => handleAction('reject')} className="btn-danger"><XCircle size={16} /> Reject</button>
-              <button onClick={() => handleAction('approve')} className="btn-primary"><CheckCircle size={16} /> Approve</button>
-            </div>
           </div>
         </div>
       )}

@@ -176,13 +176,17 @@ async function workQueue(
   let filter: Record<string, any>;
   let sortField: string;
   if (role === 'QC') {
-    filter = { status: 'CREATED' };
+    // QC no longer performs batch QC; their work queue is batches awaiting
+    // dispatch-order approval.
+    filter = { status: 'DISPATCH_ORDER_RAISED' };
     sortField = 'created_at';
   } else if (role === 'DISPATCH') {
-    filter = { status: { $in: ['QC_PASSED', 'DISPATCH_REJECTED', 'DISPATCH_APPROVED'] } };
+    filter = { status: { $in: ['QC_PASSED', 'DISPATCH_APPROVED', 'LOADING'] } };
     sortField = 'updated_at';
   } else {
-    filter = { status: { $in: ['CREATED', 'QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED'] } };
+    filter = {
+      status: { $in: ['QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED', 'LOADING'] },
+    };
     sortField = 'updated_at';
   }
 
@@ -374,8 +378,8 @@ export async function pull(req: Request, res: Response): Promise<void> {
   }
 
   const [pendingQcCount, readyCount, pendingOrderCount, myTestsToday, myDispatchesToday] = await Promise.all([
-    ctx.count('batches', { status: 'CREATED' }),
-    ctx.count('batches', { status: { $in: ['QC_PASSED', 'DISPATCH_REJECTED'] } }),
+    ctx.count('dispatch_orders', { status: 'PENDING' }),
+    ctx.count('batches', { status: 'QC_PASSED' }),
     ctx.count('dispatch_orders', { status: 'PENDING' }),
     ctx.count('qc_records', { tester_id: user.userId, created_at: { $gte: startOfDay() } }),
     ctx.count('dispatch_records', { dispatcher_id: user.userId, created_at: { $gte: startOfDay() } }),

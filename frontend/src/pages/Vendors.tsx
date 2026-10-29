@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { EntityId, Vendor } from '../types';
 import {
-  Handshake, Plus, Search, Pencil, Trash2, X, Power, Building2,
-  Mail, Phone, MapPin, BadgeCheck,
+  Factory, Plus, Search, Pencil, Trash2, X, Power, Building2,
+  Mail, Phone, MapPin, BadgeCheck, Handshake
 } from 'lucide-react';
 
 const emptyForm = {
@@ -130,16 +130,21 @@ export default function Vendors() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Vendors</h1>
-          <p className="page-subtitle">Add, update, deactivate and remove vendor records</p>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center shrink-0">
+            <Factory size={20} />
+          </div>
+          <div>
+            <h1 className="page-title">Vendors</h1>
+            <p className="page-subtitle">Add, update, deactivate and remove raw material vendor and supplier records</p>
+          </div>
         </div>
         <button onClick={openCreate} className="btn-primary"><Plus size={16} /> Add Vendor</button>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {[
-          { label: 'Total Vendors', value: vendors.length, icon: <Handshake size={18} />, color: 'text-brand-600', bg: 'bg-brand-50' },
+          { label: 'Total Vendors', value: vendors.length, icon: <Factory size={18} />, color: 'text-amber-600', bg: 'bg-amber-50' },
           { label: 'Active', value: activeCount, icon: <BadgeCheck size={18} />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
           { label: 'Inactive', value: vendors.length - activeCount, icon: <Power size={18} />, color: 'text-rose-600', bg: 'bg-rose-50' },
           { label: 'Categories', value: new Set(vendors.map(v => v.category).filter(Boolean)).size, icon: <Building2 size={18} />, color: 'text-violet-600', bg: 'bg-violet-50' },

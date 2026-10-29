@@ -40,15 +40,20 @@ export default function Users() {
   const [saving, setSaving] = useState(false);
 
   const [editUser, setEditUser] = useState<User | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', email: '' });
+  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'QC' as RoleValue });
   const [editError, setEditError] = useState('');
 
   const [passwordUser, setPasswordUser] = useState<User | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
 
-  const loadUsers = () => {
-    api.users.list().then(setUsers).catch(err => setError(err.message));
+  const loadUsers = async () => {
+    try {
+      setUsers(await api.users.list());
+      setError('');
+    } catch (err: any) {
+      setError(err.message || 'Unable to load users');
+    }
   };
 
   useEffect(() => { loadUsers(); }, []);
@@ -76,11 +81,11 @@ export default function Users() {
     setAddError('');
     setSaving(true);
     try {
-      await api.users.add(addForm);
+      await api.users.add({ ...addForm, name: addForm.name.trim(), email: addForm.email.trim().toLowerCase() });
+      await loadUsers();
       setShowAdd(false);
       setAddForm({ name: '', email: '', password: '', role: 'QC' });
       setNotice('User added successfully');
-      loadUsers();
     } catch (err: any) {
       setAddError(err.message);
     } finally {
@@ -90,7 +95,7 @@ export default function Users() {
 
   const openEdit = (u: User) => {
     setEditUser(u);
-    setEditForm({ name: u.name, email: u.email });
+    setEditForm({ name: u.name, email: u.email, role: u.role as RoleValue });
     setEditError('');
   };
 
@@ -100,10 +105,14 @@ export default function Users() {
     setEditError('');
     setSaving(true);
     try {
-      await api.users.update(apiType(editUser.role), editUser.id, editForm);
+      await api.users.update(apiType(editUser.role), editUser.id, {
+        name: editForm.name.trim(),
+        email: editForm.email.trim().toLowerCase(),
+        role: editForm.role,
+      });
+      await loadUsers();
       setEditUser(null);
-      setNotice('User updated successfully');
-      loadUsers();
+      setNotice(editForm.role === editUser.role ? 'User updated successfully' : 'User details and role updated successfully');
     } catch (err: any) {
       setEditError(err.message);
     } finally {
@@ -124,10 +133,10 @@ export default function Users() {
     setSaving(true);
     try {
       await api.users.changePassword(apiType(passwordUser.role), passwordUser.id, newPassword);
+      await loadUsers();
       setPasswordUser(null);
       setNewPassword('');
       setNotice(`Password updated for ${passwordUser.name}`);
-      loadUsers();
     } catch (err: any) {
       setPasswordError(err.message);
     } finally {
@@ -141,7 +150,7 @@ export default function Users() {
     try {
       await api.users.setStatus(apiType(u.role), u.id, next);
       setNotice(`User ${next ? 'activated' : 'deactivated'}`);
-      loadUsers();
+      await loadUsers();
     } catch (err: any) {
       setError(err.message);
     }
@@ -152,7 +161,7 @@ export default function Users() {
     try {
       await api.users.delete(apiType(u.role), u.id);
       setNotice('User deleted');
-      loadUsers();
+      await loadUsers();
     } catch (err: any) {
       setError(err.message);
     }
@@ -338,12 +347,27 @@ export default function Users() {
             <div className="modal-header">
               <div>
                 <h2 className="text-base font-semibold text-surface-900">Edit User</h2>
-                <p className="text-xs text-surface-400 mt-0.5">{editUser.role} account</p>
+                <p className="text-xs text-surface-400 mt-0.5">Update this user’s details and access role</p>
               </div>
               <button onClick={() => setEditUser(null)} className="btn-ghost btn-sm"><X size={16} /></button>
             </div>
             <form onSubmit={handleEdit}>
               <div className="modal-body space-y-4">
+                <div className="space-y-1.5">
+                  <label className="input-label" htmlFor="edit-user-role">Role *</label>
+                  <select
+                    id="edit-user-role"
+                    className="input"
+                    value={editForm.role}
+                    onChange={e => setEditForm({ ...editForm, role: e.target.value as RoleValue })}
+                    disabled={String(editUser.id) === String(currentUser?.id) && editUser.role === currentUser?.role}
+                  >
+                    {ROLE_OPTIONS.map(role => <option key={role.value} value={role.value}>{role.label}</option>)}
+                  </select>
+                  {String(editUser.id) === String(currentUser?.id) && editUser.role === currentUser?.role && (
+                    <p className="text-xs text-surface-400">You can’t change your own role.</p>
+                  )}
+                </div>
                 <div className="space-y-1.5">
                   <label className="input-label">Full Name *</label>
                   <input className="input" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} required />

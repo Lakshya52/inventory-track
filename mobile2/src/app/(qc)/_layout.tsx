@@ -12,7 +12,7 @@ export default function QCLayout() {
         tabBar={(props) => <RoleTabBar {...props} items={QC_TABS} />}>
         <Tabs.Screen name="home" />
         <Tabs.Screen name="batches" />
-        <Tabs.Screen name="scan-check" />
+        <Tabs.Screen name="approvals" />
         <Tabs.Screen name="reports" />
         <Tabs.Screen name="settings" />
       </Tabs>

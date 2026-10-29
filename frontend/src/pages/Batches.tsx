@@ -7,38 +7,22 @@ import { createQrPdfBlob, downloadQrPdf, type QrJob, type QrLabel } from '../uti
 import { useAuth } from '../contexts/AuthContext';
 
 const statusColors: Record<string, string> = {
-  CREATED: 'badge-neutral',
   QC_PASSED: 'badge-success',
-  QC_FAILED: 'badge-danger',
   DISPATCH_ORDER_RAISED: 'badge-purple',
   DISPATCH_APPROVED: 'badge-info',
-  DISPATCH_REJECTED: 'badge-warning',
-  DISPATCHED: 'badge-info',
+  LOADING: 'badge-warning',
+  DISPATCHED: 'badge-success',
+  NOT_DISPATCHED: 'badge-danger',
 };
 
 const statusLabels: Record<string, string> = {
-  CREATED: 'Created',
   QC_PASSED: 'QC Passed',
-  QC_FAILED: 'QC Failed',
   DISPATCH_ORDER_RAISED: 'Order Raised',
   DISPATCH_APPROVED: 'Approved',
-  DISPATCH_REJECTED: 'Rejected',
+  LOADING: 'Loading',
   DISPATCHED: 'Dispatched',
+  NOT_DISPATCHED: 'Not Dispatched',
 };
-
-function generateBatchNumber(sku: string, existingBatches: Batch[]): string {
-  const today = new Date();
-  const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-  const prefix = `${sku}-${dateStr}`;
-  const lastSequence = existingBatches.reduce((max, batch) => {
-    const suffix = batch.batch_number.startsWith(`${prefix}-`)
-      ? batch.batch_number.slice(prefix.length + 1)
-      : '';
-    return /^\d+$/.test(suffix) ? Math.max(max, Number(suffix)) : max;
-  }, 0);
-  const seq = String(lastSequence + 1).padStart(3, '0');
-  return `${prefix}-${seq}`;
-}
 
 function safeFileName(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'batches';
@@ -96,6 +80,8 @@ export default function Batches() {
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [creatingBatch, setCreatingBatch] = useState(false);
+  const [savingFinishGoods, setSavingFinishGoods] = useState(false);
   const [batchCount, setBatchCount] = useState('1');
   const [downloadingGroupId, setDownloadingGroupId] = useState<string | null>(null);
   const [printQR, setPrintQR] = useState<{ value: string; product: string; batch: string } | null>(null);
@@ -167,33 +153,53 @@ export default function Batches() {
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
+    if (creatingBatch) return;
     setError('');
     setSuccess('');
+    const batchTotal = Number(batchCount);
+    const unitCount = Number(quantity);
+    const price = unitPrice.trim() ? Number(unitPrice) : 0;
+    if (!Number.isInteger(batchTotal) || batchTotal < 1 || batchTotal > 100) {
+      setError('Enter a whole-number batch count between 1 and 100.');
+      return;
+    }
+    if (!Number.isInteger(unitCount) || unitCount < 1 || unitCount > 1000) {
+      setError('Enter a whole-number product count between 1 and 1,000.');
+      return;
+    }
+    if (batchTotal * unitCount > 10_000) {
+      setError('A single generation can contain no more than 10,000 products.');
+      return;
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      setError('Enter a valid non-negative unit price.');
+      return;
+    }
+    if (manufacturingDate && expiryDate && expiryDate < manufacturingDate) {
+      setError('Expiry date cannot be earlier than the manufacturing date.');
+      return;
+    }
+    setCreatingBatch(true);
     try {
-      const batchTotal = Number(batchCount);
-      const productTotal = batchTotal * Number(quantity);
-      if (!Number.isInteger(batchTotal) || batchTotal < 1 || batchTotal > 100) {
-        setError('Enter a whole-number batch count between 1 and 100.');
-        return;
-      }
-      if (productTotal > 10_000) {
-        setError('A single generation can contain no more than 10,000 products.');
-        return;
-      }
       const created = await api.batches.create({
-        product_id: productId, batch_number: batchNumber, quantity: Number(quantity),
+        product_id: productId,
+        quantity: Number(quantity),
         batch_count: batchTotal,
-        uom: uom || undefined, unit_price: Number(unitPrice) || 0,
-        manufacturing_date: manufacturingDate || undefined, expiry_date: expiryDate || undefined,
+        uom: uom || undefined,
+        unit_price: price,
+        manufacturing_date: manufacturingDate || undefined,
+        expiry_date: expiryDate || undefined,
         notes: notes || undefined,
-      });
+        // Batch number is optional in the new workflow — omit it so the backend generates one.
+        ...(batchNumber.trim() ? { batch_number: batchNumber.trim() } : {}),
+      } as Parameters<typeof api.batches.create>[0]);
       setShowForm(false); resetForm();
-      setSuccess(`Created ${batchTotal} QC batch${batchTotal === 1 ? '' : 'es'} with ${batchTotal * Number(quantity)} unit QR labels.`);
+      setSuccess(`Created ${batchTotal} auto QC-passed batch${batchTotal === 1 ? '' : 'es'} with ${batchTotal * Number(quantity)} unit QR labels.`);
       try {
         await downloadCreatedQrPdfs(created.batches);
         setSuccess(batchTotal === 1
-          ? `Batch ${created.batches[0].batch_number} created and its QR PDF downloaded.`
-          : `${batchTotal} batches created and their QR PDFs downloaded as a ZIP.`);
+          ? `Batch ${created.batches[0].batch_number} created QC-passed and its QR PDF downloaded.`
+          : `${batchTotal} QC-passed batches created and their QR PDFs downloaded as a ZIP.`);
       } catch (downloadError: any) {
         setError(`Batches were created, but the QR download could not be completed: ${downloadError.message || 'QR PDF unavailable.'}`);
       }
@@ -204,11 +210,13 @@ export default function Batches() {
           ? `${current} Batch list could not be refreshed: ${refreshError.message || 'Request failed.'}`
           : `Batches were created, but the list could not be refreshed: ${refreshError.message || 'Request failed.'}`);
       }
-    } catch (err: any) { setError(err.message); }
+    } catch (err: any) { setError(err.message || 'Could not create QC batch'); }
+    finally { setCreatingBatch(false); }
   };
 
   const handleFinishGoods = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (savingFinishGoods) return;
     const vendorId = finishGoodsSelection.vendorId;
     const gradeId = finishGoodsSelection.gradeId;
     const bagQuantityId = finishGoodsSelection.bagQuantityId;
@@ -224,6 +232,7 @@ export default function Batches() {
       return;
     }
     setError('');
+    setSavingFinishGoods(true);
     try {
       const result = await api.batches.finishGoods(finishBatch.id, {
         vendor_id: vendorId,
@@ -238,13 +247,13 @@ export default function Batches() {
       setBatches(await api.batches.list());
     } catch (err: any) {
       setError(err.message || 'Could not complete finished-goods details');
-    }
+    } finally { setSavingFinishGoods(false); }
   };
 
   const handleDownloadGroupZip = async (group: Batch[]) => {
     const groupId = group[0]?.batch_group_id;
     if (!groupId || group.some(batch => !batch.qr_job_id)) {
-      setError('QR labels are missing for one or more batches in this group. Finish-goods details for passed legacy batches to generate their labels.');
+      setError('QR labels are missing for one or more batches in this group. Finish-goods details for legacy batches to generate their labels.');
       return;
     }
     setError('');
@@ -300,17 +309,6 @@ export default function Batches() {
     }
   };
 
-  const sendForQcAgain = async (batch: Batch) => {
-    const reason = window.prompt(`Why is batch ${batch.batch_number} being sent back for QC?`);
-    if (!reason?.trim()) return;
-    try {
-      await api.qc.reopenFailedBatch(batch.id, reason.trim());
-      setBatches(await api.batches.list());
-    } catch (err: any) {
-      setError(err.message || 'Could not reopen batch for QC');
-    }
-  };
-
   return (
     <div className="page-container">
       <div className="page-header">
@@ -318,8 +316,8 @@ export default function Batches() {
           <h1 className="page-title">Batches</h1>
           <p className="page-subtitle">
             {canManageBatches
-              ? 'Create batches with downloadable unit QR labels, manage QC outcomes, and complete finished-goods details.'
-              : 'Read-only overview of batches. Batch reports are available in Reports & Logs.'}
+              ? 'Create QC-passed batches with downloadable unit QR labels, complete finished-goods details, and track dispatch status. Batches are created QC-passed automatically; no failed-QC batches are recorded.'
+              : 'Read-only overview of batches. Batches are created QC-passed automatically; no failed-QC batches are recorded. Batch reports are available in Reports & Logs.'}
           </p>
         </div>
         {canManageBatches && (
@@ -343,11 +341,11 @@ export default function Batches() {
       )}
 
       {canManageBatches && showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+        <div className="modal-overlay" onClick={() => { if (!creatingBatch) setShowForm(false); }}>
           <div className="modal-content max-w-2xl" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h2 className="text-base font-semibold text-surface-900">Create QC Batch</h2>
-              <button onClick={() => setShowForm(false)} className="btn-ghost btn-sm"><X size={16} /></button>
+              <h2 className="text-base font-semibold text-surface-900">Create Auto-Passed QC Batch</h2>
+              <button onClick={() => setShowForm(false)} className="btn-ghost btn-sm" disabled={creatingBatch} aria-label="Close batch form"><X size={16} /></button>
             </div>
             <form onSubmit={handleCreate}>
               <div className="modal-body space-y-4">
@@ -358,7 +356,6 @@ export default function Batches() {
                       setProductId(e.target.value);
                       const p = products.find(x => String(x.id) === e.target.value);
                       if (p?.price && p.price > 0) setUnitPrice(String(p.price));
-                      if (p) setBatchNumber(generateBatchNumber(p.sku, batches));
                     }} required>
                       <option value="">-- Select Product --</option>
                       {products.map(p => (
@@ -376,9 +373,9 @@ export default function Batches() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="input-label">Batch Number *</label>
-                    <input className="input" placeholder="Auto-generated" value={batchNumber} onChange={e => setBatchNumber(e.target.value)} required />
-                    <p className="text-xs text-surface-400">For multiple batches, sequential numbers are generated from this number.</p>
+                    <label className="input-label">Batch Number</label>
+                    <input className="input" placeholder="Auto-generated" value={batchNumber} onChange={e => setBatchNumber(e.target.value)} />
+                    <p className="text-xs text-surface-400">Optional. Leave blank to auto-generate; for multiple batches, sequential numbers are generated.</p>
                   </div>
 
                   <div className="space-y-1.5">
@@ -407,13 +404,13 @@ export default function Batches() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="input-label">Manufacturing Date *</label>
-                    <input className="input" type="date" value={manufacturingDate} onChange={e => setManufacturingDate(e.target.value)} required />
+                    <label className="input-label">Manufacturing Date</label>
+                    <input className="input" type="date" value={manufacturingDate} onChange={e => setManufacturingDate(e.target.value)} />
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="input-label">Expiry Date *</label>
-                    <input className="input" type="date" value={expiryDate} onChange={e => setExpiryDate(e.target.value)} required />
+                    <label className="input-label">Expiry Date</label>
+                    <input className="input" type="date" value={expiryDate} onChange={e => setExpiryDate(e.target.value)} />
                   </div>
 
                   <div className="space-y-1.5 md:col-span-2">
@@ -423,12 +420,15 @@ export default function Batches() {
                 </div>
                 {error && <div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">{error}</div>}
                 <p className="text-xs text-surface-500">
-                  Each batch is QC-tracked separately, and unit QR labels are ready to download as soon as it is created. Finished-goods details can be completed after QC passes.
+                  Each batch is created with status <strong>QC_PASSED</strong> automatically and an <strong>AUTO_PASS</strong> QC record is written for audit.
+                  There is no fail step — no failed-QC batches are recorded. Unit QR labels are ready to download as soon as the batch is created, and finished-goods details can be completed afterwards.
                 </p>
               </div>
               <div className="modal-footer">
-                <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">Cancel</button>
-                <button type="submit" className="btn-primary">Create QC Batch</button>
+                <button type="button" onClick={() => setShowForm(false)} className="btn-secondary" disabled={creatingBatch}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={creatingBatch || !products.length}>
+                  {creatingBatch ? 'Creating batches and QR labels…' : 'Create Auto-Passed QC Batch'}
+                </button>
               </div>
             </form>
           </div>
@@ -436,15 +436,15 @@ export default function Batches() {
       )}
 
       {finishBatch && (
-        <div className="modal-overlay" onClick={() => setFinishBatch(null)}>
+        <div className="modal-overlay" onClick={() => { if (!savingFinishGoods) setFinishBatch(null); }}>
           <div className="modal-content max-w-2xl" onClick={event => event.stopPropagation()}>
             <form onSubmit={handleFinishGoods}>
               <div className="modal-header">
                 <h2 className="text-base font-semibold text-surface-900">Finished-goods details — {finishBatch.batch_number}</h2>
-                <button type="button" onClick={() => setFinishBatch(null)} className="btn-ghost btn-sm"><X size={16} /></button>
+                <button type="button" onClick={() => setFinishBatch(null)} className="btn-ghost btn-sm" disabled={savingFinishGoods} aria-label="Close finished-goods form"><X size={16} /></button>
               </div>
               <div className="modal-body space-y-4">
-                <p className="text-sm text-surface-500">QC has passed. Select the finished-goods master values; this updates the batch without creating duplicate QR labels.</p>
+                <p className="text-sm text-surface-500">This batch is auto QC-passed. Select the finished-goods master values; this updates the batch without creating duplicate QR labels.</p>
                 {(!vendors.length || !grades.length || !bagQuantities.length) && (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                     Some required dropdowns have no active records with valid IDs.
@@ -524,9 +524,9 @@ export default function Batches() {
                 {error && <div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">{error}</div>}
               </div>
               <div className="modal-footer">
-                <button type="button" onClick={() => setFinishBatch(null)} className="btn-secondary">Cancel</button>
-                <button type="submit" className="btn-primary">
-                  <PackageCheck size={15} /> Save finished-goods details
+                <button type="button" onClick={() => setFinishBatch(null)} className="btn-secondary" disabled={savingFinishGoods}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={savingFinishGoods}>
+                  <PackageCheck size={15} /> {savingFinishGoods ? 'Saving…' : 'Save finished-goods details'}
                 </button>
               </div>
             </form>
@@ -590,9 +590,6 @@ export default function Batches() {
                             }} className="btn-primary btn-xs">
                           <PackageCheck size={13} /> Finish goods details
                         </button>
-                      )}
-                      {canManageBatches && b.status === 'QC_FAILED' && (
-                        <button onClick={() => sendForQcAgain(b)} className="btn-secondary btn-xs">Send for re-QC</button>
                       )}
                     </div>
                   </td>}

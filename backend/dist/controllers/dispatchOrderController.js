@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getPackingList = exports.reject = exports.approve = exports.listMine = exports.listAll = exports.listPending = exports.raise = void 0;
+exports.getPackingListPdf = exports.getPackingList = exports.reject = exports.approve = exports.listMine = exports.listAll = exports.listPending = exports.raise = void 0;
 const database_1 = require("../config/database");
 const mysqlImpl = __importStar(require("./dispatchOrderController.mysql"));
 const mongoImpl = __importStar(require("./dispatchOrderController.mongo"));
@@ -45,4 +45,5 @@ exports.listMine = implementation.listMine;
 exports.approve = implementation.approve;
 exports.reject = implementation.reject;
 exports.getPackingList = implementation.getPackingList;
+exports.getPackingListPdf = implementation.getPackingListPdf;
 //# sourceMappingURL=dispatchOrderController.js.map

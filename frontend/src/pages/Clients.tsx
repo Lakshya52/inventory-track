@@ -1,7 +1,7 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { Client, EntityId } from '../types';
-import { Handshake, Plus, Pencil, Trash2, X } from 'lucide-react';
+import { Building2, Plus, Pencil, Trash2, X, Handshake } from 'lucide-react';
 
 export default function Clients() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -16,9 +16,15 @@ export default function Clients() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    api.clients.list().then(setClients).catch(err => setError(err.message || 'Could not load clients'));
-  }, []);
+  const loadClients = async () => {
+    try {
+      setClients(await api.clients.list());
+    } catch (err: any) {
+      setError(err.message || 'Could not load clients');
+    }
+  };
+
+  useEffect(() => { void loadClients(); }, []);
 
   const resetForm = () => { setName(''); setContact(''); setEmail(''); setPhone(''); setAddress(''); setGst(''); setError(''); setEditId(null); };
 
@@ -33,7 +39,7 @@ export default function Clients() {
       const data = { name, contact_person: contact, email, phone, address, gst_number: gst };
       if (editId) { await api.clients.update(editId, data); } else { await api.clients.create(data); }
       setShowForm(false); resetForm();
-      api.clients.list().then(setClients);
+      await loadClients();
     } catch (err: any) { setError(err.message); }
   };
 
@@ -41,7 +47,7 @@ export default function Clients() {
     if (!window.confirm('Delete this client?')) return;
     try {
       await api.clients.delete(id);
-      api.clients.list().then(setClients);
+      await loadClients();
     } catch (err: any) { setError(err.message); }
   };
 
@@ -56,9 +62,14 @@ export default function Clients() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Clients</h1>
-          <p className="page-subtitle">Manage your client and customer relationships</p>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 border border-blue-200/60 flex items-center justify-center shrink-0">
+            <Building2 size={20} />
+          </div>
+          <div>
+            <h1 className="page-title">Clients</h1>
+            <p className="page-subtitle">Manage client accounts and dispatch delivery destinations</p>
+          </div>
         </div>
         <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
       </div>

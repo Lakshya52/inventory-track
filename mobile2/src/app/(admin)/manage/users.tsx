@@ -81,7 +81,11 @@ export default function UsersScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    // This async loader updates state after the API request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
 
   // ── Add ───────────────────────────────────────────────────────────────────
   const openAdd = () => {
@@ -310,9 +314,9 @@ export default function UsersScreen() {
                 key={r}
                 onPress={() => setAddRole(r)}
                 className="flex-1 items-center rounded-full py-2"
-                style={[
+                style={({ pressed }) => [
                   { backgroundColor: active ? colors.bg : '#F5F6FA' },
-                  ({ pressed }) => (pressed ? { opacity: 0.75 } : undefined),
+                  pressed ? { opacity: 0.75 } : undefined,
                 ]}>
                 <AppText
                   className="text-[12px]"

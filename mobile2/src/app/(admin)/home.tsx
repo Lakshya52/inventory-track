@@ -14,19 +14,65 @@ import {
   Users,
 } from 'lucide-react-native';
 import { ScrollView, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
 
 import { BrandHeader } from '@/components/ui/brand';
 import { QuickLink } from '@/components/ui/cards';
 import { AppText } from '@/components/ui/app-text';
-import { SectionLabel } from '@/components/ui/page';
+import { PageHeading, SectionLabel } from '@/components/ui/page';
 import { StatCard } from '@/components/ui/stat-card';
 import { useRole } from '@/context/role-context';
+import { apiRequest } from '@/services/api';
+import { dispatchApi } from '@/services/dispatch';
+import { qcApi } from '@/services/qc';
+import { fetchAllUsers } from '@/services/users';
+import type { LoadingSession } from '@/types';
 
 export default function AdminHomeScreen() {
   const router = useRouter();
   const { user } = useRole();
+  const [overview, setOverview] = useState({ products: 0, users: 0, passed: 0, failed: 0, pending: 0 });
+  const [activeSessions, setActiveSessions] = useState<LoadingSession[]>([]);
 
   const go = (href: Href) => router.push(href);
+
+  const loadOverview = useCallback(async () => {
+    const [products, users, qc, orders] = await Promise.allSettled([
+      apiRequest<unknown[]>('/products'),
+      fetchAllUsers(),
+      qcApi.stats(),
+      dispatchApi.allOrders(),
+    ]);
+    setOverview({
+      products: products.status === 'fulfilled' ? products.value.length : 0,
+      users: users.status === 'fulfilled' ? users.value.filter((item) => Number(item.is_active) === 1).length : 0,
+      passed: qc.status === 'fulfilled' ? qc.value.passed : 0,
+      failed: qc.status === 'fulfilled' ? qc.value.failed : 0,
+      pending: orders.status === 'fulfilled' ? orders.value.filter((item) => item.status === 'PENDING').length : 0,
+    });
+  }, []);
+
+  const loadActiveSessions = useCallback(async () => {
+    try {
+      setActiveSessions(await dispatchApi.activeLoadingSessions());
+    } catch (err) {
+      console.warn('Could not refresh live loading sessions:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Load real dashboard totals after mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadOverview();
+  }, [loadOverview]);
+
+  useEffect(() => {
+    // Keep the admin's loading monitor current while the dashboard is open.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadActiveSessions();
+    const timer = setInterval(() => void loadActiveSessions(), 4000);
+    return () => clearInterval(timer);
+  }, [loadActiveSessions]);
 
   return (
     <View className="flex-1 overflow-hidden bg-canvas">
@@ -38,46 +84,70 @@ export default function AdminHomeScreen() {
       <BrandHeader />
 
         <View className="px-5 pt-10">
-          <AppText
-            variant="display"
-            className="text-[30px] leading-[38px]"
-            style={{ fontFamily: 'Manrope_900ExtraBold' }}>
-            Welcome, {user?.name.split(' ')[0] ?? 'UserName'}
-          </AppText>
-          <AppText variant="caption" className="mt-0.5 text-[11px]">
-            Companysgiven@KLJ.Com
-          </AppText>
-
-          <View className="mt-12 flex-row flex-wrap justify-between gap-y-[9px]">
+          <PageHeading
+            title={`Welcome ${user?.name.split(' ')[0] ?? 'UserName'}`}
+            subtitle={user?.email ?? ''}
+          />
+          <SectionLabel className="mt-[44px]">Overview</SectionLabel>
+          <View className=" mt-[10px] flex-row flex-wrap justify-between gap-y-[9px]">
             <StatCard
               icon={Package}
-              value="1200"
+              value={String(overview.products)}
               label="Total Products"
               tone="mint"
               className="w-[48.2%]"
             />
             <StatCard
               icon={UserRound}
-              value="120"
+              value={String(overview.users)}
               label="Active Users"
               tone="blue"
               className="w-[48.2%]"
             />
             <StatCard
               icon={ClipboardList}
-              value="12 / 1"
+              value={`${overview.passed} / ${overview.failed}`}
               label="Qc Passed / Failed"
               tone="purple"
               className="w-[48.2%]"
             />
             <StatCard
               icon={FileClock}
-              value="5"
+              value={String(overview.pending)}
               label="Pending Requests"
               tone="peach"
               className="w-[48.2%]"
             />
           </View>
+
+          {activeSessions.length > 0 ? (
+            <View className="mt-7">
+              <View className="flex-row items-center justify-between">
+                <SectionLabel>Live Loading</SectionLabel>
+                <AppText className="text-[10px] font-manrope-semibold text-[#68758A]">Refreshes every 4 seconds</AppText>
+              </View>
+              <View className="mt-2.5 gap-2.5">
+                {activeSessions.map((session) => {
+                  const total = Math.max(0, Number(session.total) || 0);
+                  const scanned = Math.min(total, Math.max(0, Number(session.scanned) || 0));
+                  const progress = total > 0 ? Math.round((scanned / total) * 100) : 0;
+                  return (
+                    <View key={session.id} className="rounded-2xl border border-[#C9D8F0] bg-white p-4">
+                      <View className="flex-row items-start justify-between gap-3">
+                        <View className="min-w-0 flex-1">
+                          <AppText className="text-[13px] font-manrope-bold text-navy" numberOfLines={1}>{session.product_name || 'Product'} · Batch {session.batch_number || '—'}</AppText>
+                          <AppText className="mt-1 text-[10px] text-[#68758A]">Order #{session.dispatch_order_id} · {session.loader_name || 'Dispatcher'}</AppText>
+                        </View>
+                        <AppText className="shrink-0 text-[12px] font-manrope-extrabold text-navy">{scanned}/{total}</AppText>
+                      </View>
+                      <View className="mt-3 h-2 overflow-hidden rounded-full bg-[#E6EDF7]"><View className="h-full rounded-full bg-navy" style={{ width: `${progress}%` }} /></View>
+                      <AppText className="mt-1 self-end text-[10px] font-manrope-bold text-[#51627D]">{progress}% loaded</AppText>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
 
           <SectionLabel className="mt-[44px]">Quick Links</SectionLabel>
 

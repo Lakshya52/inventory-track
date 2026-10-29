@@ -115,7 +115,11 @@ export function EntityScreen({
     [service, fields],
   );
 
-  useEffect(() => { loadItems(); }, [loadItems]);
+  useEffect(() => {
+    // This async loader updates state after the API request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadItems();
+  }, [loadItems]);
 
   // ── Create ─────────────────────────────────────────────────────────────────
   const handleCreate = async (values: Record<string, string>) => {

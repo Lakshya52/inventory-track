@@ -1,9 +1,25 @@
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { DbContext, getContext, idKey, isValidId, withTransaction } from '../config/database';
+import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { applyOperation, SyncConflictError, SyncError } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import { batchIdsForSearch, batchQrStats, EntityId, mapByIds, mapNames } from '../services/queryService';
+import { buildPackingListPdf } from '../services/packingListPdf';
+
+const ORDER_STATUS_FILTERS = [
+  'PENDING',
+  'APPROVED',
+  'REJECTED',
+  'CLOSED_DISPATCHED',
+  'CLOSED_NOT_DISPATCHED',
+];
+
+const PACKING_LIST_STATUSES = [
+  'APPROVED',
+  'CLOSED_DISPATCHED',
+  'CLOSED_NOT_DISPATCHED',
+  'DISPATCHED',
+];
 
 function errorResponse(res: Response, error: unknown, fallback: string): void {
   if (error instanceof SyncError) {
@@ -44,8 +60,12 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
   return orders.map((order) => {
     const batch = batches.get(idKey(order.batch_id));
     const product = batch ? products.get(idKey(batch.product_id)) : undefined;
+    const outcome = order.outcome
+      ?? (order.status === 'CLOSED_DISPATCHED' ? 'DISPATCHED'
+        : order.status === 'CLOSED_NOT_DISPATCHED' ? 'NOT_DISPATCHED' : null);
     return {
       ...order,
+      outcome,
       batch_number: batch?.batch_number ?? null,
       barcode_value: batch?.barcode_value ?? null,
       quantity: batch?.quantity ?? null,
@@ -110,7 +130,13 @@ export async function raise(req: Request, res: Response): Promise<void> {
       });
       return;
     }
-    res.status(applied.status === 'CONFLICT' ? 409 : 400).json({
+    res.status(
+      applied.status === 'CONFLICT' ||
+      applied.error_code === 'INVALID_BATCH_STATE' ||
+      applied.error_code === 'OPEN_ORDER_EXISTS'
+        ? 409
+        : 400
+    ).json({
       error: applied.error || 'Could not raise dispatch order',
       code: applied.error_code,
       ...(applied.data || {}),
@@ -122,8 +148,12 @@ export async function raise(req: Request, res: Response): Promise<void> {
 
 export async function listPending(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
+  const status = String(req.query.status || '').toUpperCase();
   const ctx = await getContext();
-  const filter = await orderFilterForSearch(ctx, q, { status: 'PENDING' });
+  const base: Record<string, any> = {
+    status: ORDER_STATUS_FILTERS.includes(status) ? status : 'PENDING',
+  };
+  const filter = await orderFilterForSearch(ctx, q, base);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: 1 },
     limit: 100,
@@ -137,7 +167,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
   const status = String(req.query.status || '').toUpperCase();
   const ctx = await getContext();
   const base: Record<string, any> = {};
-  if (['PENDING', 'APPROVED', 'REJECTED'].includes(status)) base.status = status;
+  if (ORDER_STATUS_FILTERS.includes(status)) base.status = status;
   const filter = await orderFilterForSearch(ctx, q, base);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: -1 },
@@ -152,7 +182,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   const status = String(req.query.status || '').toUpperCase();
   const ctx = await getContext();
   const base: Record<string, any> = { raised_by: req.user!.userId };
-  if (['PENDING', 'APPROVED', 'REJECTED'].includes(status)) base.status = status;
+  if (ORDER_STATUS_FILTERS.includes(status)) base.status = status;
   const filter = await orderFilterForSearch(ctx, q, base);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: -1 },
@@ -163,9 +193,13 @@ export async function listMine(req: Request, res: Response): Promise<void> {
 }
 
 export async function approve(req: Request, res: Response): Promise<void> {
+  if (req.user!.role !== 'QC') {
+    res.status(403).json({ error: 'Only QC users can approve dispatch orders' });
+    return;
+  }
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid dispatch order id' }); return; }
-  const { admin_remarks } = req.body;
+  const remarks = req.body.remarks ?? req.body.admin_remarks ?? null;
   try {
     const result = await withTransaction(async (ctx: DbContext) => {
       const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
@@ -183,15 +217,34 @@ export async function approve(req: Request, res: Response): Promise<void> {
         });
       }
 
+      const [product, location, grade, bagQuantity] = await Promise.all([
+        ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0, name: 1, sku: 1, grade: 1 } }),
+        batch.shelf_location_id
+          ? ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, {
+              projection: { _id: 0, location_code: 1, description: 1 },
+            })
+          : null,
+        batch.grade_id
+          ? ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } })
+          : null,
+        batch.bag_quantity_id
+          ? ctx.findOne('bag_quantities', { id: batch.bag_quantity_id }, {
+              projection: { _id: 0, name: 1, quantity: 1, unit: 1 },
+            })
+          : null,
+      ]);
+
+      const approvedAt = now();
       const orderUpdate = await ctx.updateOne(
         'dispatch_orders',
         { id, status: 'PENDING' },
         { $set: {
           status: 'APPROVED',
-          admin_id: req.user!.role === 'ADMIN' ? req.user!.userId : null,
-          approved_by_role: req.user!.role,
+          approved_by_role: 'QC',
           approved_by_id: req.user!.userId,
-          admin_remarks: admin_remarks || null,
+          approved_at: approvedAt,
+          remarks: remarks ?? null,
+          admin_remarks: remarks ?? null,
         } }
       );
       if (orderUpdate.matchedCount !== 1) {
@@ -207,6 +260,24 @@ export async function approve(req: Request, res: Response): Promise<void> {
         throw new SyncConflictError('Batch was changed by another user', { batch_id: order.batch_id });
       }
 
+      // Freeze the packing list at approval time. Later batch edits must not
+      // change what was approved.
+      await ctx.deleteMany('packing_list_items', { dispatch_order_id: id });
+      await ctx.insert('packing_list_items', {
+        dispatch_order_id: id,
+        batch_id: order.batch_id,
+        product_name: product?.name ?? null,
+        sku: product?.sku ?? null,
+        batch_number: batch.batch_number ?? null,
+        quantity: batch.quantity ?? null,
+        uom: batch.uom ?? null,
+        grade: grade?.name ?? product?.grade ?? null,
+        bag_quantity: bagQuantity?.quantity ?? null,
+        bag_quantity_unit: bagQuantity?.unit ?? null,
+        location_code: location?.location_code ?? null,
+        location_description: location?.description ?? location?.location_code ?? batch.storage_location ?? null,
+      });
+
       await ctx.insert('activity_logs', {
         user_id: req.user!.userId,
         user_name: req.user!.name,
@@ -214,7 +285,7 @@ export async function approve(req: Request, res: Response): Promise<void> {
         action: 'DISPATCH_APPROVED',
         description: `Dispatch order #${id} approved for batch #${order.batch_id}`,
       });
-      return { message: 'Dispatch order approved', status: 'APPROVED' };
+      return { message: 'Dispatch order approved', status: 'APPROVED', approved_at: approvedAt };
     });
     res.json(result);
   } catch (error) {
@@ -223,9 +294,18 @@ export async function approve(req: Request, res: Response): Promise<void> {
 }
 
 export async function reject(req: Request, res: Response): Promise<void> {
+  if (req.user!.role !== 'QC') {
+    res.status(403).json({ error: 'Only QC users can reject dispatch orders' });
+    return;
+  }
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid dispatch order id' }); return; }
-  const { admin_remarks } = req.body;
+  const rawRemarks = req.body.remarks ?? req.body.admin_remarks;
+  const remarks = rawRemarks === null || rawRemarks === undefined ? '' : String(rawRemarks).trim();
+  if (!remarks) {
+    res.status(400).json({ error: 'Remarks are required to reject a dispatch order' });
+    return;
+  }
   try {
     const result = await withTransaction(async (ctx: DbContext) => {
       const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
@@ -237,15 +317,17 @@ export async function reject(req: Request, res: Response): Promise<void> {
       const batch = await ctx.findOne('batches', { id: order.batch_id }, { projection: { _id: 0 } });
       if (!batch) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
 
+      const rejectedAt = now();
       const orderUpdate = await ctx.updateOne(
         'dispatch_orders',
         { id, status: 'PENDING' },
         { $set: {
           status: 'REJECTED',
-          admin_id: req.user!.role === 'ADMIN' ? req.user!.userId : null,
-          approved_by_role: req.user!.role,
+          approved_by_role: 'QC',
           approved_by_id: req.user!.userId,
-          admin_remarks: admin_remarks || null,
+          approved_at: rejectedAt,
+          remarks,
+          admin_remarks: remarks,
         } }
       );
       if (orderUpdate.matchedCount !== 1) {
@@ -254,8 +336,8 @@ export async function reject(req: Request, res: Response): Promise<void> {
 
       await ctx.updateOne(
         'batches',
-        { id: order.batch_id, status: 'DISPATCH_ORDER_RAISED' },
-        { $set: { status: 'DISPATCH_REJECTED' } }
+        { id: order.batch_id },
+        { $set: { status: 'QC_PASSED' } }
       );
 
       await ctx.insert('activity_logs', {
@@ -263,9 +345,9 @@ export async function reject(req: Request, res: Response): Promise<void> {
         user_name: req.user!.name,
         user_role: req.user!.role,
         action: 'DISPATCH_REJECTED',
-        description: `Dispatch order #${id} rejected for batch #${order.batch_id}`,
+        description: `Dispatch order #${id} rejected for batch #${order.batch_id}: ${remarks.slice(0, 1000)}`,
       });
-      return { message: 'Dispatch order rejected', status: 'REJECTED' };
+      return { message: 'Dispatch order rejected', status: 'REJECTED', remarks };
     });
     res.json(result);
   } catch (error) {
@@ -273,26 +355,26 @@ export async function reject(req: Request, res: Response): Promise<void> {
   }
 }
 
-export async function getPackingList(req: Request, res: Response): Promise<void> {
+type PackingListBuildResult =
+  | { ok: true; data: Record<string, any> }
+  | { ok: false; statusCode: number; error: string };
+
+async function buildPackingListData(req: Request): Promise<PackingListBuildResult> {
   const id = req.params.id;
-  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid dispatch order id' }); return; }
-  const ctx = await getContext();
-  const queryFilter: Record<string, any> = {
-    id,
-    status: 'APPROVED',
-    dispatched_at: { $ne: null },
-  };
-  if (req.user!.role !== 'ADMIN') {
-    queryFilter.raised_by = req.user!.userId;
+  if (!isValidId(id)) {
+    return { ok: false, statusCode: 400, error: 'Invalid dispatch order id' };
   }
-  const order = await ctx.findOne(
-    'dispatch_orders',
-    queryFilter,
-    { projection: { _id: 0 } }
-  );
+  const ctx = await getContext();
+  const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
   if (!order) {
-    res.status(404).json({ error: 'Dispatch order not found' });
-    return;
+    return { ok: false, statusCode: 404, error: 'Dispatch order not found' };
+  }
+  if (!PACKING_LIST_STATUSES.includes(String(order.status))) {
+    return {
+      ok: false,
+      statusCode: 409,
+      error: 'Packing list is only available for approved or dispatched orders',
+    };
   }
 
   const [batch, client, storedItems, dispatchRecord] = await Promise.all([
@@ -313,7 +395,9 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
   const [product, location, grade, vendor, bagQuantity, raisedBy, admin, dispatcher] = await Promise.all([
     batch ? ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } }) : null,
     batch && batch.shelf_location_id
-      ? ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1 } })
+      ? ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, {
+          projection: { _id: 0, location_code: 1, description: 1 },
+        })
       : null,
     batch?.grade_id
       ? ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } })
@@ -329,7 +413,7 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
       ? ctx.findOne('qc_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } })
       : order.admin_id
         ? ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } })
-      : null,
+        : null,
     dispatchRecord[0]
       ? ctx.findOne('dispatch_users', { id: dispatchRecord[0].dispatcher_id }, { projection: { _id: 0, name: 1 } })
       : null,
@@ -349,27 +433,64 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
         bag_quantity: bagQuantity?.quantity ?? null,
         bag_quantity_unit: bagQuantity?.unit ?? null,
         location: storageLocation || 'N/A',
+        location_code: location?.location_code ?? null,
+        location_description: location?.description ?? storageLocation ?? null,
       }];
 
-  res.json({
-    order_id: order.id,
-    status: order.status,
-    batch_number: batch?.batch_number ?? null,
-    barcode: batch?.barcode_value ?? null,
-    raised_by_name: raisedBy?.name ?? null,
-    approver_name: admin?.name ?? null,
-    admin_remarks: order.admin_remarks || null,
-    client: client || null,
-    client_name: client?.name ?? null,
-    driver_name: order.driver_name,
-    vehicle_number: order.vehicle_number,
-    container_number: order.container_number,
-    grade: grade?.name ?? product?.grade ?? null,
-    vendor_name: vendor?.name ?? null,
-    dispatched_by: dispatcher?.name ?? null,
-    location: storageLocation,
-    dispatched_at: order.dispatched_at || null,
-    items,
-    generated_at: new Date().toISOString(),
-  });
+  return {
+    ok: true,
+    data: {
+      order_id: order.id,
+      status: order.status,
+      batch_number: batch?.batch_number ?? null,
+      barcode: batch?.barcode_value ?? null,
+      raised_by_name: raisedBy?.name ?? null,
+      approver_name: admin?.name ?? null,
+      admin_remarks: order.admin_remarks || null,
+      remarks: order.remarks ?? order.admin_remarks ?? null,
+      client: client || null,
+      client_name: client?.name ?? null,
+      driver_name: order.driver_name,
+      vehicle_number: order.vehicle_number,
+      container_number: order.container_number,
+      seal_number: order.seal_number ?? null,
+      outcome: order.outcome
+        ?? (order.status === 'CLOSED_DISPATCHED' ? 'DISPATCHED'
+          : order.status === 'CLOSED_NOT_DISPATCHED' ? 'NOT_DISPATCHED' : null),
+      grade: grade?.name ?? product?.grade ?? null,
+      vendor_name: vendor?.name ?? null,
+      dispatched_by: dispatcher?.name ?? null,
+      location: storageLocation,
+      dispatched_at: order.dispatched_at || null,
+      items,
+      generated_at: new Date().toISOString(),
+    },
+  };
+}
+
+export async function getPackingList(req: Request, res: Response): Promise<void> {
+  const result = await buildPackingListData(req);
+  if (!result.ok) {
+    res.status(result.statusCode).json({ error: result.error });
+    return;
+  }
+  res.json(result.data);
+}
+
+export async function getPackingListPdf(req: Request, res: Response): Promise<void> {
+  const result = await buildPackingListData(req);
+  if (!result.ok) {
+    res.status(result.statusCode).json({ error: result.error });
+    return;
+  }
+  try {
+    const pdf = buildPackingListPdf(result.data);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="packing-list-${String(result.data.order_id)}.pdf"`);
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  } catch (error) {
+    console.error('Could not generate packing list PDF', error);
+    res.status(500).json({ error: 'Could not generate packing list PDF' });
+  }
 }

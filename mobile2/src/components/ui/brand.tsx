@@ -1,6 +1,7 @@
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useRole } from '@/context/role-context';
 import { AppText } from './app-text';
 
 export function BrandMark({ size = 50 }: { size?: number }) {
@@ -21,6 +22,7 @@ export function BrandMark({ size = 50 }: { size?: number }) {
 
 export function BrandHeader() {
   const insets = useSafeAreaInsets();
+  const { user } = useRole();
 
   return (
     <View
@@ -31,13 +33,16 @@ export function BrandHeader() {
         <AppText
           className="text-[16px] leading-[22px] text-white"
           style={{ fontFamily: 'Manrope_500Medium' }}>
-          KLJ Plasticizers{'\n'}Limited
+          KLJ Polymers &{'\n'}Chemicals Limited
         </AppText>
-        <AppText
-          className="text-[14px] leading-[18px] text-white ml-auto mt-auto"
-          style={{ fontFamily: 'Manrope_500Medium' }}>
-          Admin
-        </AppText>
+        {user?.role && (
+          <AppText
+            accessibilityLabel={`User role: ${user.role}`}
+            className="text-[14px] leading-[18px] text-(--color-primary) bg-white px-2 py-1 rounded-full ml-auto mt-auto shrink-0"
+            style={{ fontFamily: 'Manrope_500Medium' }}>
+            {user.role.toUpperCase()}
+          </AppText>
+        )}
       </View>
     </View>
   );

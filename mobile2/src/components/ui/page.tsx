@@ -16,8 +16,8 @@ export function PageHeading({ title, subtitle, className }: PageHeadingProps) {
     <View className={cx('', className)}>
       <AppText
         variant="display"
-        className="text-[30px] leading-[38px]"
-        style={{ fontFamily: 'Manrope_800ExtraBold' }}>
+        className="text-[30px] leading-[38px] font-extrabold"
+        style={{ fontFamily: 'Manrope_800ExtraBold', fontWeight: '800' }}>
         {title}
       </AppText>
       <AppText variant="body" className="mt-0.5 text-[11px] leading-[16px]">

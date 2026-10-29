@@ -71,6 +71,7 @@ async function seed() {
     batch_id INT NOT NULL,
     tester_id INT NOT NULL,
     result ENUM('PASS','FAIL') NOT NULL,
+    method VARCHAR(30) NULL,
     remarks TEXT,
     images JSON DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

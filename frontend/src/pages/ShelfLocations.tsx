@@ -15,9 +15,15 @@ export default function ShelfLocations() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    api.shelfLocations.list().then(setLocations).catch(err => setError(err.message || 'Could not load shelf locations'));
-  }, []);
+  const loadLocations = async () => {
+    try {
+      setLocations(await api.shelfLocations.list());
+    } catch (err: any) {
+      setError(err.message || 'Could not load shelf locations');
+    }
+  };
+
+  useEffect(() => { void loadLocations(); }, []);
 
   const resetForm = () => { setCode(''); setDesc(''); setWarehouse(''); setRack(''); setShelf(''); setError(''); setEditId(null); };
 
@@ -35,7 +41,7 @@ export default function ShelfLocations() {
         await api.shelfLocations.create({ location_code: code, description: desc, warehouse, rack, shelf });
       }
       setShowForm(false); resetForm();
-      api.shelfLocations.list().then(setLocations);
+      await loadLocations();
     } catch (err: any) { setError(err.message); }
   };
 
@@ -43,7 +49,7 @@ export default function ShelfLocations() {
     if (!window.confirm('Delete this location?')) return;
     try {
       await api.shelfLocations.delete(id);
-      api.shelfLocations.list().then(setLocations);
+      await loadLocations();
     } catch (err: any) { setError(err.message); }
   };
 
@@ -59,7 +65,7 @@ export default function ShelfLocations() {
         shelf: loc.shelf || '',
         is_active: next ? 1 : 0,
       });
-      api.shelfLocations.list().then(setLocations);
+      await loadLocations();
     } catch (err: any) {
       setError(err.message);
     }

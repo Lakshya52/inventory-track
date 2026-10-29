@@ -32,7 +32,7 @@ export function QuickLink({ icon, label, tone, onPress }: QuickLinkProps) {
         className={cx('h-[26px] w-[26px] rounded-[6px]', palette.icon)}
         size={13}
       />
-      <AppText variant="label" className="flex-1 text-[10px]" numberOfLines={1}>
+      <AppText variant="label" className="flex-1 text-[12px]" numberOfLines={1}>
         {label}
       </AppText>
       <ChevronRight size={12} color="#011A87" strokeWidth={2.2} />

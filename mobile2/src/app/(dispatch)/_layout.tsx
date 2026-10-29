@@ -13,7 +13,7 @@ export default function DispatchLayout() {
         <Tabs.Screen name="home" />
         <Tabs.Screen name="orders" />
         <Tabs.Screen name="scan-check" />
-        <Tabs.Screen name="reports" />
+        <Tabs.Screen name="history" />
         <Tabs.Screen name="settings" />
       </Tabs>
     </RoleGuard>

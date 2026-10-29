@@ -1,6 +1,9 @@
 export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
-export type BatchStatus = 'CREATED' | 'QC_PASSED' | 'QC_FAILED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'DISPATCH_REJECTED' | 'DISPATCHED';
-export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type BatchStatus = 'QC_PASSED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'LOADING' | 'DISPATCHED' | 'NOT_DISPATCHED';
+export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
+export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED';
+export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
+export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 export interface Product {
     id: string | number;
     name: string;
@@ -46,6 +49,10 @@ export interface QcRecord {
 export interface DispatchRecord {
     id: string | number;
     batch_id: string | number;
+    dispatch_order_id?: string | number | null;
+    session_id?: string | number | null;
+    /** Explicit binary outcome: 1 = dispatched, 0 = not dispatched. */
+    dispatched?: 0 | 1;
     dispatcher_id: string | number;
     remarks: string | null;
     created_at: string;
@@ -57,9 +64,16 @@ export interface DispatchOrder {
     status: DispatchOrderStatus;
     admin_id: string | number | null;
     admin_remarks: string | null;
+    approved_by_id?: string | number | null;
+    approved_by_role?: string | null;
+    approved_at?: string | null;
     client_id: string | number;
     driver_name: string;
     vehicle_number: string;
+    container_number?: string | null;
+    seal_number?: string | null;
+    outcome?: DispatchOutcome | null;
+    dispatched_at?: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -119,7 +133,7 @@ export interface JwtPayload {
     email: string;
     table: 'admins' | 'qc_users' | 'dispatch_users';
 }
-export type SyncOperationType = 'QC_SUBMIT' | 'QC_SUBMIT_BULK' | 'DISPATCH_ORDER_RAISE' | 'DISPATCH_CONFIRM' | 'DISPATCH_CONFIRM_BULK';
+export type SyncOperationType = 'QC_SUBMIT' | 'QC_SUBMIT_BULK' | 'DISPATCH_ORDER_RAISE' | 'DISPATCH_CONFIRM' | 'DISPATCH_CONFIRM_BULK' | 'BATCH_CREATE_AUTO_PASS' | 'QC_ORDER_APPROVE' | 'QC_ORDER_REJECT' | 'LOADING_SESSION_START' | 'LOADING_SESSION_SCAN' | 'LOADING_SESSION_FINALISE';
 export type SyncOperationStatus = 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'FAILED';
 export interface SyncOperationInput {
     operation_id: string;
@@ -138,6 +152,31 @@ export interface SyncOperationResult {
     /** Internal ownership fields, used to stop cross-user idempotency reuse. */
     user_id?: string | number;
     user_role?: string;
+}
+export interface LoadingSession {
+    id: string | number;
+    dispatch_order_id: string | number;
+    batch_id: string | number;
+    loader_id: string | number;
+    status: LoadingSessionStatus;
+    total: number;
+    scanned: number;
+    seal_number: string | null;
+    outcome: DispatchOutcome | null;
+    remarks: string | null;
+    started_at: string;
+    completed_at: string | null;
+    updated_at: string;
+}
+export interface LoadingScanEvent {
+    id: string | number;
+    session_id: string | number;
+    qr_value: string;
+    batch_id: string | number | null;
+    result: LoadingScanResult;
+    scanned_by: string | number;
+    scanned_at: string;
+    client_operation_id?: string | null;
 }
 export interface DeviceRegistration {
     device_uuid: string;

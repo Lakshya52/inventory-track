@@ -4,6 +4,7 @@ import { query, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
 import { applyOperation, SyncConflictError, SyncError } from '../services/syncService';
 import { SyncOperationInput } from '../types';
+import { buildPackingListPdf } from '../services/packingListPdf';
 
 function errorResponse(res: Response, error: unknown, fallback: string): void {
   if (error instanceof SyncError) {
@@ -161,7 +162,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
 
 export async function approve(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const { admin_remarks } = req.body;
+  const admin_remarks = req.body.admin_remarks ?? req.body.remarks;
   try {
     const result = await withTransaction(async (conn) => {
       const [orders] = await conn.execute<RowDataPacket[]>(
@@ -215,7 +216,7 @@ export async function approve(req: Request, res: Response): Promise<void> {
 
 export async function reject(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const { admin_remarks } = req.body;
+  const admin_remarks = req.body.admin_remarks ?? req.body.remarks;
   try {
     const result = await withTransaction(async (conn) => {
       const [orders] = await conn.execute<RowDataPacket[]>(
@@ -258,7 +259,11 @@ export async function reject(req: Request, res: Response): Promise<void> {
   }
 }
 
-export async function getPackingList(req: Request, res: Response): Promise<void> {
+type PackingListResult =
+  | { ok: true; data: Record<string, any> }
+  | { ok: false; statusCode: number; error: string };
+
+async function buildPackingListData(req: Request): Promise<PackingListResult> {
   const { id } = req.params;
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom,
@@ -282,12 +287,13 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
      LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
      LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
      LEFT JOIN clients c ON c.id = d.client_id
-     WHERE d.id = ? AND (? = 'ADMIN' OR d.raised_by = ?) AND d.status = 'APPROVED' AND d.dispatched_at IS NOT NULL`,
+     WHERE d.id = ?
+       AND d.status IN ('APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED')
+       AND (? <> 'DISPATCH' OR d.raised_by = ?)`,
     [id, req.user!.role, req.user!.userId]
   );
   if (orders.length === 0) {
-    res.status(404).json({ error: 'Dispatch order not found' });
-    return;
+    return { ok: false, statusCode: 404, error: 'Approved dispatch order not found' };
   }
   const order = orders[0];
   const storedItems = await query<RowDataPacket[]>(
@@ -309,27 +315,59 @@ export async function getPackingList(req: Request, res: Response): Promise<void>
         location: order.storage_location || 'N/A',
       }];
 
-  res.json({
-    order_id: order.id,
-    status: order.status,
-    batch_number: order.batch_number,
-    barcode: order.barcode_value,
-    raised_by_name: order.raised_by_name || null,
-    approver_name: order.approver_name || null,
-    admin_remarks: order.admin_remarks || null,
-    client: order.client_id ? await getClient(order.client_id) : null,
-    client_name: order.client_name || null,
-    driver_name: order.driver_name,
-    vehicle_number: order.vehicle_number,
-    container_number: order.container_number,
-    grade: order.grade,
-    vendor_name: order.vendor_name,
-    dispatched_by: order.dispatched_by || null,
-    location: order.storage_location || null,
-    dispatched_at: order.dispatched_at || null,
-    items,
-    generated_at: new Date().toISOString(),
-  });
+  return {
+    ok: true,
+    data: {
+      order_id: order.id,
+      status: order.status,
+      batch_number: order.batch_number,
+      barcode: order.barcode_value,
+      raised_by_name: order.raised_by_name || null,
+      approver_name: order.approver_name || null,
+      admin_remarks: order.admin_remarks || null,
+      client: order.client_id ? await getClient(order.client_id) : null,
+      client_name: order.client_name || null,
+      driver_name: order.driver_name,
+      vehicle_number: order.vehicle_number,
+      container_number: order.container_number,
+      seal_number: order.seal_number || null,
+      outcome: order.outcome || null,
+      grade: order.grade,
+      vendor_name: order.vendor_name,
+      dispatched_by: order.dispatched_by || null,
+      location: order.storage_location || null,
+      dispatched_at: order.dispatched_at || null,
+      items,
+      generated_at: new Date().toISOString(),
+    },
+  };
+}
+
+export async function getPackingList(req: Request, res: Response): Promise<void> {
+  const result = await buildPackingListData(req);
+  if (!result.ok) {
+    res.status(result.statusCode).json({ error: result.error });
+    return;
+  }
+  res.json(result.data);
+}
+
+export async function getPackingListPdf(req: Request, res: Response): Promise<void> {
+  const result = await buildPackingListData(req);
+  if (!result.ok) {
+    res.status(result.statusCode).json({ error: result.error });
+    return;
+  }
+  try {
+    const pdf = buildPackingListPdf(result.data);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="packing-list-${String(result.data.order_id)}.pdf"`);
+    res.setHeader('Content-Length', String(pdf.length));
+    res.end(pdf);
+  } catch (error) {
+    console.error('Could not generate packing list PDF', error);
+    res.status(500).json({ error: 'Could not generate packing list PDF' });
+  }
 }
 
 async function getClient(id: number): Promise<Record<string, unknown> | null> {

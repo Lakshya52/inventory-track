@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { getContext, isDuplicateKey, isValidId } from '../config/database';
+import { getContext, isDuplicateKey, isValidId, withTransaction } from '../config/database';
+import { equalsIgnoreCase } from '../services/queryService';
 
 type UserTypeInfo = { table: string; role: string };
 
@@ -9,6 +10,29 @@ const USER_TYPES: Record<string, UserTypeInfo> = {
   qc: { table: 'qc_users', role: 'QC' },
   dispatch: { table: 'dispatch_users', role: 'DISPATCH' },
 };
+
+async function emailExists(email: string, exclude?: { table: string; id: string }): Promise<boolean> {
+  const ctx = await getContext();
+  for (const info of Object.values(USER_TYPES)) {
+    const rows = await ctx.find(info.table, {
+      email: equalsIgnoreCase(email),
+      $nor: [{ email: /^__role_archive_/i }],
+    }, {
+      projection: { _id: 0, id: 1 },
+    });
+    if (rows.some(row => exclude?.table !== info.table || String(row.id) !== exclude.id)) return true;
+  }
+  return false;
+}
+
+function archiveEmail(role: string, id: string): string {
+  return `__role_archive_${role.toLowerCase()}_${id}_${Date.now()}@invalid.local`;
+}
+
+function validUserDetails(name: unknown, email: unknown): name is string {
+  return typeof name === 'string' && name.trim().length > 0 &&
+    typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
 
 function normalizeType(value: string | undefined): UserTypeInfo | null {
   if (!value) return null;
@@ -46,7 +70,7 @@ export async function listAllUsers(_req: Request, res: Response): Promise<void> 
   const ctx = await getContext();
   const results = await Promise.all(
     Object.values(USER_TYPES).map(async info => {
-      const rows = await ctx.find(info.table, {}, {
+      const rows = await ctx.find(info.table, { email: { $not: /^__role_archive_/i } }, {
         sort: { created_at: -1 },
         projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1 },
       });
@@ -66,7 +90,7 @@ export async function listUsers(req: Request, res: Response): Promise<void> {
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
   const ctx = await getContext();
-  const users = await ctx.find(info.table, {}, {
+  const users = await ctx.find(info.table, { email: { $not: /^__role_archive_/i } }, {
     sort: { created_at: -1 },
     projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1 },
   });
@@ -78,8 +102,8 @@ export async function addUser(req: Request, res: Response): Promise<void> {
   if (!info) { res.status(400).json({ error: 'A valid role is required' }); return; }
 
   const { name, email, password } = req.body;
-  if (!name || !email || !password) {
-    res.status(400).json({ error: 'Name, email, and password are required' });
+  if (!validUserDetails(name, email) || typeof password !== 'string' || !password) {
+    res.status(400).json({ error: 'A valid name, email, and password are required' });
     return;
   }
   if (String(password).length < 6) {
@@ -89,10 +113,15 @@ export async function addUser(req: Request, res: Response): Promise<void> {
 
   const ctx = await getContext();
   try {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (await emailExists(normalizedEmail)) {
+      res.status(400).json({ error: 'Email already exists' });
+      return;
+    }
     const hash = await bcrypt.hash(password, 10);
     const id = await ctx.insert(info.table, {
       name: name.trim(),
-      email: email.trim().toLowerCase(),
+      email: normalizedEmail,
       password_hash: hash,
       is_active: 1,
     });
@@ -114,19 +143,60 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid user id' }); return; }
   const { name, email } = req.body;
-  if (!name || !email) {
-    res.status(400).json({ error: 'Name and email are required' });
+  const targetInfo = req.body.role === undefined ? info : normalizeRole(req.body.role);
+  if (!targetInfo) { res.status(400).json({ error: 'A valid role is required' }); return; }
+  if (!validUserDetails(name, email)) {
+    res.status(400).json({ error: 'A valid name and email are required' });
     return;
   }
 
-  const ctx = await getContext();
+  const isSelf = info.role === req.user?.role && String(id) === String(req.user?.userId);
+  if (isSelf && targetInfo.role !== info.role) {
+    res.status(400).json({ error: 'You cannot change your own role' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  if (await emailExists(normalizedEmail, { table: info.table, id })) {
+    res.status(400).json({ error: 'Email already exists' });
+    return;
+  }
+
   try {
-    const result = await ctx.updateOne(info.table, { id }, {
-      $set: { name: name.trim(), email: email.trim().toLowerCase() },
-    });
-    if (result.matchedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
-    await logActivity(req, 'USER_UPDATED', `${info.role} user "${name}" (${email}) updated`);
-    res.json({ message: 'User updated' });
+    if (targetInfo.table === info.table) {
+      const ctx = await getContext();
+      const result = await ctx.updateOne(info.table, { id }, {
+        $set: { name: name.trim(), email: normalizedEmail },
+      });
+      if (result.matchedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
+    } else {
+      const result = await withTransaction(async ctx => {
+        const source = await ctx.findOne(info.table, { id });
+        if (!source) return null;
+        const targetId = await ctx.insert(targetInfo.table, {
+          name: name.trim(),
+          email: normalizedEmail,
+          password_hash: source.password_hash,
+          is_active: Number(source.is_active) === 1 ? 1 : 0,
+          created_at: source.created_at,
+        });
+        const archived = await ctx.updateOne(info.table, { id }, {
+          $set: { email: archiveEmail(info.role, id), is_active: 0 },
+        });
+        if (archived.matchedCount === 0) throw new Error('User role migration could not be completed');
+        await ctx.updateMany('refresh_tokens', {
+          user_id: id,
+          user_role: info.role,
+          user_table: info.table,
+          revoked_at: null,
+        }, { $set: { revoked_at: new Date() } });
+        return targetId;
+      });
+      if (result === null) { res.status(404).json({ error: 'User not found' }); return; }
+    }
+    await logActivity(req, targetInfo.role === info.role ? 'USER_UPDATED' : 'USER_ROLE_CHANGED',
+      `${info.role} user "${name}" (${email}) ${targetInfo.role === info.role ? 'updated' : `changed to ${targetInfo.role}`}`);
+    res.json({ message: 'User updated', role: targetInfo.role });
   } catch (err: any) {
     if (isDuplicateKey(err)) {
       res.status(400).json({ error: 'Email already exists' });

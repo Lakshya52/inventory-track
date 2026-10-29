@@ -83,8 +83,9 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
        (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'REJECTED') AS request_rejected,
        (SELECT COUNT(*) FROM shelf_locations) AS total_locations,
        (SELECT COUNT(*) FROM shelf_locations WHERE is_active = 1) AS active_locations,
-       (SELECT COUNT(*) FROM admins) + (SELECT COUNT(*) FROM qc_users) +
-         (SELECT COUNT(*) FROM dispatch_users) AS total_users,
+       (SELECT COUNT(*) FROM admins WHERE LEFT(email, 15) <> '__role_archive_') +
+         (SELECT COUNT(*) FROM qc_users WHERE LEFT(email, 15) <> '__role_archive_') +
+         (SELECT COUNT(*) FROM dispatch_users WHERE LEFT(email, 15) <> '__role_archive_') AS total_users,
        (SELECT COUNT(*) FROM admins WHERE is_active = 1) +
          (SELECT COUNT(*) FROM qc_users WHERE is_active = 1) +
          (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1) AS active_users`

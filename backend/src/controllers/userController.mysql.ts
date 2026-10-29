@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { query, execute } from '../config/database';
-import { RowDataPacket } from 'mysql2';
+import { withTransaction } from '../config/database.mysql';
+import { ResultSetHeader, RowDataPacket } from 'mysql2';
 
 type UserTypeInfo = { table: string; role: string };
 
@@ -10,6 +11,32 @@ const USER_TYPES: Record<string, UserTypeInfo> = {
   qc: { table: 'qc_users', role: 'QC' },
   dispatch: { table: 'dispatch_users', role: 'DISPATCH' },
 };
+
+const USER_TABLES = Object.values(USER_TYPES);
+
+async function emailExists(email: string, exclude?: { table: string; id: string }): Promise<boolean> {
+  for (const info of USER_TABLES) {
+    const params: unknown[] = [email];
+    let sql = `SELECT id FROM ${info.table} WHERE LEFT(email, 15) <> '__role_archive_' AND LOWER(email) = LOWER(?)`;
+    if (exclude?.table === info.table) {
+      sql += ' AND id <> ?';
+      params.push(exclude.id);
+    }
+    sql += ' LIMIT 1';
+    const rows = await query<RowDataPacket[]>(sql, params);
+    if (rows.length > 0) return true;
+  }
+  return false;
+}
+
+function archiveEmail(role: string, id: string): string {
+  return `__role_archive_${role.toLowerCase()}_${id}_${Date.now()}@invalid.local`;
+}
+
+function validUserDetails(name: unknown, email: unknown): name is string {
+  return typeof name === 'string' && name.trim().length > 0 &&
+    typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
 
 function normalizeType(value: string | undefined): UserTypeInfo | null {
   if (!value) return null;
@@ -44,7 +71,7 @@ export async function listAllUsers(_req: Request, res: Response): Promise<void> 
   const results = await Promise.all(
     Object.values(USER_TYPES).map(async info => {
       const rows = await query<RowDataPacket[]>(
-        `SELECT id, name, email, is_active, created_at FROM ${info.table} ORDER BY created_at DESC`
+        `SELECT id, name, email, is_active, created_at FROM ${info.table} WHERE LEFT(email, 15) <> '__role_archive_' ORDER BY created_at DESC`
       );
       return rows.map(row => publicUser(row, info.role));
     })
@@ -62,7 +89,7 @@ export async function listUsers(req: Request, res: Response): Promise<void> {
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
   const users = await query<RowDataPacket[]>(
-    `SELECT id, name, email, is_active, created_at FROM ${info.table} ORDER BY created_at DESC`
+    `SELECT id, name, email, is_active, created_at FROM ${info.table} WHERE LEFT(email, 15) <> '__role_archive_' ORDER BY created_at DESC`
   );
   res.json(users.map(row => publicUser(row, info.role)));
 }
@@ -72,8 +99,8 @@ export async function addUser(req: Request, res: Response): Promise<void> {
   if (!info) { res.status(400).json({ error: 'A valid role is required' }); return; }
 
   const { name, email, password } = req.body;
-  if (!name || !email || !password) {
-    res.status(400).json({ error: 'Name, email, and password are required' });
+  if (!validUserDetails(name, email) || typeof password !== 'string' || !password) {
+    res.status(400).json({ error: 'A valid name, email, and password are required' });
     return;
   }
   if (String(password).length < 6) {
@@ -82,10 +109,15 @@ export async function addUser(req: Request, res: Response): Promise<void> {
   }
 
   try {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (await emailExists(normalizedEmail)) {
+      res.status(400).json({ error: 'Email already exists' });
+      return;
+    }
     const hash = await bcrypt.hash(password, 10);
     const result = await execute(
       `INSERT INTO ${info.table} (name, email, password_hash, is_active) VALUES (?, ?, ?, 1)`,
-      [name.trim(), email.trim().toLowerCase(), hash]
+      [name.trim(), normalizedEmail, hash]
     );
     await logActivity(req, 'USER_CREATED', `${info.role} user "${name}" (${email}) created`);
     res.status(201).json({ id: result.insertId, name, email, role: info.role, is_active: 1 });
@@ -104,19 +136,61 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
 
   const { id } = req.params;
   const { name, email } = req.body;
-  if (!name || !email) {
-    res.status(400).json({ error: 'Name and email are required' });
+  const targetInfo = req.body.role === undefined ? info : normalizeRole(req.body.role);
+  if (!targetInfo) { res.status(400).json({ error: 'A valid role is required' }); return; }
+  if (!validUserDetails(name, email)) {
+    res.status(400).json({ error: 'A valid name and email are required' });
+    return;
+  }
+
+  const isSelf = info.role === req.user?.role && String(id) === String(req.user?.userId);
+  if (isSelf && targetInfo.role !== info.role) {
+    res.status(400).json({ error: 'You cannot change your own role' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  if (await emailExists(normalizedEmail, { table: info.table, id })) {
+    res.status(400).json({ error: 'Email already exists' });
     return;
   }
 
   try {
-    const result = await execute(
-      `UPDATE ${info.table} SET name = ?, email = ? WHERE id = ?`,
-      [name.trim(), email.trim().toLowerCase(), id]
-    );
-    if (result.affectedRows === 0) { res.status(404).json({ error: 'User not found' }); return; }
-    await logActivity(req, 'USER_UPDATED', `${info.role} user "${name}" (${email}) updated`);
-    res.json({ message: 'User updated' });
+    if (targetInfo.table === info.table) {
+      const result = await execute(
+        `UPDATE ${info.table} SET name = ?, email = ? WHERE id = ?`,
+        [name.trim(), normalizedEmail, id]
+      );
+      if (result.affectedRows === 0) {
+        const rows = await query<RowDataPacket[]>(`SELECT id FROM ${info.table} WHERE id = ? LIMIT 1`, [id]);
+        if (rows.length === 0) { res.status(404).json({ error: 'User not found' }); return; }
+      }
+    } else {
+      const targetId = await withTransaction(async conn => {
+        const [rows] = await conn.execute<RowDataPacket[]>(
+          `SELECT id, password_hash, is_active, created_at FROM ${info.table} WHERE id = ? FOR UPDATE`, [id]
+        );
+        if (rows.length === 0) return null;
+        const source = rows[0];
+        const [inserted] = await conn.execute<ResultSetHeader>(
+          `INSERT INTO ${targetInfo.table} (name, email, password_hash, is_active, created_at) VALUES (?, ?, ?, ?, ?)`,
+          [name.trim(), normalizedEmail, source.password_hash, Number(source.is_active) === 1 ? 1 : 0, source.created_at]
+        );
+        await conn.execute(
+          `UPDATE ${info.table} SET email = ?, is_active = 0 WHERE id = ?`,
+          [archiveEmail(info.role, id), id]
+        );
+        await conn.execute(
+          'UPDATE refresh_tokens SET revoked_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND user_role = ? AND user_table = ? AND revoked_at IS NULL',
+          [id, info.role, info.table]
+        );
+        return inserted.insertId;
+      });
+      if (targetId === null) { res.status(404).json({ error: 'User not found' }); return; }
+    }
+    await logActivity(req, targetInfo.role === info.role ? 'USER_UPDATED' : 'USER_ROLE_CHANGED',
+      `${info.role} user "${name}" (${email}) ${targetInfo.role === info.role ? 'updated' : `changed to ${targetInfo.role}`}`);
+    res.json({ message: 'User updated', role: targetInfo.role });
   } catch (err: any) {
     if (err.code === 'ER_DUP_ENTRY') {
       res.status(400).json({ error: 'Email already exists' });

@@ -8,7 +8,10 @@ import {
 	Scale,
 	FileClock,
 } from "lucide-react-native";
-import { Alert, Modal, Pressable, ScrollView, View } from "react-native";
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, View } from "react-native";
+import * as FileSystem from "expo-file-system";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 
 import DateTimePicker, {
 	DateTimePickerEvent,
@@ -26,8 +29,9 @@ import { Screen } from "@/components/ui/screen";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { reportActivities } from "@/data/mock";
+import { reportsApi, type AdminReportData, type ReportRow } from "@/services/reports";
 import type { ReportKind, ReportPeriod, ReportScope } from "@/types";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const periods = ["Monthly", "Weekly", "Yearly", "Custom"] as const;
 
@@ -55,6 +59,12 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 		new Date(new Date().getFullYear(), new Date().getMonth(), 1),
 	);
 	const [monthPickerYear, setMonthPickerYear] = useState(new Date().getFullYear());
+	const [reportData, setReportData] = useState<AdminReportData | null>(null);
+	const [reportError, setReportError] = useState("");
+	const [reportErrorKey, setReportErrorKey] = useState("");
+	const [loadedReportKey, setLoadedReportKey] = useState("");
+	const [exporting, setExporting] = useState(false);
+	const customRangeIncomplete = period === "Custom" && (!startDate || !endDate);
 
 	const kindOptions = useMemo(() => {
 		const all = [
@@ -68,9 +78,69 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 		return all;
 	}, [scope]);
 
-	const activities = reportActivities.slice(0, visibleActivities);
+	const dateRange = useMemo(() => {
+		const dateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+		if (period === "Custom") {
+			return startDate && endDate ? { from: dateKey(startDate), to: dateKey(endDate) } : undefined;
+		}
+		if (period === "Monthly") {
+			return {
+				from: dateKey(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1)),
+				to: dateKey(new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0)),
+			};
+		}
+		if (period === "Weekly") {
+			const from = getWeekStart(selectedDate);
+			const to = new Date(from);
+			to.setDate(to.getDate() + 6);
+			return { from: dateKey(from), to: dateKey(to) };
+		}
+		return {
+			from: `${selectedDate.getFullYear()}-01-01`,
+			to: `${selectedDate.getFullYear()}-12-31`,
+		};
+	}, [period, selectedDate, startDate, endDate]);
+	const reportKey = `${period}:${dateRange?.from ?? ""}:${dateRange?.to ?? ""}`;
+	const displayedReportError = customRangeIncomplete
+		? "Select both dates to load a custom-range report."
+		: reportErrorKey === reportKey ? reportError : "";
+	const displayedReportLoading = scope === "admin" && !customRangeIncomplete && !displayedReportError && loadedReportKey !== reportKey;
+	const displayedReportData = customRangeIncomplete || loadedReportKey !== reportKey ? null : reportData;
 
-	const download = () => {
+	useEffect(() => {
+		if (scope !== "admin") return;
+		if (customRangeIncomplete) return;
+		let cancelled = false;
+		reportsApi.loadAdminReport(dateRange)
+			.then((data) => { if (!cancelled) { setReportData(data); setLoadedReportKey(reportKey); setReportError(""); setReportErrorKey(""); } })
+			.catch((error) => { if (!cancelled) { setReportData(null); setLoadedReportKey(reportKey); setReportError(error instanceof Error ? error.message : "Could not load reports."); setReportErrorKey(reportKey); } });
+		return () => { cancelled = true; };
+	}, [scope, customRangeIncomplete, dateRange, reportKey]);
+
+	const qcActivities = useMemo(() => (displayedReportData?.qc ?? []).map((row, index) => ({
+		id: String(row.id ?? index),
+		batch: String(row.batch_number ?? row.batch_id ?? "—"),
+		markedBy: String(row.tester_name ?? "QC"),
+		email: "",
+		product: String(row.product_name ?? "Product"),
+		sku: String(row.product_sku ?? "—"),
+		quantity: Number(row.quantity ?? 0),
+		date: row.created_at ? new Date(String(row.created_at)).toLocaleDateString("en-IN") : "—",
+		status: "passed" as const,
+	})), [displayedReportData]);
+	const activities = (scope === "admin" ? qcActivities : reportActivities).slice(0, visibleActivities);
+	const passedCount = scope === "admin" ? qcActivities.length : 0;
+	const dispatchRows = displayedReportData?.dispatch ?? [];
+	const dispatchedRows = dispatchRows.filter((row) => Number(row.dispatched) === 1 || row.outcome === "DISPATCHED");
+	const dispatchQuantity = dispatchedRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
+	const clientCount = new Set(dispatchedRows.map((row) => String(row.client_name ?? "").trim()).filter(Boolean)).size;
+	const pendingRequests = (displayedReportData?.requests ?? []).filter((row) => row.status === "PENDING").length;
+
+	const download = async () => {
+		if (scope === "admin" && (!displayedReportData || customRangeIncomplete)) {
+			Alert.alert("Report unavailable", displayedReportError || "Wait for the report data to finish loading.");
+			return;
+		}
 		let selectedPeriod: string;
 
 		if (period === "Custom") {
@@ -89,10 +159,35 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 			selectedPeriod = String(selectedDate.getFullYear());
 		}
 
-		Alert.alert(
-			"Report ready",
-			`${exportFormat} report has been generated for ${selectedPeriod}.`,
-		);
+		if (scope !== "admin" || !reportData) {
+			Alert.alert("Report unavailable", "Live report data is available to Admin users.");
+			return;
+		}
+		setExporting(true);
+		try {
+			const rows = reportRows(kind, displayedReportData!);
+			const filename = `${kind}-report-${dateRange?.from ?? "all"}-${dateRange?.to ?? "time"}`;
+			if (exportFormat === "PDF") {
+				const html = buildReportHtml(kind, selectedPeriod, rows);
+				const { base64 } = await Print.printToFileAsync({ html, base64: true });
+				if (!base64) throw new Error("The PDF was created without readable file data.");
+				const shareablePdf = new FileSystem.File(FileSystem.Paths.cache, `${filename}-${Date.now()}.pdf`);
+				await shareablePdf.write(base64, { encoding: "base64" });
+				if (!shareablePdf.exists || !shareablePdf.size) throw new Error("The PDF was created but could not be prepared for sharing.");
+				await Sharing.shareAsync(shareablePdf.uri, { UTI: ".pdf", mimeType: "application/pdf", dialogTitle: `${kind} report` });
+			} else {
+				const contents = exportFormat === "CSV" ? toCsv(rows) : toExcelXml(rows);
+				const extension = exportFormat === "CSV" ? "csv" : "xls";
+				const mimeType = exportFormat === "CSV" ? "text/csv" : "application/vnd.ms-excel";
+				const file = new FileSystem.File(FileSystem.Paths.cache, `${filename}.${extension}`);
+				await file.write(contents);
+				await Sharing.shareAsync(file.uri, { mimeType, dialogTitle: `${kind} report` });
+			}
+		} catch (error) {
+			Alert.alert("Export failed", error instanceof Error ? error.message : "Could not create this report file.");
+		} finally {
+			setExporting(false);
+		}
 	};
 
 
@@ -109,6 +204,8 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 						title="Reports & Analysis"
 						subtitle="Review QC check, dispatch, dispatch request, product and inventory record."
 					/>
+					{scope === "admin" && displayedReportLoading ? <View className="mt-4 flex-row items-center gap-2"><ActivityIndicator color="#011A87" /><AppText className="text-[12px] text-[#5B6980]">Loading live report data…</AppText></View> : null}
+					{scope === "admin" && displayedReportError ? <AppText className="mt-4 rounded-xl bg-[#FFF2F3] p-3 text-[12px] text-[#B42332]">{displayedReportError}</AppText> : null}
 
 					<SectionLabel className="mt-6">
 						Select Report Type
@@ -187,13 +284,13 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 								className="mt-8 text-center text-[12px]"
 								style={{ fontFamily: "Manrope_600SemiBold" }}
 							>
-								{period == "Custom"
+								{period === "Custom"
 									? "Custom Selected "
 									: period}{" "}
 								Quality Control Overview
 							</AppText>
 
-							<QualityChart />
+							<QualityChart passed={passedCount} failed={0} />
 
 							<SectionLabel className="mt-[52px]">
 								Export Reports
@@ -227,6 +324,7 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 
 							<Pressable
 								accessibilityRole="button"
+				disabled={exporting || (scope === "admin" && (displayedReportLoading || !reportData || customRangeIncomplete))}
 								onPress={download}
 								className="mt-8 h-[63px] flex-row items-center justify-center gap-2 rounded-[10px] bg-[#AFE2F9]"
 								style={({ pressed }) =>
@@ -242,7 +340,7 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 									className="text-[18px] text-navy"
 									style={{ fontFamily: "Manrope_700Bold" }}
 								>
-									Download {exportFormat} Report
+									{exporting ? "Preparing" : `Download ${exportFormat} Report`}
 								</AppText>
 							</Pressable>
 
@@ -251,6 +349,7 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 							</SectionLabel>
 
 							<View className="mt-3 gap-[13px]">
+								{scope === "admin" && !displayedReportLoading && !displayedReportError && activities.length === 0 ? <AppText className="rounded-xl border border-dashed border-[#C7D6EA] bg-white p-4 text-center text-[12px] text-[#68758A]">No QC records in this date range.</AppText> : null}
 								{activities.map((activity, index) => (
 									<ActivityCard
 										key={activity.id}
@@ -260,14 +359,14 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 								))}
 							</View>
 
-							{visibleActivities < reportActivities.length ? (
+							{visibleActivities < (scope === "admin" ? qcActivities.length : reportActivities.length) ? (
 								<Pressable
 									accessibilityRole="button"
 									onPress={() =>
 										setVisibleActivities((count) =>
 											Math.min(
 												count + 4,
-												reportActivities.length,
+												scope === "admin" ? qcActivities.length : reportActivities.length,
 											),
 										)
 									}
@@ -292,7 +391,7 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 								className="mt-8 text-center text-[12px]"
 								style={{ fontFamily: "Manrope_600SemiBold" }}
 							>
-								{period == "Custom"
+								{period === "Custom"
 									? "Custom Selected "
 									: period}{" "}
 								Dispatch Reports Overview
@@ -301,30 +400,37 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 							<View className="mt-4 flex-row flex-wrap justify-between gap-y-[9px]">
 								<StatCard
 									icon={Package}
-									value="1200"
-									label="Total Dispatches"
+									value={String(dispatchRows.length)}
+									label="Dispatch Records"
 									tone="mint"
 									className="w-[48.2%]"
 								/>
 								<StatCard
 									icon={Users}
-									value="120"
+									value={String(clientCount)}
 									label="Clients"
 									tone="blue"
 									className="w-[48.2%]"
 								/>
 								<StatCard
 									icon={Scale}
-									value="800 kg"
-									label="Quantity Dispatched"
+									value={String(dispatchQuantity)}
+									label="Dispatched Quantity"
 									tone="purple"
 									className="w-[48.2%]"
 								/>
 								<StatCard
 									icon={FileClock}
-									value="5"
+									value={String(pendingRequests)}
 									label="Pending Dispatch Requests"
 									tone="peach"
+									className="w-[48.2%]"
+								/>
+								<StatCard
+									icon={Package}
+									value={String(displayedReportData?.inventory.length ?? 0)}
+									label="Products in Inventory"
+									tone="mint"
 									className="w-[48.2%]"
 								/>
 							</View>
@@ -361,6 +467,7 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 
 							<Pressable
 								accessibilityRole="button"
+				disabled={exporting || (scope === "admin" && (displayedReportLoading || !reportData || customRangeIncomplete))}
 								onPress={download}
 								className="mt-8 h-[63px] flex-row items-center justify-center gap-2 rounded-[10px] bg-[#AFE2F9]"
 								style={({ pressed }) =>
@@ -376,7 +483,7 @@ export function ReportsScreen({ scope }: ReportsScreenProps) {
 									className="text-[18px] text-navy"
 									style={{ fontFamily: "Manrope_700Bold" }}
 								>
-									Download {exportFormat} Report
+									{exporting ? "Preparing" : `Download ${exportFormat} Report`}
 								</AppText>
 							</Pressable>
 						</>
@@ -502,10 +609,66 @@ function getWeekStart(date: Date) {
 	return result;
 }
 
-function QualityChart() {
+function reportRows(kind: ReportKind, data: AdminReportData): ReportRow[] {
+	if (kind === "quality") {
+		return [
+			...data.qc.map((row) => ({ report_type: "QC Record", ...row })),
+			...data.batches.map((row) => ({ report_type: "Batch", ...row })),
+		];
+	}
+	return [
+		...data.dispatch.map((row) => ({ report_type: "Dispatch", ...row })),
+		...data.requests.map((row) => ({ report_type: "Dispatch Request", ...row })),
+		...data.inventory.map((row) => ({ report_type: "Current Inventory", ...row })),
+	];
+}
+
+function cellText(value: unknown): string {
+	if (value === null || value === undefined) return "";
+	if (typeof value === "object") return JSON.stringify(value);
+	return String(value);
+}
+
+function escapeCsv(value: unknown): string {
+	return `"${cellText(value).replaceAll('"', '""')}"`;
+}
+
+function toCsv(rows: ReportRow[]): string {
+	const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+	if (columns.length === 0) return "No records for the selected period.\r\n";
+	return [columns.map(escapeCsv).join(","), ...rows.map((row) => columns.map((key) => escapeCsv(row[key])).join(","))].join("\r\n");
+}
+
+function escapeXml(value: unknown): string {
+	return cellText(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+}
+
+function toExcelXml(rows: ReportRow[]): string {
+	const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+	const tableRows = columns.length === 0
+		? "<Row><Cell><Data ss:Type=\"String\">No records for the selected period.</Data></Cell></Row>"
+		: [columns, ...rows.map((row) => columns.map((key) => row[key]))].map((values) =>
+			`<Row>${values.map((value) => {
+				const type = typeof value === "number" ? "Number" : "String";
+				return `<Cell><Data ss:Type="${type}">${escapeXml(value)}</Data></Cell>`;
+			}).join("")}</Row>`
+		).join("");
+	return `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Report"><Table>${tableRows}</Table></Worksheet></Workbook>`;
+}
+
+function buildReportHtml(kind: ReportKind, selectedPeriod: string, rows: ReportRow[]): string {
+	const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+	const headers = columns.map((key) => `<th>${escapeXml(key.replaceAll("_", " "))}</th>`).join("");
+	const body = rows.map((row) => `<tr>${columns.map((key) => `<td>${escapeXml(row[key])}</td>`).join("")}</tr>`).join("");
+	return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:12px Arial,sans-serif;color:#172033;padding:24px}h1{color:#011A87;font-size:20px}p{color:#526078}table{border-collapse:collapse;width:100%;font-size:10px}th,td{border:1px solid #d6deea;padding:6px;text-align:left;word-break:break-word}th{background:#eef4ff}tr:nth-child(even){background:#f8fafc}</style></head><body><h1>${kind === "quality" ? "Quality Control" : "Dispatch"} Report</h1><p>Period: ${escapeXml(selectedPeriod)} · Records: ${rows.length}</p><table><thead><tr>${headers}</tr></thead><tbody>${body || `<tr><td colspan="${Math.max(columns.length, 1)}">No records for the selected period.</td></tr>`}</tbody></table></body></html>`;
+}
+
+function QualityChart({ passed, failed }: { passed: number; failed: number }) {
+	const max = Math.max(1, passed, failed);
+	const axisLabels = [max, Math.round(max * 0.75), Math.round(max * 0.5), Math.round(max * 0.25), 0];
 	const bars = [
-		{ label: "QC Passed", height: 168, color: "#00FF11" },
-		{ label: "QC Failed", height: 69, color: "#FF0000" },
+		{ label: `QC Passed · ${passed}`, height: Math.max(8, Math.round((passed / max) * 168)), color: "#19A96B" },
+		{ label: `QC Failed · ${failed}`, height: Math.max(8, Math.round((failed / max) * 168)), color: "#E5484D" },
 	];
 
 	return (
@@ -514,9 +677,9 @@ function QualityChart() {
 				className="w-10 justify-between items-end pr-2"
 				style={{ height: 207 }}
 			>
-				{[70, 60, 50, 40, 30, 20, 10].map((value) => (
+				{axisLabels.map((value, index) => (
 					<AppText
-						key={value}
+						key={`${value}-${index}`}
 						variant="tiny"
 						className="text-[9px] leading-[11px]"
 					>
@@ -643,7 +806,7 @@ function ActivityCard({ index, activity }: ActivityCardProps) {
 					className="mt-1 text-[10px] leading-[15px] text-navy"
 					style={{ fontFamily: "Manrope_600SemiBold" }}
 				>
-					Marked by : {activity.markedBy}, Email : {activity.email}
+					Marked by : {activity.markedBy}{activity.email ? `, Email : ${activity.email}` : ""}
 				</AppText>
 				<AppText
 					className="text-[10px] leading-[15px] text-navy"

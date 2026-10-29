@@ -1,21 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../services/api';
+import type { EntityId } from '../types';
 import {
   Microscope, CheckCircle, XCircle, Clock, TrendingUp, RefreshCw, Search,
   ChevronLeft, ChevronRight, ArrowRight, Image as ImageIcon, AlertTriangle, QrCode,
-  Tags,
+  Tags, Plus,
 } from 'lucide-react';
 
 type PageData = { items: any[]; total: number; page: number; limit: number; pages: number };
-
-function formatAge(minutes: number | string | null | undefined): string {
-  const value = Number(minutes || 0);
-  if (value < 60) return `${value}m`;
-  const hours = Math.floor(value / 60);
-  const mins = value % 60;
-  return `${hours}h ${mins}m`;
-}
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return '-';
@@ -40,54 +33,79 @@ function Pagination({ page, pages, onChange }: { page: number; pages: number; on
 }
 
 export default function QCDashboard() {
-  const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
-  const [pending, setPending] = useState<PageData | null>(null);
+  const [pending, setPending] = useState<any[]>([]);
   const [records, setRecords] = useState<PageData | null>(null);
   const [pendingQuery, setPendingQuery] = useState('');
   const [recordQuery, setRecordQuery] = useState('');
-  const [resultFilter, setResultFilter] = useState('');
-  const [pendingPage, setPendingPage] = useState(1);
   const [recordPage, setRecordPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [messageKind, setMessageKind] = useState<'success' | 'error'>('success');
+  const [selectedOrder, setSelectedOrder] = useState<any>(null);
+  const [remarks, setRemarks] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
+  const pendingRequest = useRef(0);
+  const recordsRequest = useRef(0);
 
   const loadStats = useCallback(async () => {
     const data = await api.qc.stats();
     setStats(data);
   }, []);
 
-  const loadPending = useCallback(async (page = 1, q = pendingQuery) => {
-    const data = await api.qc.pending({ page, limit: 8, q });
-    setPending(data);
-    setPendingPage(data.page);
-  }, [pendingQuery]);
+  const loadPending = useCallback(async (q = '') => {
+    const requestId = ++pendingRequest.current;
+    setPendingLoading(true);
+    try {
+      const data = await api.dispatchOrders.pending({ q: q || undefined });
+      if (requestId === pendingRequest.current) setPending(data);
+    } catch (error) {
+      if (requestId === pendingRequest.current) throw error;
+    } finally {
+      if (requestId === pendingRequest.current) setPendingLoading(false);
+    }
+  }, []);
 
-  const loadRecords = useCallback(async (page = 1, q = recordQuery, result = resultFilter) => {
-    const data = await api.qc.records({ page, limit: 8, q, result: result || undefined, scope: 'mine' });
-    setRecords(data);
-    setRecordPage(data.page);
-  }, [recordQuery, resultFilter]);
+  const loadRecords = useCallback(async (page = 1, q = recordQuery) => {
+    const requestId = ++recordsRequest.current;
+    setRecordsLoading(true);
+    try {
+      const data = await api.qc.records({ page, limit: 8, q, result: 'PASS', scope: 'mine' });
+      if (requestId === recordsRequest.current) {
+        setRecords(data);
+        setRecordPage(data.page);
+      }
+    } catch (error) {
+      if (requestId === recordsRequest.current) throw error;
+    } finally {
+      if (requestId === recordsRequest.current) setRecordsLoading(false);
+    }
+  }, [recordQuery]);
 
   const loadAll = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
     setError('');
     try {
-      await Promise.all([loadStats(), loadPending(pendingPage), loadRecords(recordPage)]);
-    } catch (err: any) {
-      setError(err.message || 'Could not load the QC dashboard');
+      const results = await Promise.allSettled([loadStats(), loadPending(pendingQuery), loadRecords(recordPage)]);
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failures.length) {
+        setError(failures.map((failure) => failure.reason?.message || 'Could not load a QC dashboard section').join(' '));
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [loadStats, loadPending, loadRecords, pendingPage, recordPage]);
+  }, [loadStats, loadPending, loadRecords, pendingQuery, recordPage]);
 
   useEffect(() => { loadAll(); }, []); // Initial load only.
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      loadPending(1).catch((err) => setError(err.message));
+      loadPending(pendingQuery).catch((err) => setError(err.message));
     }, 300);
     return () => clearTimeout(timer);
   }, [pendingQuery]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -97,7 +115,64 @@ export default function QCDashboard() {
       loadRecords(1).catch((err) => setError(err.message));
     }, 300);
     return () => clearTimeout(timer);
-  }, [recordQuery, resultFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [recordQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !actionLoading) {
+        setSelectedOrder(null);
+        setRemarks('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedOrder, actionLoading]);
+
+  const showMessage = (text: string, kind: 'success' | 'error' = 'success') => {
+    setMessage(text);
+    setMessageKind(kind);
+  };
+
+  const refreshAfterAction = async () => {
+    await Promise.all([loadStats(), loadPending(pendingQuery)]);
+  };
+
+  const handleApprove = async (id: EntityId) => {
+    setActionLoading(true);
+    setMessage('');
+    try {
+      await api.dispatchOrders.approve(id, remarks.trim() || undefined);
+      showMessage('Dispatch order approved. The packing list is now available to download and dispatch can start loading.');
+      setSelectedOrder(null);
+      setRemarks('');
+      await refreshAfterAction();
+    } catch (err: any) {
+      showMessage(err.message || 'Could not approve dispatch order', 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleReject = async (id: EntityId) => {
+    if (!remarks.trim()) {
+      showMessage('Enter remarks before rejecting this dispatch order.', 'error');
+      return;
+    }
+    setActionLoading(true);
+    setMessage('');
+    try {
+      await api.dispatchOrders.reject(id, remarks.trim());
+      showMessage('Dispatch order rejected. The batch is available to dispatch again.');
+      setSelectedOrder(null);
+      setRemarks('');
+      await refreshAfterAction();
+    } catch (err: any) {
+      showMessage(err.message || 'Could not reject dispatch order', 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   if (loading && !stats) {
     return <div className="page-container flex items-center justify-center h-64"><span className="text-sm text-surface-400">Loading QC dashboard...</span></div>;
@@ -113,59 +188,67 @@ export default function QCDashboard() {
       color: (stats?.myPassRate ?? 0) >= 80 ? 'text-emerald-600' : 'text-amber-600',
       bg: (stats?.myPassRate ?? 0) >= 80 ? 'bg-emerald-50' : 'bg-amber-50',
     },
-    { label: 'Pending QC', value: stats?.pendingQc ?? 0, icon: <Clock size={18} />, color: 'text-purple-600', bg: 'bg-purple-50' },
+    { label: 'Pending Approvals', value: pending.length, icon: <Clock size={18} />, color: 'text-purple-600', bg: 'bg-purple-50' },
     { label: 'My Total Tests', value: stats?.myTotalTests ?? 0, icon: <Microscope size={18} />, color: 'text-slate-600', bg: 'bg-slate-50' },
   ];
 
   const trend = (stats?.trend || []).map((row: any) => ({
     day: new Date(row.day).toLocaleDateString(undefined, { weekday: 'short' }),
-    total: Number(row.total || 0),
     passed: Number(row.passed || 0),
-    failed: Number(row.failed || 0),
   }));
-  const maxTrend = Math.max(1, ...trend.map((row: any) => row.total));
+  const maxTrend = Math.max(1, ...trend.map((row: any) => row.passed));
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <h1 className="page-title">QC Dashboard</h1>
-          <p className="page-subtitle">Your testing queue, personal performance, and complete test history</p>
+          <p className="page-subtitle">Dispatch order approvals, auto-pass history, and your QC performance</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button className="btn-secondary btn-sm" onClick={() => loadAll(true)} disabled={refreshing}>
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> Refresh
           </button>
-          <Link to="/batches" className="btn-secondary btn-sm">
-            <Tags size={14} /> Manage Batches
+          <Link to="/qc/qr-codes" className="btn-secondary btn-sm">
+            <Tags size={14} /> QR Labels
           </Link>
-          <Link to="/qc" className="btn-primary btn-sm">
-            <Microscope size={14} /> Start QC Group Scan
+          <Link to="/batches" className="btn-primary btn-sm">
+            <Plus size={14} /> Create QC Batch
           </Link>
         </div>
       </div>
 
       {error && (
         <div className="mb-4 p-3 rounded-xl text-sm flex items-center gap-2 bg-rose-50 text-rose-700 border border-rose-200">
-          <AlertTriangle size={16} /> {error}
+          <AlertTriangle size={16} /> <span className="flex-1">{error}</span>
+          <button className="btn-secondary btn-xs" onClick={() => void loadAll(true)} disabled={refreshing}>Retry</button>
+        </div>
+      )}
+
+      {message && (
+        <div className={`mb-4 p-3 rounded-xl text-sm flex items-center gap-2 ${
+          messageKind === 'error'
+            ? 'bg-rose-50 text-rose-700 border border-rose-200'
+            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+        }`}>
+          {messageKind === 'error' ? <AlertTriangle size={16} /> : <CheckCircle size={16} />}
+          {message}
         </div>
       )}
 
       <div className="card mb-6 border border-brand-100 bg-brand-50/60 p-4 sm:p-5">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-brand-600 shadow-sm">
-            <QrCode size={18} />
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-brand-600 shadow-sm"><QrCode size={18} /></div>
+            <div>
+              <h2 className="text-sm font-semibold text-surface-900">QC work queue</h2>
+              <p className="mt-0.5 text-xs text-surface-500">Batches pass automatically. Finish their details, then review dispatch requests.</p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-surface-900">When are product QR labels generated?</h2>
-            <p className="mt-1 text-sm leading-6 text-surface-600">
-              QC manages batches from creation through QC decisions and finished-goods details. After a batch passes,
-              complete its details from <strong>Batches</strong> to generate one product QR label per unit.
-              QR labels can then be downloaded by Admin or reviewed and reprinted by QC from the QR Labels page.
-            </p>
-            <Link to="/qc/qr-codes" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 hover:text-brand-800">
-              Review QR Labels <ArrowRight size={13} />
-            </Link>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Link to="/batches" className="btn-secondary btn-xs"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-brand-700">1</span> Create & finish batches</Link>
+            <a href="#qc-approvals" className="btn-secondary btn-xs"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-brand-700">2</span> Review dispatch</a>
+            <Link to="/qc/qr-codes" className="btn-secondary btn-xs"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-brand-700">3</span> Print QR labels</Link>
           </div>
         </div>
       </div>
@@ -183,17 +266,17 @@ export default function QCDashboard() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-6">
-        <div className="card xl:col-span-2">
+        <div id="qc-approvals" className="card xl:col-span-2 scroll-mt-6">
           <div className="card-header flex items-center justify-between gap-3">
             <h3 className="section-title flex items-center gap-2">
-              <Clock size={16} className="text-purple-500" /> Pending QC Queue
-              <span className="badge badge-warning">{pending?.total ?? stats?.pendingQc ?? 0}</span>
+              <Clock size={16} className="text-purple-500" /> Dispatch Order Approvals
+              <span className="badge badge-warning">{pending.length}{pendingLoading ? ' · updating' : ''}</span>
             </h3>
             <div className="relative w-56 max-w-full">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
               <input
                 className="input pl-9 py-1.5 text-xs"
-                placeholder="Search batch or product"
+                placeholder="Search batch, product, or client"
                 value={pendingQuery}
                 onChange={(event) => setPendingQuery(event.target.value)}
               />
@@ -202,68 +285,61 @@ export default function QCDashboard() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Batch</th><th>Product</th><th>Qty</th><th>Location</th><th>Age</th><th></th></tr>
+                <tr><th>Batch</th><th>Product</th><th>Client</th><th>Driver / Vehicle</th><th>Container</th><th>Status</th><th></th></tr>
               </thead>
               <tbody>
-                {(pending?.items || []).map((batch: any) => (
-                  <tr key={batch.id}>
+                {pending.map((order: any) => (
+                  <tr key={order.id}>
                     <td>
-                      <div className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg inline-block">{batch.batch_number}</div>
-                      <div className="text-[10px] text-surface-400 mt-1">{batch.barcode_value}</div>
+                      <div className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg inline-block">{order.batch_number || '-'}</div>
+                      <div className="text-[10px] text-surface-400 mt-1">Raised by {order.raised_by_name || '-'}</div>
                     </td>
                     <td>
-                      <div className="font-medium text-surface-800">{batch.product_name}</div>
-                      <div className="text-xs text-surface-400">{batch.product_sku}</div>
+                      <div className="font-medium text-surface-800">{order.product_name}</div>
+                      <div className="text-xs text-surface-400">{order.product_sku}</div>
                     </td>
-                    <td className="text-sm text-surface-600">{batch.quantity} {batch.uom || ''}</td>
-                    <td className="text-sm text-surface-500">{batch.storage_location || '-'}</td>
-                    <td>
-                      <span className={`badge ${Number(batch.age_minutes) > 240 ? 'badge-danger' : Number(batch.age_minutes) > 60 ? 'badge-warning' : 'badge-neutral'}`}>
-                        {formatAge(batch.age_minutes)}
-                      </span>
+                    <td className="text-sm text-surface-600">{order.client_name || '-'}</td>
+                    <td className="text-xs text-surface-600">
+                      {order.driver_name || '-'}
+                      <div className="text-surface-400">{order.vehicle_number || '-'}</div>
                     </td>
+                    <td className="text-xs text-surface-600">{order.container_number || '-'}</td>
+                    <td><span className="badge badge-warning">{order.status}</span></td>
                     <td>
                       <button
                         className="btn-primary btn-xs"
-                        onClick={() => navigate(`/qc?barcode=${encodeURIComponent(batch.barcode_value)}`)}
+                        onClick={() => { setSelectedOrder(order); setRemarks(''); setMessage(''); }}
                       >
-                        Test <ArrowRight size={12} />
+                        Review <ArrowRight size={12} />
                       </button>
                     </td>
                   </tr>
                 ))}
-                {(!pending || pending.items.length === 0) && (
-                  <tr><td colSpan={6}><div className="empty-state"><div className="empty-title">No batches waiting for QC</div></div></td></tr>
+                {pending.length === 0 && (
+                  <tr><td colSpan={7}><div className="empty-state"><div className="empty-title">{pendingLoading ? 'Loading approval queue…' : pendingQuery ? 'No orders match this search' : 'No dispatch orders waiting for QC approval'}</div><div className="empty-desc">{pendingQuery ? 'Try another batch, product, or client name.' : 'New dispatch requests will appear here.'}</div></div></td></tr>
                 )}
               </tbody>
             </table>
           </div>
-          <Pagination page={pendingPage} pages={pending?.pages || 1} onChange={(page) => loadPending(page)} />
         </div>
 
         <div className="card">
           <div className="card-header"><h3 className="section-title flex items-center gap-2"><TrendingUp size={16} className="text-indigo-500" /> Last 7 Days</h3></div>
           <div className="card-body">
             <div className="flex items-end gap-2 h-40">
-              {trend.map((row: any) => (
-                <div key={row.day} className="flex-1 flex flex-col items-center gap-1">
-                  <span className="text-[10px] font-semibold text-surface-500">{row.total}</span>
-                  <div className="w-full flex flex-col justify-end rounded-t-lg overflow-hidden bg-surface-100" style={{ height: `${Math.max(6, (row.total / maxTrend) * 110)}px` }}>
-                    {row.total > 0 && (
-                      <>
-                        <div className="bg-emerald-400" style={{ height: `${(row.passed / row.total) * 100}%` }} />
-                        <div className="bg-rose-400" style={{ height: `${(row.failed / row.total) * 100}%` }} />
-                      </>
-                    )}
+              {trend.map((row: any, index: number) => (
+                <div key={`${row.day}-${index}`} className="flex-1 flex flex-col items-center gap-1">
+                  <span className="text-[10px] font-semibold text-surface-500">{row.passed}</span>
+                  <div className="w-full flex flex-col justify-end rounded-t-lg overflow-hidden bg-surface-100" style={{ height: `${Math.max(6, (row.passed / maxTrend) * 110)}px` }}>
+                    {row.passed > 0 && <div className="bg-emerald-400 w-full h-full" />}
                   </div>
                   <span className="text-[10px] text-surface-400">{row.day}</span>
                 </div>
               ))}
-              {trend.length === 0 && <div className="flex-1 text-center text-xs text-surface-400">No tests yet</div>}
+              {trend.length === 0 && <div className="flex-1 text-center text-xs text-surface-400">No auto-passed batches yet</div>}
             </div>
             <div className="flex items-center justify-center gap-4 mt-4 text-[10px] text-surface-400">
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400" /> Pass</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-400" /> Fail</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400" /> Auto-passed</span>
             </div>
           </div>
         </div>
@@ -272,8 +348,8 @@ export default function QCDashboard() {
       <div className="card">
         <div className="card-header flex flex-wrap items-center justify-between gap-3">
           <h3 className="section-title flex items-center gap-2">
-            <Microscope size={16} className="text-surface-400" /> My Test History
-            <span className="badge badge-neutral">{records?.total ?? 0}</span>
+            <Microscope size={16} className="text-surface-400" /> Auto-pass history
+            <span className="badge badge-neutral">{records?.total ?? 0}{recordsLoading ? ' · updating' : ''}</span>
           </h3>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-52">
@@ -285,11 +361,7 @@ export default function QCDashboard() {
                 onChange={(event) => setRecordQuery(event.target.value)}
               />
             </div>
-            <select className="input py-1.5 text-xs w-32" value={resultFilter} onChange={(event) => setResultFilter(event.target.value)}>
-              <option value="">All results</option>
-              <option value="PASS">PASS</option>
-              <option value="FAIL">FAIL</option>
-            </select>
+            <span className="badge badge-success">PASS only</span>
           </div>
         </div>
         <div className="table-wrap">
@@ -309,20 +381,59 @@ export default function QCDashboard() {
                       <div className="text-xs text-surface-400">{record.product_sku}</div>
                     </td>
                     <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{record.batch_number}</span></td>
-                    <td><span className={`badge ${record.result === 'PASS' ? 'badge-success' : 'badge-danger'}`}>{record.result}</span></td>
+                    <td>
+                      <span className="badge badge-success">{record.result}</span>
+                      {record.method && <div className="text-[10px] text-surface-400 mt-1">{record.method}</div>}
+                    </td>
                     <td className="text-sm text-surface-500 max-w-xs truncate">{record.remarks || '-'}</td>
                     <td>{imageCount > 0 ? <span className="text-xs text-surface-500 flex items-center gap-1"><ImageIcon size={13} /> {imageCount}</span> : '-'}</td>
                   </tr>
                 );
               })}
               {(!records || records.items.length === 0) && (
-                <tr><td colSpan={6}><div className="empty-state"><div className="empty-title">No QC tests match this filter</div></div></td></tr>
+                <tr><td colSpan={6}><div className="empty-state"><div className="empty-title">{recordsLoading ? 'Loading QC history…' : recordQuery ? 'No history matches this search' : 'No auto-pass history yet'}</div><div className="empty-desc">{recordQuery ? 'Try a different batch, product, or SKU.' : 'Batches you create will appear here.'}</div></div></td></tr>
               )}
             </tbody>
           </table>
         </div>
         <Pagination page={recordPage} pages={records?.pages || 1} onChange={(page) => loadRecords(page)} />
       </div>
+
+      {selectedOrder && (
+        <div className="modal-overlay z-50" role="presentation" onClick={() => { if (!actionLoading) { setSelectedOrder(null); setRemarks(''); } }}>
+          <section className="modal-content max-w-xl" role="dialog" aria-modal="true" aria-labelledby="qc-review-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><h2 id="qc-review-title" className="text-base font-semibold text-surface-900">Review dispatch request</h2><span className="badge badge-warning">PENDING</span></div>
+                <p className="mt-1 text-xs text-surface-500">Order #{selectedOrder.id} · {selectedOrder.product_name || 'Product'}</p>
+              </div>
+              <button className="btn-ghost btn-sm" aria-label="Close review" disabled={actionLoading} onClick={() => { setSelectedOrder(null); setRemarks(''); }}><XCircle size={16} /></button>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="grid grid-cols-2 gap-3 rounded-xl border border-surface-100 bg-surface-50 p-4 text-sm">
+                <div><span className="block text-xs text-surface-400">Batch</span><span className="font-mono font-medium">{selectedOrder.batch_number || '-'}</span></div>
+                <div><span className="block text-xs text-surface-400">Client</span><span className="font-medium">{selectedOrder.client_name || '-'}</span></div>
+                <div><span className="block text-xs text-surface-400">Driver / Vehicle</span><span className="font-medium">{selectedOrder.driver_name || '-'} · {selectedOrder.vehicle_number || '-'}</span></div>
+                <div><span className="block text-xs text-surface-400">Container</span><span className="font-medium">{selectedOrder.container_number || '-'}</span></div>
+                <div className="col-span-2"><span className="block text-xs text-surface-400">Raised by</span><span className="font-medium">{selectedOrder.raised_by_name || '-'}</span></div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="input-label" htmlFor="qc-approval-remarks">QC remarks <span className="font-normal text-surface-400">(required to reject)</span></label>
+                <textarea id="qc-approval-remarks" className="input" rows={3} placeholder="Add a note for the dispatch team (optional for approval)" value={remarks} onChange={(event) => setRemarks(event.target.value)} disabled={actionLoading} />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => { setSelectedOrder(null); setRemarks(''); }} disabled={actionLoading}>Cancel</button>
+              <button onClick={() => handleReject(selectedOrder.id)} className="btn-secondary text-rose-600 hover:bg-rose-50 border-rose-200" disabled={actionLoading || !remarks.trim()}>
+                <XCircle size={16} /> Reject
+              </button>
+              <button onClick={() => handleApprove(selectedOrder.id)} className="btn-primary" disabled={actionLoading}>
+                <CheckCircle size={16} /> {actionLoading ? 'Saving…' : 'Approve order'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

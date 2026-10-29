@@ -11,17 +11,48 @@ type RoleTabBarProps = BottomTabBarProps & {
 	items: NavItem[];
 };
 
-export function RoleTabBar({ state, navigateToTab, items }: RoleTabBarProps) {
+export function RoleTabBar({ state, navigateToTab, descriptors, items }: RoleTabBarProps) {
 	const insets = useSafeAreaInsets();
 	const activeName = state.routes[state.index]?.name;
+
+	/**
+	 * Pops a tab's nested stack back to its root screen (e.g. Management ->
+	 * Products back to the Management overview). A targeted POP_TO_TOP action
+	 * routes to the nested navigator by key and is a no-op if the tab has no
+	 * nested stack or is already at its root. This works for every sub-page of
+	 * every tab, not just products.
+	 */
+	const popTabToRoot = (tabRoute: { key: string; state?: { key?: string; index?: number } | null }) => {
+		const nested = tabRoute.state;
+
+		if (!nested?.key || (nested.index ?? 0) === 0) return;
+
+		const childNav = (
+			descriptors[tabRoute.key] as unknown as {
+				navigation?: { dispatch?: (action: unknown) => void };
+			}
+		)?.navigation;
+
+		console.log(`[tabbar] dispatching POP_TO_TOP, hasDispatch=${typeof childNav?.dispatch}`);
+		childNav?.dispatch?.({ type: 'POP_TO_TOP', target: nested.key });
+	};
 
 	const navigate = (item: NavItem) => {
 		const route = state.routes.find(
 			(candidate) => candidate.name === item.name,
 		);
 		if (!route) return;
+
 		if (activeName !== item.name) {
+			// Switching away from the active tab: reset any deep sub-pages it
+			// holds, so the next time this tab is opened it shows its main
+			// screen (the 6-tile Management overview, for the manage tab).
+			popTabToRoot(state.routes[state.index]);
 			navigateToTab(route.key);
+		} else {
+			// Pressing the tab that is already active: classic tab-tap reset
+			// back to its main screen.
+			popTabToRoot(route);
 		}
 	};
 

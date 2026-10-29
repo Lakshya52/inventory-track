@@ -2,6 +2,7 @@ import {
   ClipboardCheck,
   EllipsisVertical,
   Home,
+  History,
   LayoutGrid,
   Package,
   PieChart,
@@ -29,7 +30,7 @@ export const ADMIN_TABS: NavItem[] = [
 export const QC_TABS: NavItem[] = [
   { name: 'home', label: 'Home', icon: Home },
   { name: 'batches', label: 'Batches', icon: ClipboardCheck },
-  { name: 'scan-check', label: 'Scan', icon: ScanLine },
+  { name: 'approvals', label: 'Approvals', icon: PieChart },
   { name: 'reports', label: 'Reports', icon: PieChart },
   { name: 'settings', label: 'Settings', icon: EllipsisVertical },
 ];
@@ -38,7 +39,7 @@ export const DISPATCH_TABS: NavItem[] = [
   { name: 'home', label: 'Home', icon: Home },
   { name: 'orders', label: 'Orders', icon: Truck },
   { name: 'scan-check', label: 'Scan', icon: ScanLine },
-  { name: 'reports', label: 'Reports', icon: PieChart },
+  { name: 'history', label: 'History', icon: History },
   { name: 'settings', label: 'Settings', icon: EllipsisVertical },
 ];
 

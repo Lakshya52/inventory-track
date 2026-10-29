@@ -5,10 +5,14 @@ import { apiRequest } from './api';
  * Add new calls here as the QC screens are built; keep components free of fetch logic.
  */
 export type QcStats = {
+  scope: 'mine' | 'all';
+  totalTests: number;
+  testsToday: number;
+  testsThisWeek: number;
+  passed: number;
+  failed: number;
   pendingQc: number;
-  qcPassed: number;
-  qcFailed: number;
-  batchesToday: number;
+  passRate: number;
 };
 
 export type QcRecord = {

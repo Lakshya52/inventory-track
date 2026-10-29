@@ -1,25 +1,27 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AppLayout } from './components/AppLayout';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Products from './pages/Products';
-import Clients from './pages/Clients';
-import Batches from './pages/Batches';
-import QCScan from './pages/QCScan';
-import QCDashboard from './pages/QCDashboard';
-import DispatchDashboard from './pages/DispatchDashboard';
-import DispatchScan from './pages/DispatchScan';
-import Reports from './pages/Reports';
-import Settings from './pages/Settings';
-import ShelfLocations from './pages/ShelfLocations';
-import Users from './pages/Users';
-import DispatchOrders from './pages/DispatchOrders';
-import PackingList from './pages/PackingList';
-import QRLabels from './pages/QRLabels';
-import Vendors from './pages/Vendors';
-import Masters from './pages/Masters';
+
+const Login = lazy(() => import('./pages/Login'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Products = lazy(() => import('./pages/Products'));
+const Clients = lazy(() => import('./pages/Clients'));
+const Batches = lazy(() => import('./pages/Batches'));
+const QCDashboard = lazy(() => import('./pages/QCDashboard'));
+const LoadingMonitor = lazy(() => import('./pages/LoadingMonitor'));
+const DispatchDashboard = lazy(() => import('./pages/DispatchDashboard'));
+const DispatchScan = lazy(() => import('./pages/DispatchScan'));
+const Reports = lazy(() => import('./pages/Reports'));
+const Settings = lazy(() => import('./pages/Settings'));
+const ShelfLocations = lazy(() => import('./pages/ShelfLocations'));
+const Users = lazy(() => import('./pages/Users'));
+const DispatchOrders = lazy(() => import('./pages/DispatchOrders'));
+const PackingList = lazy(() => import('./pages/PackingList'));
+const QRLabels = lazy(() => import('./pages/QRLabels'));
+const Vendors = lazy(() => import('./pages/Vendors'));
+const Masters = lazy(() => import('./pages/Masters'));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -44,6 +46,11 @@ export default function App() {
   };
 
   return (
+    <Suspense fallback={(
+      <div className="flex min-h-[40vh] items-center justify-center text-sm font-medium text-surface-500" role="status">
+        Loading page...
+      </div>
+    )}>
     <Routes>
       <Route path="/login" element={user ? <Navigate to={redirectHome()} replace /> : <Login />} />
 
@@ -61,9 +68,10 @@ export default function App() {
         <Route path="/masters" element={<ProtectedRoute roles={['ADMIN']}><Masters /></ProtectedRoute>} />
         <Route path="/batches" element={<ProtectedRoute roles={['ADMIN', 'QC']}><Batches /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute roles={['ADMIN', 'QC']}><Products readOnly={user?.role !== 'ADMIN'} /></ProtectedRoute>} />
+        <Route path="/loading-monitor" element={<ProtectedRoute roles={['ADMIN', 'QC']}><LoadingMonitor /></ProtectedRoute>} />
 
         {/* QC */}
-        <Route path="/qc" element={<ProtectedRoute roles={['QC']}><QCScan /></ProtectedRoute>} />
+        <Route path="/qc" element={<Navigate to="/batches" replace />} />
         <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QRLabels /></ProtectedRoute>} />
         <Route path="/qc-dashboard" element={<ProtectedRoute roles={['QC']}><QCDashboard /></ProtectedRoute>} />
 
@@ -71,10 +79,11 @@ export default function App() {
         <Route path="/dispatch" element={<ProtectedRoute roles={['DISPATCH']}><DispatchScan /></ProtectedRoute>} />
         <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
         <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><DispatchOrders /></ProtectedRoute>} />
-        <Route path="/packing-list" element={<ProtectedRoute roles={['DISPATCH']}><PackingList /></ProtectedRoute>} />
+        <Route path="/packing-list" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><PackingList /></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to={redirectHome()} replace />} />
       </Route>
     </Routes>
+    </Suspense>
   );
 }

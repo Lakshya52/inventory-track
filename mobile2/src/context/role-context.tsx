@@ -22,7 +22,7 @@ export const roleProfiles: Record<Role, AppUser> = {
     name: 'Ram prakash yadav',
     email: 'asdf@gmail.com',
     phone: '+91 96696 96969',
-    company: 'KLJ Plasticizers Limited',
+    company: 'KLJ Polymers & Chemicals Limited',
     initials: 'RY',
   },
   qc: {
@@ -30,7 +30,7 @@ export const roleProfiles: Record<Role, AppUser> = {
     name: 'Neha Sharma',
     email: 'qc@klj.com',
     phone: '+91 98765 12480',
-    company: 'KLJ Plasticizers Limited',
+    company: 'KLJ Polymers & Chemicals Limited',
     initials: 'NS',
   },
   dispatch: {
@@ -38,7 +38,7 @@ export const roleProfiles: Record<Role, AppUser> = {
     name: 'Aarav Khan',
     email: 'dispatch@klj.com',
     phone: '+91 98765 44321',
-    company: 'KLJ Plasticizers Limited',
+    company: 'KLJ Polymers & Chemicals Limited',
     initials: 'AK',
   },
 };

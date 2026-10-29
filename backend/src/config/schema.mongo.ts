@@ -70,6 +70,27 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('packing_list_items').createIndex({ dispatch_order_id: 1 }),
     ctx.collection('packing_list_items').createIndex({ batch_id: 1 }),
 
+    ctx.collection('loading_sessions').createIndex({ dispatch_order_id: 1 }),
+    ctx.collection('loading_sessions').createIndex({ batch_id: 1 }),
+    ctx.collection('loading_sessions').createIndex({ status: 1, started_at: -1 }),
+    ctx.collection('loading_sessions').createIndex({ loader_id: 1, started_at: -1 }),
+    ctx.collection('loading_sessions').createIndex({ updated_at: 1 }),
+    // Explicit names are required: the plain dispatch_order_id_1 / batch_id_1
+    // indexes above already claim the auto-generated index names.
+    ctx.collection('loading_sessions').createIndex(
+      { dispatch_order_id: 1 },
+      { name: 'uniq_active_session_per_order', unique: true, partialFilterExpression: { status: 'ACTIVE' } }
+    ),
+    ctx.collection('loading_sessions').createIndex(
+      { batch_id: 1 },
+      { name: 'uniq_active_session_per_batch', unique: true, partialFilterExpression: { status: 'ACTIVE' } }
+    ),
+
+    ctx.collection('loading_scan_events').createIndex({ session_id: 1, scanned_at: 1 }),
+    ctx.collection('loading_scan_events').createIndex({ result: 1 }),
+    ctx.collection('loading_scan_events').createIndex({ client_operation_id: 1 }, sparseUnique),
+    ctx.collection('loading_scan_events').createIndex({ session_id: 1, qr_value: 1, result: 1 }),
+
     ctx.collection('activity_logs').createIndex({ created_at: -1 }),
     ctx.collection('activity_logs').createIndex({ user_role: 1, user_id: 1, created_at: -1 }),
 

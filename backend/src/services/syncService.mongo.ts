@@ -45,6 +45,12 @@ const ALLOWED_TYPES = new Set<SyncOperationType>([
   'DISPATCH_ORDER_RAISE',
   'DISPATCH_CONFIRM',
   'DISPATCH_CONFIRM_BULK',
+  'BATCH_CREATE_AUTO_PASS',
+  'QC_ORDER_APPROVE',
+  'QC_ORDER_REJECT',
+  'LOADING_SESSION_START',
+  'LOADING_SESSION_SCAN',
+  'LOADING_SESSION_FINALISE',
 ]);
 
 function safeJson(value: unknown): any {
@@ -532,11 +538,18 @@ async function applyDispatchOrderRaise(
       current_status: batch.status,
     });
   }
-  assertStatus(
-    batch,
-    ['QC_PASSED', 'DISPATCH_REJECTED'],
-    `Dispatch order can only be raised for QC_PASSED or DISPATCH_REJECTED batches. Current status: ${batch.status}`
-  );
+  if (String(batch.status) !== 'QC_PASSED') {
+    throw new SyncError(
+      `Dispatch order can only be raised for QC_PASSED batches. Current status: ${batch.status}`,
+      'INVALID_BATCH_STATE',
+      409,
+      {
+        batch_id: batch.id,
+        batch_number: batch.batch_number,
+        current_status: batch.status,
+      }
+    );
+  }
   if (!batch.fg_details_completed_at) {
     const labelCount = await ctx.count('qr_labels', { batch_id: batch.id });
     if (labelCount !== Number(batch.quantity)) {
@@ -563,10 +576,12 @@ async function applyDispatchOrderRaise(
     status: { $in: ['PENDING', 'APPROVED'] },
   }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1, status: 1 } });
   if (existing.length > 0) {
-    throw new SyncConflictError(
+    throw new SyncError(
       existing[0].status === 'APPROVED'
         ? 'This batch already has an approved dispatch order'
         : 'A dispatch order is already pending for this batch',
+      'OPEN_ORDER_EXISTS',
+      409,
       { order_id: existing[0].id, order_status: existing[0].status }
     );
   }
@@ -936,21 +951,29 @@ export async function applyOperation(
 
       let applied: { entityType: string; entityId: EntityId; data: Record<string, any> };
       switch (input.type) {
-        case 'QC_SUBMIT':
-          applied = await applyQcSubmit(ctx, user, deviceUuid, input);
-          break;
-        case 'QC_SUBMIT_BULK':
-          applied = await applyQcSubmitBulk(ctx, user, deviceUuid, input);
-          break;
         case 'DISPATCH_ORDER_RAISE':
           applied = await applyDispatchOrderRaise(ctx, user, deviceUuid, input);
           break;
+        // SRS v2 retires manual QC PASS/FAIL and the legacy bulk dispatch:
+        // batches are born QC-passed and dispatch only completes through a
+        // loading session with a seal number. Refuse stale offline clients
+        // instead of silently writing QC_FAILED or skipping the seal step.
+        case 'QC_SUBMIT':
+        case 'QC_SUBMIT_BULK':
         case 'DISPATCH_CONFIRM':
-          applied = await applyDispatchConfirm(ctx, user, deviceUuid, input);
-          break;
         case 'DISPATCH_CONFIRM_BULK':
-          applied = await applyDispatchConfirmBulk(ctx, user, deviceUuid, input);
-          break;
+          throw new SyncError(
+            'This offline operation is retired: batches are auto QC-passed and dispatch is completed through a loading session with a seal number.',
+            'UNSUPPORTED_OPERATION',
+            410
+          );
+        case 'BATCH_CREATE_AUTO_PASS':
+        case 'QC_ORDER_APPROVE':
+        case 'QC_ORDER_REJECT':
+        case 'LOADING_SESSION_START':
+        case 'LOADING_SESSION_SCAN':
+        case 'LOADING_SESSION_FINALISE':
+          throw new SyncError('Operation not supported by this endpoint', 'UNSUPPORTED_OPERATION', 400);
         default:
           throw new SyncError(`Unsupported operation type: ${input.type}`, 'INVALID_OPERATION_TYPE');
       }

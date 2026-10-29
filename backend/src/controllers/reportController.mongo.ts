@@ -47,13 +47,16 @@ export async function summary(_req: Request, res: Response): Promise<void> {
     ctx.count('batches'),
     ctx.count('qc_records'),
     ctx.count('qc_records', { result: 'PASS' }),
-    ctx.count('qc_records', { result: 'FAIL' }),
-    ctx.count('batches', { status: 'CREATED' }),
+    Promise.resolve(0),
+    // SRS v2 removes the manual QC queue: every batch is born QC-passed.
+    Promise.resolve(0),
     ctx.count('dispatch_records'),
     ctx.count('dispatch_records', { created_at: { $gte: startOfDay() } }),
     ctx.count('dispatch_orders'),
     ctx.count('dispatch_orders', { status: 'PENDING' }),
-    ctx.count('dispatch_orders', { status: 'APPROVED' }),
+    ctx.count('dispatch_orders', {
+      status: { $in: ['APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'] },
+    }),
     ctx.count('dispatch_orders', { status: 'REJECTED' }),
     ctx.count('shelf_locations'),
     ctx.count('shelf_locations', { is_active: 1 }),
@@ -102,7 +105,8 @@ export async function qcReport(req: Request, res: Response): Promise<void> {
   const filter: Record<string, any> = {};
   const range = dateRange(req);
   if (range) filter.created_at = range;
-  if (req.query.result === 'PASS' || req.query.result === 'FAIL') filter.result = req.query.result;
+  // SRS v2 records auto-pass only; ignore any legacy FAIL filter.
+  filter.result = 'PASS';
 
   const records = await ctx.find('qc_records', filter, {
     sort: { created_at: -1 },
@@ -197,6 +201,9 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
       vehicle_number: order?.vehicle_number ?? null,
       dispatch_order_id: order?.id ?? null,
       dispatcher_name: dispatchers.get(idKey(record.dispatcher_id))?.name ?? 'Unknown',
+      seal_number: order?.seal_number ?? null,
+      dispatched: record.dispatched === undefined ? null : Number(record.dispatched),
+      outcome: record.dispatched === 1 ? 'DISPATCHED' : record.dispatched === 0 ? 'NOT_DISPATCHED' : null,
     };
   }));
 }
@@ -206,7 +213,9 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
   const filter: Record<string, any> = {};
   const range = dateRange(req);
   if (range) filter.created_at = range;
-  if (['PENDING', 'APPROVED', 'REJECTED'].includes(String(req.query.status))) {
+  if ([
+    'PENDING', 'APPROVED', 'REJECTED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED',
+  ].includes(String(req.query.status))) {
     filter.status = req.query.status;
   }
 
@@ -231,6 +240,7 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
     orders.map((order) => idKey(order.raised_by))
   );
   const admins = await mapByIds<Record<string, any>>(ctx, 'admins', orders.map((order) => idKey(order.admin_id)));
+  const approvers = await mapByIds<Record<string, any>>(ctx, 'qc_users', orders.map((order) => idKey(order.approved_by_id)));
 
   res.json(orders.map((order) => {
     const batch = batches.get(idKey(order.batch_id));
@@ -266,6 +276,14 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
       client_address: client?.address ?? null,
       raised_by_name: raisedBy.get(idKey(order.raised_by))?.name ?? 'Unknown',
       admin_name: admins.get(idKey(order.admin_id))?.name ?? null,
+      approved_by_id: order.approved_by_id ?? null,
+      approved_by_role: order.approved_by_role ?? null,
+      approved_at: order.approved_at ?? null,
+      approver_name: approvers.get(idKey(order.approved_by_id))?.name
+        ?? admins.get(idKey(order.approved_by_id))?.name
+        ?? null,
+      seal_number: order.seal_number ?? null,
+      dispatched_at: order.dispatched_at ?? null,
     };
   }));
 }
@@ -281,7 +299,13 @@ export async function inventory(_req: Request, res: Response): Promise<void> {
           batch_quantity: { $sum: { $ifNull: ['$quantity', 0] } },
           batch_count: { $sum: 1 },
           qc_passed_quantity: {
-            $sum: { $cond: [{ $eq: ['$status', 'QC_PASSED'] }, { $ifNull: ['$quantity', 0] }, 0] },
+            $sum: {
+              $cond: [
+                { $in: ['$status', ['QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED', 'LOADING']] },
+                { $ifNull: ['$quantity', 0] },
+                0,
+              ],
+            },
           },
           dispatched_quantity: {
             $sum: { $cond: [{ $eq: ['$status', 'DISPATCHED'] }, { $ifNull: ['$quantity', 0] }, 0] },

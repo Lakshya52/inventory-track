@@ -11,3 +11,4 @@ export const listMine = implementation.listMine;
 export const approve = implementation.approve;
 export const reject = implementation.reject;
 export const getPackingList = implementation.getPackingList;
+export const getPackingListPdf = implementation.getPackingListPdf;

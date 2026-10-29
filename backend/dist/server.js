@@ -59,6 +59,7 @@ const masters_1 = __importDefault(require("./routes/masters"));
 const reports_1 = __importDefault(require("./routes/reports"));
 const sync_1 = __importDefault(require("./routes/sync"));
 const production_1 = __importDefault(require("./routes/production"));
+const loadingSessions_1 = __importDefault(require("./routes/loadingSessions"));
 const errorHandler_1 = require("./middleware/errorHandler");
 const rateLimit_1 = require("./middleware/rateLimit");
 const schema_1 = require("./config/schema");
@@ -133,6 +134,7 @@ app.use('/api/masters', masters_1.default);
 app.use('/api/reports', reports_1.default);
 app.use('/api/sync', sync_1.default);
 app.use('/api/production', production_1.default);
+app.use('/api/loading-sessions', loadingSessions_1.default);
 app.get('/api/health', async (_req, res) => {
     const db = await (0, database_1.checkDatabase)();
     res.status(db ? 200 : 503).json({

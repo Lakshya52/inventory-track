@@ -1,7 +1,7 @@
 // In local development API_URL is unset and Vite proxies /api to the backend.
 // On Vercel, set API_URL to the Render service origin.
 import type { QrJob, QrLabel } from '../utils/qrPdf';
-import type { EntityId } from '../types';
+import type { EntityId, Role } from '../types';
 
 const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '');
 const BASE_URL = `${API_ORIGIN}/api`;
@@ -33,18 +33,6 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
-async function uploadForm<T>(path: string, formData: FormData): Promise<T> {
-  const headers: Record<string, string> = {};
-  const t = token();
-  if (t) headers['Authorization'] = `Bearer ${t}`;
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: formData, headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || 'Request failed');
-  }
-  return res.json();
-}
-
 export const api = {
   auth: {
     login: (email: string, password: string) =>
@@ -66,7 +54,7 @@ export const api = {
     list: () => request<any[]>('/users'),
     add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH' }) =>
       request<any>('/users', { method: 'POST', body: JSON.stringify(data) }),
-    update: (type: string, id: EntityId, data: { name: string; email: string }) =>
+    update: (type: string, id: EntityId, data: { name: string; email: string; role: Role }) =>
       request<any>(`/users/${type}/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     changePassword: (type: string, id: EntityId, password: string) =>
       request<any>(`/users/${type}/${idPath(id)}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
@@ -161,12 +149,15 @@ export const api = {
         a.href = url;
         a.download = 'sample_products_import.xlsx';
         a.click();
-        URL.revokeObjectURL(url);
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
     },
   },
   batches: {
-    list: () => request<any[]>('/batches'),
+    list: (params?: { status?: string }) => {
+      const suffix = params?.status ? `?status=${encodeURIComponent(params.status)}` : '';
+      return request<any[]>(`/batches${suffix}`);
+    },
     create: (data: {
       product_id: EntityId;
       batch_number: string;
@@ -199,33 +190,6 @@ export const api = {
     search: (q: string) => request<any[]>(`/batches/search?q=${encodeURIComponent(q)}`),
   },
   qc: {
-    submit: (data: { barcode_value: string; result: 'PASS' | 'FAIL'; remarks?: string; images?: File[] }) => {
-      if (data.images && data.images.length > 0) {
-        const fd = new FormData();
-        fd.append('barcode_value', data.barcode_value);
-        fd.append('result', data.result);
-        if (data.remarks) fd.append('remarks', data.remarks);
-        data.images.forEach(f => fd.append('images', f));
-        return uploadForm<any>('/qc', fd);
-      }
-      return request<any>('/qc', { method: 'POST', body: JSON.stringify(data) });
-    },
-    submitBulk: (data: { barcodes: string[]; result: 'PASS' | 'FAIL'; remarks?: string; images?: File[] }) => {
-      if (data.images && data.images.length > 0) {
-        const fd = new FormData();
-        fd.append('barcodes', JSON.stringify(data.barcodes));
-        fd.append('result', data.result);
-        if (data.remarks) fd.append('remarks', data.remarks);
-        data.images.forEach(f => fd.append('images', f));
-        return uploadForm<any>('/qc/bulk', fd);
-      }
-      return request<any>('/qc/bulk', {
-        method: 'POST',
-        body: JSON.stringify({ barcodes: data.barcodes, result: data.result, remarks: data.remarks }),
-      });
-    },
-    reopenFailedBatch: (id: EntityId, reason: string) =>
-      request<any>(`/qc/batches/${idPath(id)}/reopen`, { method: 'POST', body: JSON.stringify({ reason }) }),
     qrJobs: {
       list: (q?: string) => request<{ items: any[]; total: number }>(`/qc/qr-jobs${q ? `?q=${encodeURIComponent(q)}` : ''}`),
       create: (data: { product_id: EntityId; quantity: number }) =>
@@ -257,38 +221,6 @@ export const api = {
     },
   },
   dispatch: {
-    submit: (data: { barcode_value: string; remarks?: string; images?: File[]; expected_status?: string; direct?: boolean }) => {
-      if (data.images && data.images.length > 0) {
-        const fd = new FormData();
-        fd.append('barcode_value', data.barcode_value);
-        if (data.remarks) fd.append('remarks', data.remarks);
-        if (data.expected_status) fd.append('expected_status', data.expected_status);
-        if (data.direct) fd.append('direct', 'true');
-        data.images.forEach(f => fd.append('images', f));
-        return uploadForm<any>('/dispatch', fd);
-      }
-      return request<any>('/dispatch', { method: 'POST', body: JSON.stringify(data) });
-    },
-    submitBulk: (data: { barcodes: string[]; remarks?: string; images?: File[]; direct?: boolean; dispatch_order_id?: EntityId }) => {
-      if (data.images && data.images.length > 0) {
-        const fd = new FormData();
-        fd.append('barcodes', JSON.stringify(data.barcodes));
-        if (data.remarks) fd.append('remarks', data.remarks);
-        if (data.direct) fd.append('direct', 'true');
-        if (data.dispatch_order_id) fd.append('dispatch_order_id', String(data.dispatch_order_id));
-        data.images.forEach(f => fd.append('images', f));
-        return uploadForm<any>('/dispatch/bulk', fd);
-      }
-      return request<any>('/dispatch/bulk', {
-        method: 'POST',
-        body: JSON.stringify({
-          barcodes: data.barcodes,
-          remarks: data.remarks,
-          direct: data.direct,
-          dispatch_order_id: data.dispatch_order_id,
-        }),
-      });
-    },
     today: () => request<any[]>('/dispatch/today'),
     stats: () => request<any>('/dispatch/stats'),
     ready: (params?: { page?: number; limit?: number; q?: string }) => {
@@ -312,7 +244,7 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; driver_name: string; vehicle_number: string; container_number: string }) =>
+    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; driver_name: string; vehicle_number: string; container_number: string; client_operation_id?: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
     pending: (params?: { q?: string }) => {
       const qs = new URLSearchParams();
@@ -332,11 +264,59 @@ export const api = {
       return request<any[]>(`/dispatch-orders/mine${qs.toString() ? `?${qs}` : ''}`);
     },
     approve: (id: EntityId, remarks?: string) =>
-      request<any>(`/dispatch-orders/${idPath(id)}/approve`, { method: 'POST', body: JSON.stringify({ admin_remarks: remarks }) }),
-    reject: (id: EntityId, remarks?: string) =>
-      request<any>(`/dispatch-orders/${idPath(id)}/reject`, { method: 'POST', body: JSON.stringify({ admin_remarks: remarks }) }),
+      request<any>(`/dispatch-orders/${idPath(id)}/approve`, { method: 'POST', body: JSON.stringify({ remarks }) }),
+    reject: (id: EntityId, remarks: string) =>
+      request<any>(`/dispatch-orders/${idPath(id)}/reject`, { method: 'POST', body: JSON.stringify({ remarks }) }),
     packingList: (id: EntityId) =>
       request<any>(`/dispatch-orders/${idPath(id)}/packing-list`),
+    downloadPackingListPdf: async (id: EntityId, filename?: string) => {
+      const headers: Record<string, string> = {};
+      const t = token();
+      if (t) headers['Authorization'] = `Bearer ${t}`;
+      const res = await fetch(`${BASE_URL}/dispatch-orders/${idPath(id)}/packing-list.pdf`, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || 'Could not download packing list');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename || `packing-list-${id}.pdf`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+  },
+  loadingSessions: {
+    start: (dispatch_order_id: EntityId, client_operation_id?: string) =>
+      request<any>('/loading-sessions', {
+        method: 'POST',
+        body: JSON.stringify({ dispatch_order_id, client_operation_id }),
+      }),
+    scan: (id: EntityId, qr_value: string, client_operation_id?: string) =>
+      request<{
+        result: 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
+        scanned: number;
+        total: number;
+        event_id?: EntityId;
+        duplicate?: boolean;
+        error?: string;
+        code?: string;
+      }>(`/loading-sessions/${idPath(id)}/scan`, {
+        method: 'POST',
+        body: JSON.stringify({ qr_value, client_operation_id }),
+      }),
+    get: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}`),
+    active: () => request<any[]>('/loading-sessions/active'),
+    finalise: (id: EntityId, data: {
+      seal_number: string;
+      outcome: 'DISPATCHED' | 'NOT_DISPATCHED';
+      remarks?: string;
+      client_operation_id?: string;
+    }) => request<any>(`/loading-sessions/${idPath(id)}/finalise`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   },
   sync: {
     register: (data: { device_uuid: string; platform?: string; app_version?: string }) =>
@@ -364,14 +344,6 @@ export const api = {
       request<any>('/clients', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: EntityId, data: any) => request<any>(`/clients/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: EntityId) => request<any>(`/clients/${idPath(id)}`, { method: 'DELETE' }),
-  },
-  production: {
-    batches: () => request<any[]>('/production/batches'),
-    submitForQc: (barcode_value: string) =>
-      request<any>('/production/submit-for-qc', { method: 'POST', body: JSON.stringify({ barcode_value }) }),
-    fixBatch: (batch_id: EntityId, description: string) =>
-      request<any>('/production/fix-batch', { method: 'POST', body: JSON.stringify({ batch_id, description }) }),
-    fixRecords: () => request<any[]>('/production/fix-records'),
   },
   dashboard: {
     stats: () => request<any>('/dashboard'),

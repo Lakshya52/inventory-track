@@ -20,8 +20,8 @@ const navSections: { title: string; items: NavItem[] }[] = [
   {
     title: 'Management',
     items: [
-      { label: 'Vendors', path: '/vendors', icon: '🤝', roles: ['ADMIN'] },
-      { label: 'Clients', path: '/clients', icon: '🤝', roles: ['ADMIN'] },
+      { label: 'Clients', path: '/clients', icon: '🏢', roles: ['ADMIN'] },
+      { label: 'Vendors', path: '/vendors', icon: '🏭', roles: ['ADMIN'] },
       { label: 'Users', path: '/users', icon: '👥', roles: ['ADMIN'] },
       { label: 'Products', path: '/products', icon: '📦', roles: ['ADMIN'] },
       { label: 'Shelf Locations', path: '/shelf-locations', icon: '📍', roles: ['ADMIN'] },

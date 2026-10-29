@@ -13,7 +13,8 @@ export default function AdminLayout() {
         <Tabs.Screen name="home" />
         <Tabs.Screen name="reports" />
         <Tabs.Screen name="dispatches" />
-        <Tabs.Screen name="manage" />
+        {/* Pop the Management sub-pages when navigating away from the tab. */}
+        <Tabs.Screen name="manage" options={{ popToTopOnBlur: true }} />
         <Tabs.Screen name="settings" />
       </Tabs>
     </RoleGuard>

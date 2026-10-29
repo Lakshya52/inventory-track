@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { randomBytes, randomUUID } from 'crypto';
 import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { contains, EntityId, mapByIds } from '../services/queryService';
 
@@ -95,9 +96,85 @@ async function jobDetail(id: EntityId): Promise<{ job: Record<string, any>; labe
   };
 }
 
-export async function create(_req: Request, res: Response): Promise<void> {
-  res.status(410).json({
-    error: 'QR labels are generated automatically when QC completes finished-goods details for a passed batch.',
+export async function create(req: Request, res: Response): Promise<void> {
+  const productId = req.body.product_id as EntityId;
+  const quantity = Number(req.body.quantity);
+  const batchId = req.body.batch_id ? (req.body.batch_id as EntityId) : null;
+
+  if (!isValidId(productId)) {
+    res.status(400).json({ error: 'Select a valid product' });
+    return;
+  }
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10_000) {
+    res.status(400).json({ error: 'Quantity must be a whole number between 1 and 10,000' });
+    return;
+  }
+  if (batchId !== null && !isValidId(batchId)) {
+    res.status(400).json({ error: 'Invalid batch id' });
+    return;
+  }
+
+  const ctx = await getContext();
+  const product = await ctx.findOne('products', { id: productId }, {
+    projection: { _id: 0, id: 1, name: 1, sku: 1 },
+  });
+  if (!product) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+
+  const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
+  const result = await withTransaction(async (tx: DbContext) => {
+    const jobId = await tx.insert('qr_print_jobs', {
+      job_code: jobCode,
+      product_id: productId,
+      quantity,
+      batch_id: batchId,
+      created_by: req.user!.userId,
+      created_by_role: req.user!.role,
+    });
+    const labelDocuments = Array.from({ length: quantity }, (_, index) => ({
+      print_job_id: jobId,
+      batch_id: batchId,
+      qr_value: `QR:${randomUUID()}`,
+      serial_no: index + 1,
+      print_count: 1,
+      last_printed_at: now(),
+    }));
+    const labelIds = await tx.insertMany('qr_labels', labelDocuments);
+    await tx.insert('activity_logs', {
+      user_id: req.user!.userId,
+      user_name: req.user!.name,
+      user_role: req.user!.role,
+      action: 'QR_JOB_CREATED',
+      description: `${quantity} QR label${quantity === 1 ? '' : 's'} created for ${product.name}`,
+    });
+    return {
+      jobId,
+      labels: labelDocuments.map((label, index) => ({
+        id: labelIds[index],
+        qr_value: label.qr_value,
+        serial_no: label.serial_no,
+        batch_id: label.batch_id,
+        print_count: label.print_count,
+        last_printed_at: label.last_printed_at,
+      })),
+    };
+  });
+
+  res.status(201).json({
+    job: {
+      id: result.jobId,
+      job_code: jobCode,
+      product_id: productId,
+      product_name: product.name,
+      product_sku: product.sku,
+      quantity,
+      batch_id: batchId,
+      created_by: req.user!.userId,
+      created_by_role: req.user!.role,
+    },
+    labels: result.labels,
   });
 }
 

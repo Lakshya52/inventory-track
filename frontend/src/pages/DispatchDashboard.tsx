@@ -50,7 +50,7 @@ export default function DispatchDashboard() {
 
   const cards = [
     { label: 'Ready to Dispatch', value: stats?.readyToDispatch ?? 0, icon: <PackageCheck size={18} />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-    { label: 'Awaiting Approval', value: stats?.pendingOrders ?? 0, icon: <Clock size={18} />, color: 'text-amber-600', bg: 'bg-amber-50' },
+    { label: 'Awaiting QC Approval', value: stats?.pendingOrders ?? 0, icon: <Clock size={18} />, color: 'text-amber-600', bg: 'bg-amber-50' },
     { label: 'Approved Orders', value: stats?.approvedOrders ?? 0, icon: <CheckCircle size={18} />, color: 'text-sky-600', bg: 'bg-sky-50' },
     { label: 'Dispatched Today', value: stats?.dispatchedToday ?? 0, icon: <Truck size={18} />, color: 'text-indigo-600', bg: 'bg-indigo-50' },
     { label: 'My Total Dispatches', value: stats?.myTotalDispatches ?? 0, icon: <TrendingUp size={18} />, color: 'text-slate-600', bg: 'bg-slate-50' },
@@ -61,7 +61,7 @@ export default function DispatchDashboard() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Dispatch Dashboard</h1>
-          <p className="page-subtitle">Raise dispatch orders, track approvals, and confirm dispatches</p>
+          <p className="page-subtitle">Raise dispatch orders, track QC approvals, start loading, and finalise dispatches</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button className="btn-secondary btn-sm" onClick={() => load(true)} disabled={refreshing}>
@@ -71,7 +71,7 @@ export default function DispatchDashboard() {
             <ClipboardList size={14} /> All Orders
           </Link>
           <Link to="/dispatch" className="btn-primary btn-sm">
-            <Truck size={14} /> Group Dispatch Scan
+            <Truck size={14} /> Start Loading / Scan
           </Link>
         </div>
       </div>
@@ -133,7 +133,7 @@ export default function DispatchDashboard() {
 
         <div className="card">
           <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><Clock size={16} className="text-amber-500" /> Awaiting Admin Approval</h3>
+            <h3 className="section-title flex items-center gap-2"><Clock size={16} className="text-amber-500" /> Awaiting QC Approval</h3>
             <span className="badge badge-warning">{stats?.pendingOrdersList?.length || 0}</span>
           </div>
           <div className="table-wrap">
@@ -159,7 +159,7 @@ export default function DispatchDashboard() {
 
       <div className="card mb-6">
         <div className="card-header flex items-center justify-between">
-          <h3 className="section-title flex items-center gap-2"><CheckCircle size={16} className="text-sky-500" /> Approved — Ready to Confirm Dispatch</h3>
+          <h3 className="section-title flex items-center gap-2"><CheckCircle size={16} className="text-sky-500" /> Approved — Ready to Load &amp; Scan</h3>
           <span className="badge badge-info">{stats?.approvedOrdersList?.length || 0}</span>
         </div>
         <div className="table-wrap">
@@ -175,7 +175,7 @@ export default function DispatchDashboard() {
                   <td className="text-xs text-surface-400">{formatDate(order.updated_at)}</td>
                   <td>
                     <button className="btn-primary btn-xs" onClick={() => navigate(`/dispatch?order=${encodeURIComponent(order.id)}`)}>
-                      Dispatch <ArrowRight size={12} />
+                      Load / Scan <ArrowRight size={12} />
                     </button>
                   </td>
                 </tr>

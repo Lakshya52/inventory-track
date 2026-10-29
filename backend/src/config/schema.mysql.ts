@@ -84,6 +84,7 @@ export async function ensureAdminSchema(): Promise<void> {
   }
 
   await addColumnIfMissing('qc_records', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+  await addColumnIfMissing('qc_records', 'method', 'VARCHAR(30) NULL');
   await addColumnIfMissing('dispatch_records', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
   await addColumnIfMissing('qc_records', 'group_operation_id', 'VARCHAR(64) NULL');
   await addColumnIfMissing('dispatch_records', 'group_operation_id', 'VARCHAR(64) NULL');

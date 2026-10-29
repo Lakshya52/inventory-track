@@ -72,16 +72,34 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
       } else {
         await api.products.create(data);
       }
-      const list = await api.products.list().catch(() => null);
-      if (list) setProducts(list);
       setShowForm(false); resetForm();
+      try {
+        setProducts(await api.products.list());
+      } catch (refreshError: any) {
+        setError(`Product saved, but the list could not be refreshed: ${refreshError.message || 'Request failed.'}`);
+      }
     } catch (err: any) { setError(err.message); }
   };
 
   const handleDelete = async (id: EntityId) => {
-    if (!window.confirm('Delete this product?')) return;
-    await api.products.delete(id);
-    api.products.list().then(setProducts);
+    const product = products.find(row => String(row.id) === String(id));
+    if (!window.confirm(`Delete product "${product?.name || id}"? This cannot be undone.`)) return;
+    setError('');
+    try {
+      await api.products.delete(id);
+      setProducts(await api.products.list());
+    } catch (err: any) {
+      setError(err.message || 'Could not delete product');
+    }
+  };
+
+  const handleDownloadSample = async () => {
+    setError('');
+    try {
+      await api.products.downloadSample();
+    } catch (err: any) {
+      setError(err.message || 'Could not download the sample spreadsheet');
+    }
   };
 
   return (
@@ -92,7 +110,7 @@ export default function Products({ readOnly = false }: { readOnly?: boolean }) {
           <p className="page-subtitle">Manage your product catalog and inventory</p>
         </div>
         {canManage && <div className="flex flex-wrap gap-2">
-          <button onClick={() => api.products.downloadSample()} className="btn-secondary btn-sm">
+          <button onClick={() => void handleDownloadSample()} className="btn-secondary btn-sm">
             <Download size={14} /> Sample
           </button>
           <label className="btn-secondary btn-sm cursor-pointer">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle, CheckCircle, Download, History, Loader2, Package,
   Printer, RefreshCw, Search, X,
@@ -37,37 +37,33 @@ export default function QRLabels() {
   const [reprintQty, setReprintQty] = useState('1');
   const [reprintLoading, setReprintLoading] = useState(false);
   const [reprinting, setReprinting] = useState(false);
+  const listRequest = useRef(0);
+  const detailRequest = useRef(0);
 
   const load = useCallback(async (showSpinner = false) => {
+    const requestId = ++listRequest.current;
     if (showSpinner) setRefreshing(true);
-    setError('');
+    if (requestId === listRequest.current) setError('');
     try {
       const jobRows = await api.qc.qrJobs.list(search || undefined);
-      setJobs(jobRows.items || []);
+      if (requestId === listRequest.current) setJobs(jobRows.items || []);
     } catch (err: any) {
-      setError(err.message || 'Could not load QR labels');
+      if (requestId === listRequest.current) setError(err.message || 'Could not load QR labels');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === listRequest.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [search]);
 
   useEffect(() => {
-    load();
-    // Initial load only; search has its own debounce below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      api.qc.qrJobs.list(search || undefined)
-        .then((result) => setJobs(result.items || []))
-        .catch((err) => setError(err.message));
-    }, 300);
+    const timer = setTimeout(() => { void load(); }, search ? 300 : 0);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [load, search]);
 
   const openReprint = async (job: QrJobRow) => {
+    const requestId = ++detailRequest.current;
     setError('');
     setSuccess('');
     setReprintJob(job);
@@ -77,13 +73,17 @@ export default function QRLabels() {
     setReprintLoading(true);
     try {
       const detail = await api.qc.qrJobs.get(job.id);
+      if (requestId !== detailRequest.current) return;
       setReprintLabels(detail.labels || []);
-      setSelectedIds((detail.labels || []).slice(0, 1).map((label: QrLabel) => label.id));
+      const initialSelection = (detail.labels || []).slice(0, 1).map((label: QrLabel) => label.id);
+      setSelectedIds(initialSelection);
+      setReprintQty(String(initialSelection.length));
     } catch (err: any) {
+      if (requestId !== detailRequest.current) return;
       setError(err.message || 'Could not load QR labels');
       setReprintJob(null);
     } finally {
-      setReprintLoading(false);
+      if (requestId === detailRequest.current) setReprintLoading(false);
     }
   };
 
@@ -95,9 +95,11 @@ export default function QRLabels() {
   };
 
   const toggleLabel = (id: EntityId) => {
-    setSelectedIds((current) =>
-      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
-    );
+    setSelectedIds((current) => {
+      const next = current.includes(id) ? current.filter((value) => value !== id) : [...current, id];
+      setReprintQty(String(next.length));
+      return next;
+    });
   };
 
   const runReprint = async (mode: 'pdf' | 'print') => {
@@ -215,7 +217,7 @@ export default function QRLabels() {
                   </tr>
                 ))}
                 {jobs.length === 0 && (
-                  <tr><td colSpan={6}><div className="empty-state"><div className="empty-icon"><Package size={24} className="text-surface-400" /></div><div className="empty-title">No QR labels generated yet</div><div className="empty-desc">In Batches, finish goods for a QC-passed batch. The system then creates one product label per unit.</div></div></td></tr>
+                  <tr><td colSpan={6}><div className="empty-state"><div className="empty-icon"><Package size={24} className="text-surface-400" /></div><div className="empty-title">{search ? 'No QR jobs match your search' : 'No QR labels generated yet'}</div><div className="empty-desc">{search ? 'Try another job code, product name, or SKU.' : 'In Batches, finish goods for a QC-passed batch. The system then creates one product label per unit.'}</div></div></td></tr>
                 )}
               </tbody>
             </table>
@@ -224,14 +226,14 @@ export default function QRLabels() {
       </div>
 
       {canReprint && reprintJob && (
-        <div className="modal-overlay" onClick={() => !reprinting && setReprintJob(null)}>
+        <div className="modal-overlay" onClick={() => !reprinting && !reprintLoading && setReprintJob(null)}>
           <div className="modal-content max-w-3xl" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <h2 className="text-base font-semibold text-surface-900">Reprint QR Labels</h2>
                 <p className="text-xs text-surface-400 mt-0.5">{reprintJob.job_code} · {reprintJob.product_name}</p>
               </div>
-              <button className="btn-ghost btn-sm" onClick={() => setReprintJob(null)} disabled={reprinting}><X size={16} /></button>
+              <button className="btn-ghost btn-sm" onClick={() => setReprintJob(null)} disabled={reprinting || reprintLoading} aria-label="Close reprint dialog"><X size={16} /></button>
             </div>
             <div className="modal-body space-y-4">
               <div className="flex flex-wrap items-end gap-3 rounded-xl bg-surface-50 border border-surface-100 p-3">
@@ -247,8 +249,8 @@ export default function QRLabels() {
                   />
                 </div>
                 <button className="btn-secondary btn-sm" onClick={() => applyQuantity(reprintQty)}>Select first N</button>
-                <button className="btn-ghost btn-sm" onClick={() => setSelectedIds(reprintLabels.map((label) => label.id))}>Select all</button>
-                <button className="btn-ghost btn-sm" onClick={() => setSelectedIds([])}>Clear</button>
+                <button className="btn-ghost btn-sm" onClick={() => { setSelectedIds(reprintLabels.map((label) => label.id)); setReprintQty(String(reprintLabels.length)); }}>Select all</button>
+                <button className="btn-ghost btn-sm" onClick={() => { setSelectedIds([]); setReprintQty('0'); }}>Clear</button>
                 <span className="text-xs text-surface-500 ml-auto">{selectedIds.length} of {reprintLabels.length} selected</span>
               </div>
 
@@ -275,7 +277,7 @@ export default function QRLabels() {
               </p>
             </div>
             <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setReprintJob(null)} disabled={reprinting}>Cancel</button>
+              <button className="btn-secondary" onClick={() => setReprintJob(null)} disabled={reprinting || reprintLoading}>Cancel</button>
               <button className="btn-secondary" onClick={() => runReprint('print')} disabled={reprinting || selectedIds.length === 0}>
                 <Printer size={15} /> Print selected
               </button>
