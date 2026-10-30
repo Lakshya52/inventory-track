@@ -10,6 +10,7 @@ import {
   ScrollView,
   TextInput,
   View,
+  AppState,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import {
@@ -36,6 +37,13 @@ import { PageHeading } from '@/components/ui/page';
 import { Screen } from '@/components/ui/screen';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { dispatchApi } from '@/services/dispatch';
+import {
+  enqueueLoadingSessionFinalise,
+  enqueueLoadingSessionScan,
+  enqueueLoadingSessionStart,
+  flushOfflineOperations,
+  isOfflineError,
+} from '@/services/offline-queue';
 import type {
   DispatchOrder,
   LoadingScanEvent,
@@ -71,6 +79,7 @@ export function ScanTabScreen() {
   const [refreshingEvents, setRefreshingEvents] = useState(false);
   const [showAllEvents, setShowAllEvents] = useState(false);
   const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
+  const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
 
   // Starting loading session
   const [startingOrderId, setStartingOrderId] = useState<string | null>(null);
@@ -111,6 +120,12 @@ export function ScanTabScreen() {
         setApprovedOrders(orders || []);
       }
     } catch (err: any) {
+      if (isOfflineError(err)) {
+        // Offline: keep the local screen state and surface the amber offline notice
+        // instead of the red "server unreachable" error banner.
+        setOfflineNotice('You are offline. Local data is safe — scans will sync automatically once the connection returns.');
+        return;
+      }
       setLoadError(err?.message || 'Could not load your loading sessions.');
     } finally {
       setLoading(false);
@@ -123,6 +138,29 @@ export function ScanTabScreen() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadActiveState();
   }, [loadActiveState]);
+
+  // Push any locally queued offline operations once the app is back online.
+  useEffect(() => {
+    let cancelled = false;
+    const flushPendingOperations = async () => {
+      const stats = await flushOfflineOperations();
+      if (!cancelled) {
+        if (stats.failed > 0) {
+          setOfflineNotice('Some offline scans could not be synced yet. They will retry automatically.');
+        }
+      }
+    };
+    void flushPendingOperations();
+    const appStateSub = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        void flushPendingOperations();
+      }
+    });
+    return () => {
+      cancelled = true;
+      appStateSub.remove();
+    };
+  }, []);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -167,7 +205,13 @@ export function ScanTabScreen() {
       setIsCameraActive(true);
       void loadActiveState();
     } catch (err: any) {
-      Alert.alert('Cannot Start Session', err?.message || 'Could not start loading session.');
+      if (isOfflineError(err)) {
+        // Device is offline: keep the session start locally and push it when we reconnect.
+        await enqueueLoadingSessionStart(orderId);
+        Alert.alert('Offline', 'You are offline. The loading session start was saved locally and will sync automatically once the connection returns.');
+      } else {
+        Alert.alert('Cannot Start Session', err?.message || 'Could not start loading session.');
+      }
       // Re-sync so an already-active session is picked up instead of dead-ending.
       void loadActiveState();
     } finally {
@@ -222,6 +266,7 @@ export function ScanTabScreen() {
           result: 'OK',
           message: `Unit Scanned! (${res.scanned} of ${res.total} loaded)`,
         });
+        setOfflineNotice(null);
         // Nothing left to scan — close the camera and focus the finalise step.
         if (res.total > 0 && res.scanned >= res.total) {
           setIsCameraActive(false);
@@ -244,6 +289,12 @@ export function ScanTabScreen() {
       }
       setManualCode('');
     } catch (err: any) {
+      if (isOfflineError(err)) {
+        // Device is offline: keep the scan locally and push it when we reconnect.
+        await enqueueLoadingSessionScan(code);
+        setOfflineNotice('You are offline. This scan was saved locally and will sync automatically once the connection returns.');
+        return;
+      }
       if (err?.code === 'QTY_EXCEEDED') {
         setFeedback({
           result: 'QTY_EXCEEDED',
@@ -305,6 +356,17 @@ export function ScanTabScreen() {
       setLoading(true);
       void loadActiveState();
     } catch (err: any) {
+      if (isOfflineError(err)) {
+        // Device is offline: keep the finalisation locally and push it when we reconnect.
+        await enqueueLoadingSessionFinalise({
+          session_id: String(activeSession.id),
+          seal_number: sealNumber.trim(),
+          outcome,
+          remarks: remarks.trim() || undefined,
+        });
+        setOfflineNotice('You are offline. This finalisation was saved locally and will sync automatically once the connection returns.');
+        return;
+      }
       Alert.alert('Finalisation Error', err?.message || 'Could not finalize loading session.');
     } finally {
       setFinalising(false);
@@ -553,6 +615,24 @@ export function ScanTabScreen() {
                     ) : null}
                   </View>
                 </View>
+
+                {/* Offline Sync Notice */}
+                {offlineNotice ? (
+                  <View className="mt-4 flex-row items-center gap-2 rounded-xl border border-[#FED7AA] bg-[#FFFBEB] p-3">
+                    <AlertTriangle size={18} color="#D97706" />
+                    <AppText className="flex-1 text-[12px] font-manrope-bold text-[#B45309]">
+                      {offlineNotice}
+                    </AppText>
+                    <Pressable
+                      onPress={() => setOfflineNotice(null)}
+                      hitSlop={8}
+                      className="p-1"
+                      accessibilityRole="button"
+                      accessibilityLabel="Dismiss offline notice">
+                      <X size={14} color="#B45309" />
+                    </Pressable>
+                  </View>
+                ) : null}
 
                 {/* Instant Feedback Banner */}
                 {feedback ? (

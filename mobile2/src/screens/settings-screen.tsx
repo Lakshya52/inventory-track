@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Building2,
   ChevronRight,
@@ -7,6 +7,9 @@ import {
   LockKeyhole,
   LogOut,
   Pencil,
+  RefreshCw,
+  Wifi,
+  WifiOff,
   type LucideIcon,
 } from 'lucide-react-native';
 import { Alert, Pressable, ScrollView, View } from 'react-native';
@@ -21,6 +24,8 @@ import { FormSheet, type FormField } from '@/components/ui/form-sheet';
 import { PageHeading } from '@/components/ui/page';
 import { Screen } from '@/components/ui/screen';
 import { roleProfiles, useRole } from '@/context/role-context';
+import type { OfflineSyncOperation } from '@/services/offline-queue';
+import { flushOfflineOperations, getOfflineOperations } from '@/services/offline-queue';
 import type { Role } from '@/types';
 
 const profileFields: FormField[] = [
@@ -83,6 +88,19 @@ function MenuRow({ icon, label, onPress, danger = false, last = false }: MenuRow
   );
 }
 
+function describeOfflineOperation(op: OfflineSyncOperation): string {
+  if (op.type === 'LOADING_SESSION_SCAN') {
+    return `Unit scan · QR ${op.payload?.qr_value ?? '—'}`;
+  }
+  if (op.type === 'LOADING_SESSION_START') {
+    return `Loading session start · Order ${op.payload?.dispatch_order_id ?? '—'}`;
+  }
+  if (op.type === 'LOADING_SESSION_FINALISE') {
+    return `Finalise · Seal ${op.payload?.seal_number ?? '—'} · ${op.payload?.outcome ?? ''}`;
+  }
+  return String(op.type);
+}
+
 export function SettingsScreen() {
   const router = useRouter();
   const { user, role, signOut, updateProfile } = useRole();
@@ -92,6 +110,8 @@ export function SettingsScreen() {
   const [companyOpen, setCompanyOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [offlineOps, setOfflineOps] = useState<OfflineSyncOperation[]>([]);
+  const [syncing, setSyncing] = useState(false);
 
   const initialProfile = useMemo(
     () => ({
@@ -124,6 +144,35 @@ export function SettingsScreen() {
   const logout = async () => {
     await signOut();
     router.replace('/login');
+  };
+
+  const loadOfflineOps = useCallback(async () => {
+    const operations = await getOfflineOperations();
+    setOfflineOps(operations);
+  }, []);
+
+  useEffect(() => {
+    // Load the persisted offline queue once on mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadOfflineOps();
+  }, [loadOfflineOps]);
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const stats = await flushOfflineOperations();
+      await loadOfflineOps();
+      Alert.alert(
+        'Sync complete',
+        stats.failed > 0
+          ? `Synced ${stats.applied} operation(s). ${stats.failed} still need a connection.`
+          : `Synced ${stats.applied} operation(s) to the server.`,
+      );
+    } catch {
+      Alert.alert('Sync failed', 'Could not reach the server. Your offline scans will retry automatically.');
+    } finally {
+      setSyncing(false);
+    }
   };
 
   return (
@@ -186,8 +235,69 @@ export function SettingsScreen() {
             </Pressable>
           </View>
 
+          {/* Offline sync status — what is queued and waiting to reach the server */}
           <View
             className="mt-[45px] overflow-hidden rounded-[12px] border border-[#EDF2FA] bg-white"
+            style={{ boxShadow: '0px 8px 24px rgba(14, 42, 85, 0.05)' }}>
+            <View className="flex-row items-center gap-3 px-4 py-3.5">
+              <View className="h-9 w-9 items-center justify-center rounded-[8px] bg-[#EEF4FF]">
+                {offlineOps.length > 0 ? <Wifi size={18} color="#011A87" /> : <WifiOff size={18} color="#011A87" />}
+              </View>
+              <View className="flex-1">
+                <AppText className="text-[13px] text-navy" style={{ fontFamily: 'Manrope_500Medium' }}>
+                  Offline sync
+                </AppText>
+                <AppText variant="caption" className="text-[10px] text-[#71829B]">
+                  {offlineOps.length > 0
+                    ? `${offlineOps.length} operation${offlineOps.length === 1 ? '' : 's'} waiting to sync`
+                    : 'All caught up — nothing waiting to sync'}
+                </AppText>
+              </View>
+            </View>
+
+            {offlineOps.length > 0 ? (
+              <View className="border-t border-[#F0F4FA] px-4 py-2">
+                {offlineOps.slice(0, 5).map((op) => (
+                  <View key={op.operation_id} className="flex-row items-start justify-between py-1.5">
+                    <View className="flex-1 pr-3">
+                      <AppText className="text-[11.5px] text-navy" style={{ fontFamily: 'Manrope_600SemiBold' }}>
+                        {describeOfflineOperation(op)}
+                      </AppText>
+                      <AppText variant="tiny" className="mt-0.5 text-[9px] text-[#71829B]">
+                        {op.operation_id}
+                      </AppText>
+                    </View>
+                    <AppText variant="tiny" className="max-w-[45%] text-right text-[9px] text-[#71829B]">
+                      {new Date(op.client_timestamp).toLocaleString()}
+                    </AppText>
+                  </View>
+                ))}
+                {offlineOps.length > 5 ? (
+                  <AppText variant="tiny" className="py-1 text-[#71829B]">
+                    + {offlineOps.length - 5} more pending operation{offlineOps.length - 5 === 1 ? '' : 's'}
+                  </AppText>
+                ) : null}
+              </View>
+            ) : null}
+
+            <View className="px-4 py-3">
+              <Pressable
+                accessibilityRole="button"
+                disabled={syncing || offlineOps.length === 0}
+                onPress={() => void syncNow()}
+                className={`h-[38px] flex-row items-center justify-center gap-2 rounded-full ${
+                  offlineOps.length === 0 ? 'bg-[#C7D4E6]' : 'bg-navy'
+                }`}>
+                <RefreshCw size={14} color="#FFFFFF" strokeWidth={2} />
+                <AppText className="text-[11px] text-white" style={{ fontFamily: 'Manrope_600SemiBold' }}>
+                  {syncing ? 'Syncing…' : 'Sync now'}
+                </AppText>
+              </Pressable>
+            </View>
+          </View>
+
+          <View
+            className="mt-0 overflow-hidden rounded-[12px] border border-[#EDF2FA] bg-white"
             style={{ boxShadow: '0px 8px 24px rgba(14, 42, 85, 0.05)' }}>
               {/* if user role is admin then only show company management */}
               {profile.role === 'admin' && (

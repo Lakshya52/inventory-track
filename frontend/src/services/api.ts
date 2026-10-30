@@ -64,14 +64,14 @@ export const api = {
       request<any>(`/users/${type}/${idPath(id)}`, { method: 'DELETE' }),
   },
   masters: {
-    list: (kind: 'grades' | 'bag-quantities') => request<any[]>(`/masters/${kind}`),
-    create: (kind: 'grades' | 'bag-quantities', data: any) =>
+    list: (kind: 'grades' | 'bag-quantities' | 'uoms') => request<any[]>(`/masters/${kind}`),
+    create: (kind: 'grades' | 'bag-quantities' | 'uoms', data: any) =>
       request<any>(`/masters/${kind}`, { method: 'POST', body: JSON.stringify(data) }),
-    update: (kind: 'grades' | 'bag-quantities', id: EntityId, data: any) =>
+    update: (kind: 'grades' | 'bag-quantities' | 'uoms', id: EntityId, data: any) =>
       request<any>(`/masters/${kind}/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
-    setStatus: (kind: 'grades' | 'bag-quantities', id: EntityId, is_active: boolean) =>
+    setStatus: (kind: 'grades' | 'bag-quantities' | 'uoms', id: EntityId, is_active: boolean) =>
       request<any>(`/masters/${kind}/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
-    remove: (kind: 'grades' | 'bag-quantities', id: EntityId) =>
+    remove: (kind: 'grades' | 'bag-quantities' | 'uoms', id: EntityId) =>
       request<any>(`/masters/${kind}/${idPath(id)}`, { method: 'DELETE' }),
   },
   vendors: {

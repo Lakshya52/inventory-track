@@ -78,7 +78,7 @@ export function RoleTabBar({ state, navigateToTab, descriptors, items }: RoleTab
 				style={{ maxWidth: MAX_WIDTH }}
 			>
 				{/* Included 'will-change-variable' to guarantee zero layout flash or warnings */}
-				<View className="h-[72px] flex-row items-center justify-between rounded-full bg-navbar px-5 shadow-sm will-change-variable">
+				<View className="h-[72px] flex-row items-center w-full justify-between rounded-full bg-navy px-3 shadow-sm will-change-variable">
 					{items.map((item) => {
 						const focused = activeName === item.name;
 						const Icon = item.icon;
@@ -98,13 +98,13 @@ export function RoleTabBar({ state, navigateToTab, descriptors, items }: RoleTab
 								<View
 									className={
 										focused
-											? "h-14 w-14 items-center justify-center rounded-full bg-navy"
+											? "h-14 w-14 items-center justify-center rounded-full bg-white"
 											: "h-14 w-14 items-center justify-center"
 									}
 								>
 									<Icon
 										size={24}
-										color={focused ? colors.white : colors.navy}
+										color={focused ? colors.navy : colors.white}
 										strokeWidth={focused ? 2 : 1.8}
 									/>
 								</View>
@@ -113,7 +113,7 @@ export function RoleTabBar({ state, navigateToTab, descriptors, items }: RoleTab
 					})}
 				</View>
 
-				<View className="h-[19px] flex-row justify-between px-5 pt-[4px]">
+				<View className="h-[19px] flex-row justify-between px-2 pt-[4px]">
 					{items.map((item) => (
 						<View key={item.name} className="w-14 items-center">
 							{activeName === item.name ? (
@@ -123,6 +123,7 @@ export function RoleTabBar({ state, navigateToTab, descriptors, items }: RoleTab
 							) : null}
 						</View>
 					))}
+
 				</View>
 			</View>
 		</View>

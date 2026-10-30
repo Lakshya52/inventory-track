@@ -28,7 +28,7 @@ export const colors = {
   teal: '#0FB5DF',
 } as const;
 
-export const MAX_WIDTH = 520;
+export const MAX_WIDTH = 350;
 
 export const fontNames = {
   regular: 'Manrope_400Regular',

@@ -26,7 +26,7 @@ async function deleteProductCascade(ctx: DbContext, productId: EntityId): Promis
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
+  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
@@ -43,6 +43,7 @@ export async function create(req: Request, res: Response): Promise<void> {
       molecular_formula: molecular_formula || null,
       purity: purity || null,
       grade: grade || null,
+      bag_quantity_id: bag_quantity_id || null,
       storage_conditions: storage_conditions || null,
       hazard_classification: hazard_classification || null,
       physical_state: physical_state || null,
@@ -55,7 +56,7 @@ export async function create(req: Request, res: Response): Promise<void> {
       action: 'PRODUCT_CREATED',
       description: `Product "${name}" (${sku}) created`,
     });
-    res.status(201).json({ id, name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
+    res.status(201).json({ id, name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id: bag_quantity_id || null, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
   } catch (err: any) {
     if (isDuplicateKey(err)) {
       res.status(400).json({ error: 'SKU already exists' });
@@ -111,7 +112,7 @@ export async function remove(req: Request, res: Response): Promise<void> {
 export async function update(req: Request, res: Response): Promise<void> {
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid product id' }); return; }
-  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
+  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
@@ -128,6 +129,7 @@ export async function update(req: Request, res: Response): Promise<void> {
       molecular_formula: molecular_formula || null,
       purity: purity || null,
       grade: grade || null,
+      bag_quantity_id: bag_quantity_id || null,
       storage_conditions: storage_conditions || null,
       hazard_classification: hazard_classification || null,
       physical_state: physical_state || null,

@@ -6,7 +6,7 @@ import {
   Search, Save, Trash2, X,
 } from 'lucide-react';
 
-type MasterKind = 'grades' | 'bag-quantities';
+type MasterKind = 'grades' | 'bag-quantities' | 'uoms';
 type StatusFilter = 'all' | 'active' | 'inactive';
 type MasterItem = {
   id: EntityId;
@@ -346,7 +346,7 @@ export default function Masters() {
             </div>
             <form onSubmit={handleSubmit}>
               <div className="modal-body space-y-4">
-                {kind === 'grades' ? (
+                {kind === 'grades' || kind === 'uoms' ? (
                   <div>
                     <label className="input-label" htmlFor="master-grade-name">Grade name *</label>
                     <input id="master-grade-name" className="input" value={name} onChange={event => setName(event.target.value)} maxLength={100} required autoFocus />

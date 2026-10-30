@@ -1,20 +1,26 @@
-import { execute, query } from './database';
-import { RowDataPacket } from 'mysql2';
+import { execute, query } from "./database";
+import { RowDataPacket } from "mysql2";
 
-const USER_TABLES = ['admins', 'qc_users', 'dispatch_users'];
+const USER_TABLES = ["admins", "qc_users", "dispatch_users"];
 
 async function columnExists(table: string, column: string): Promise<boolean> {
   const rows = await query<RowDataPacket[]>(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-    [table, column]
+    [table, column],
   );
   return rows.length > 0;
 }
 
-async function addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
+async function addColumnIfMissing(
+  table: string,
+  column: string,
+  definition: string,
+): Promise<void> {
   if (!(await columnExists(table, column))) {
-    await execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+    await execute(
+      `ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`,
+    );
   }
 }
 
@@ -22,29 +28,41 @@ async function indexExists(table: string, index: string): Promise<boolean> {
   const rows = await query<RowDataPacket[]>(
     `SELECT INDEX_NAME FROM information_schema.STATISTICS
      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
-    [table, index]
+    [table, index],
   );
   return rows.length > 0;
 }
 
-async function addIndexIfMissing(table: string, index: string, columns: string): Promise<void> {
+async function addIndexIfMissing(
+  table: string,
+  index: string,
+  columns: string,
+): Promise<void> {
   if (!(await indexExists(table, index))) {
-    await execute(`ALTER TABLE \`${table}\` ADD INDEX \`${index}\` (${columns})`);
+    await execute(
+      `ALTER TABLE \`${table}\` ADD INDEX \`${index}\` (${columns})`,
+    );
   }
 }
 
-async function addUniqueIndexIfMissing(table: string, index: string, columns: string): Promise<void> {
+async function addUniqueIndexIfMissing(
+  table: string,
+  index: string,
+  columns: string,
+): Promise<void> {
   const rows = await query<RowDataPacket[]>(
     `SELECT INDEX_NAME, NON_UNIQUE FROM information_schema.STATISTICS
      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
-    [table, index]
+    [table, index],
   );
   if (rows.length > 0 && Number(rows[0].NON_UNIQUE) === 0) return;
   if (rows.length > 0) {
     // Upgrade an earlier non-unique index without leaving a duplicate index.
     await execute(`ALTER TABLE \`${table}\` DROP INDEX \`${index}\``);
   }
-  await execute(`ALTER TABLE \`${table}\` ADD UNIQUE INDEX \`${index}\` (${columns})`);
+  await execute(
+    `ALTER TABLE \`${table}\` ADD UNIQUE INDEX \`${index}\` (${columns})`,
+  );
 }
 
 /**
@@ -53,44 +71,109 @@ async function addUniqueIndexIfMissing(table: string, index: string, columns: st
  */
 export async function ensureAdminSchema(): Promise<void> {
   for (const table of USER_TABLES) {
-    await addColumnIfMissing(table, 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
+    await addColumnIfMissing(
+      table,
+      "is_active",
+      "TINYINT(1) NOT NULL DEFAULT 1",
+    );
   }
 
   // Sync cursors and soft ordering columns.
-  await addColumnIfMissing('products', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('batches', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('shelf_locations', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('clients', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('batches', 'shelf_location_id', 'INT NULL');
-  await addColumnIfMissing('dispatch_orders', 'client_id', 'INT NULL');
-  await addColumnIfMissing('dispatch_orders', 'driver_name', 'VARCHAR(150) NULL');
-  await addColumnIfMissing('dispatch_orders', 'vehicle_number', 'VARCHAR(50) NULL');
-  await addColumnIfMissing('dispatch_orders', 'container_number', 'VARCHAR(100) NULL');
-  await addColumnIfMissing('dispatch_orders', 'approved_by_role', "VARCHAR(20) NULL");
-  await addColumnIfMissing('dispatch_orders', 'approved_by_id', 'INT NULL');
-  await addColumnIfMissing('batches', 'vendor_id', 'INT NULL');
-  await addColumnIfMissing('batches', 'grade_id', 'INT NULL');
-  await addColumnIfMissing('batches', 'bag_quantity_id', 'INT NULL');
-  await addColumnIfMissing('batches', 'fg_details_completed_at', 'DATETIME(3) NULL');
-  await addColumnIfMissing('batches', 'batch_group_id', 'CHAR(36) NULL');
-  await addIndexIfMissing('batches', 'idx_batches_group', 'batch_group_id');
+  await addColumnIfMissing(
+    "products",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing("products", "bag_quantity_id", "INT NULL");
+  await addColumnIfMissing(
+    "batches",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing(
+    "shelf_locations",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing(
+    "clients",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing("batches", "shelf_location_id", "INT NULL");
+  await addColumnIfMissing("dispatch_orders", "client_id", "INT NULL");
+  await addColumnIfMissing(
+    "dispatch_orders",
+    "driver_name",
+    "VARCHAR(150) NULL",
+  );
+  await addColumnIfMissing(
+    "dispatch_orders",
+    "vehicle_number",
+    "VARCHAR(50) NULL",
+  );
+  await addColumnIfMissing(
+    "dispatch_orders",
+    "container_number",
+    "VARCHAR(100) NULL",
+  );
+  await addColumnIfMissing(
+    "dispatch_orders",
+    "approved_by_role",
+    "VARCHAR(20) NULL",
+  );
+  await addColumnIfMissing("dispatch_orders", "approved_by_id", "INT NULL");
+  await addColumnIfMissing("batches", "vendor_id", "INT NULL");
+  await addColumnIfMissing("batches", "grade_id", "INT NULL");
+  await addColumnIfMissing("batches", "bag_quantity_id", "INT NULL");
+  await addColumnIfMissing(
+    "batches",
+    "fg_details_completed_at",
+    "DATETIME(3) NULL",
+  );
+  await addColumnIfMissing("batches", "batch_group_id", "CHAR(36) NULL");
+  await addIndexIfMissing("batches", "idx_batches_group", "batch_group_id");
 
   // Offline idempotency / provenance columns. The server timestamp stays in
   // created_at; client_created_at preserves the time the field user acted.
-  for (const table of ['qc_records', 'dispatch_records', 'dispatch_orders']) {
-    await addColumnIfMissing(table, 'client_operation_id', 'VARCHAR(64) NULL');
-    await addColumnIfMissing(table, 'client_created_at', 'DATETIME(3) NULL');
-    await addColumnIfMissing(table, 'device_uuid', 'VARCHAR(100) NULL');
+  for (const table of ["qc_records", "dispatch_records", "dispatch_orders"]) {
+    await addColumnIfMissing(table, "client_operation_id", "VARCHAR(64) NULL");
+    await addColumnIfMissing(table, "client_created_at", "DATETIME(3) NULL");
+    await addColumnIfMissing(table, "device_uuid", "VARCHAR(100) NULL");
   }
 
-  await addColumnIfMissing('qc_records', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('qc_records', 'method', 'VARCHAR(30) NULL');
-  await addColumnIfMissing('dispatch_records', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('qc_records', 'group_operation_id', 'VARCHAR(64) NULL');
-  await addColumnIfMissing('dispatch_records', 'group_operation_id', 'VARCHAR(64) NULL');
-  await addColumnIfMissing('fix_records', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
-  await addColumnIfMissing('dispatch_orders', 'dispatched_at', 'DATETIME(3) NULL');
-  await addColumnIfMissing('dispatch_records', 'dispatch_order_id', 'INT NULL');
+  await addColumnIfMissing(
+    "qc_records",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing("qc_records", "method", "VARCHAR(30) NULL");
+  await addColumnIfMissing(
+    "dispatch_records",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing(
+    "qc_records",
+    "group_operation_id",
+    "VARCHAR(64) NULL",
+  );
+  await addColumnIfMissing(
+    "dispatch_records",
+    "group_operation_id",
+    "VARCHAR(64) NULL",
+  );
+  await addColumnIfMissing(
+    "fix_records",
+    "updated_at",
+    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  );
+  await addColumnIfMissing(
+    "dispatch_orders",
+    "dispatched_at",
+    "DATETIME(3) NULL",
+  );
+  await addColumnIfMissing("dispatch_records", "dispatch_order_id", "INT NULL");
 
   await execute(`CREATE TABLE IF NOT EXISTS vendors (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -141,9 +224,21 @@ export async function ensureAdminSchema(): Promise<void> {
 
   // A nullable unique column is valid in MariaDB/MySQL: multiple NULLs are
   // allowed while a non-null client operation can only be applied once.
-  await addUniqueIndexIfMissing('qc_records', 'uq_qc_client_operation', 'client_operation_id');
-  await addUniqueIndexIfMissing('dispatch_records', 'uq_dispatch_client_operation', 'client_operation_id');
-  await addUniqueIndexIfMissing('dispatch_orders', 'uq_dispatch_order_client_operation', 'client_operation_id');
+  await addUniqueIndexIfMissing(
+    "qc_records",
+    "uq_qc_client_operation",
+    "client_operation_id",
+  );
+  await addUniqueIndexIfMissing(
+    "dispatch_records",
+    "uq_dispatch_client_operation",
+    "client_operation_id",
+  );
+  await addUniqueIndexIfMissing(
+    "dispatch_orders",
+    "uq_dispatch_order_client_operation",
+    "client_operation_id",
+  );
 
   await execute(`CREATE TABLE IF NOT EXISTS devices (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -239,31 +334,99 @@ export async function ensureAdminSchema(): Promise<void> {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Preserve the foreign-key index before removing the legacy unique index.
-  await addIndexIfMissing('qr_labels', 'idx_qr_labels_batch', 'batch_id');
-  if (await indexExists('qr_labels', 'uq_qr_label_batch')) {
-    await execute('ALTER TABLE qr_labels DROP INDEX uq_qr_label_batch');
+  await addIndexIfMissing("qr_labels", "idx_qr_labels_batch", "batch_id");
+  if (await indexExists("qr_labels", "uq_qr_label_batch")) {
+    await execute("ALTER TABLE qr_labels DROP INDEX uq_qr_label_batch");
   }
 
   // Query indexes for the operational screens and sync cursors.
-  await addIndexIfMissing('products', 'idx_products_updated', 'updated_at');
-  await addIndexIfMissing('batches', 'idx_batches_status_updated', 'status, updated_at');
-  await addIndexIfMissing('batches', 'idx_batches_updated', 'updated_at');
-  await addIndexIfMissing('batches', 'idx_batches_product_created', 'product_id, created_at');
-  await addIndexIfMissing('qc_records', 'idx_qc_tester_created', 'tester_id, created_at');
-  await addIndexIfMissing('qc_records', 'idx_qc_batch_created', 'batch_id, created_at');
-  await addIndexIfMissing('qc_records', 'idx_qc_created', 'created_at');
-  await addIndexIfMissing('qc_records', 'idx_qc_group_operation', 'group_operation_id');
-  await addIndexIfMissing('dispatch_records', 'idx_dispatch_user_created', 'dispatcher_id, created_at');
-  await addIndexIfMissing('dispatch_records', 'idx_dispatch_group_operation', 'group_operation_id');
-  await addIndexIfMissing('dispatch_records', 'idx_dispatch_batch_created', 'batch_id, created_at');
-  await addIndexIfMissing('dispatch_records', 'idx_dispatch_created', 'created_at');
-  await addIndexIfMissing('dispatch_records', 'idx_dispatch_order', 'dispatch_order_id');
-  await addIndexIfMissing('dispatch_orders', 'idx_orders_status_created', 'status, created_at');
-  await addIndexIfMissing('dispatch_orders', 'idx_orders_raised_created', 'raised_by, created_at');
-  await addIndexIfMissing('dispatch_orders', 'idx_orders_batch_status', 'batch_id, status');
-  await addIndexIfMissing('activity_logs', 'idx_activity_created', 'created_at');
-  await addIndexIfMissing('activity_logs', 'idx_activity_user_created', 'user_role, user_id, created_at');
-  await addIndexIfMissing('shelf_locations', 'idx_locations_updated', 'updated_at');
-  await addIndexIfMissing('clients', 'idx_clients_updated', 'updated_at');
-  await addIndexIfMissing('batches', 'idx_batches_shelf_location', 'shelf_location_id');
+  await addIndexIfMissing("products", "idx_products_updated", "updated_at");
+  await addIndexIfMissing(
+    "batches",
+    "idx_batches_status_updated",
+    "status, updated_at",
+  );
+  await addIndexIfMissing("batches", "idx_batches_updated", "updated_at");
+  await addIndexIfMissing(
+    "batches",
+    "idx_batches_product_created",
+    "product_id, created_at",
+  );
+  await addIndexIfMissing(
+    "qc_records",
+    "idx_qc_tester_created",
+    "tester_id, created_at",
+  );
+  await addIndexIfMissing(
+    "qc_records",
+    "idx_qc_batch_created",
+    "batch_id, created_at",
+  );
+  await addIndexIfMissing("qc_records", "idx_qc_created", "created_at");
+  await addIndexIfMissing(
+    "qc_records",
+    "idx_qc_group_operation",
+    "group_operation_id",
+  );
+  await addIndexIfMissing(
+    "dispatch_records",
+    "idx_dispatch_user_created",
+    "dispatcher_id, created_at",
+  );
+  await addIndexIfMissing(
+    "dispatch_records",
+    "idx_dispatch_group_operation",
+    "group_operation_id",
+  );
+  await addIndexIfMissing(
+    "dispatch_records",
+    "idx_dispatch_batch_created",
+    "batch_id, created_at",
+  );
+  await addIndexIfMissing(
+    "dispatch_records",
+    "idx_dispatch_created",
+    "created_at",
+  );
+  await addIndexIfMissing(
+    "dispatch_records",
+    "idx_dispatch_order",
+    "dispatch_order_id",
+  );
+  await addIndexIfMissing(
+    "dispatch_orders",
+    "idx_orders_status_created",
+    "status, created_at",
+  );
+  await addIndexIfMissing(
+    "dispatch_orders",
+    "idx_orders_raised_created",
+    "raised_by, created_at",
+  );
+  await addIndexIfMissing(
+    "dispatch_orders",
+    "idx_orders_batch_status",
+    "batch_id, status",
+  );
+  await addIndexIfMissing(
+    "activity_logs",
+    "idx_activity_created",
+    "created_at",
+  );
+  await addIndexIfMissing(
+    "activity_logs",
+    "idx_activity_user_created",
+    "user_role, user_id, created_at",
+  );
+  await addIndexIfMissing(
+    "shelf_locations",
+    "idx_locations_updated",
+    "updated_at",
+  );
+  await addIndexIfMissing("clients", "idx_clients_updated", "updated_at");
+  await addIndexIfMissing(
+    "batches",
+    "idx_batches_shelf_location",
+    "shelf_location_id",
+  );
 }

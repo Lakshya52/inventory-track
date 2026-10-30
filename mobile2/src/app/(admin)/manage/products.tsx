@@ -1059,7 +1059,7 @@ export default function ProductsScreen() {
         accessibilityRole="button"
         accessibilityLabel="Add product"
         onPress={openAddForm}
-        className="absolute bottom-6 right-5 z-10 h-14 w-14 items-center justify-center rounded-full"
+        className="absolute bottom-6 right-5 z-10 h-14 w-14 items-center justify-center rounded-full bg-navy"
         style={({ pressed }) => [
           {
             backgroundColor: '#10A37F',

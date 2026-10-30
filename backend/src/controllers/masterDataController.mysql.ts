@@ -2,16 +2,22 @@ import { Request, Response } from 'express';
 import { execute, query } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
 
-type MasterKind = 'grades' | 'bag-quantities';
+type MasterKind = 'grades' | 'bag-quantities' | 'uoms';
 type MasterValues = { name: string; quantity?: number; unit?: string };
 
-function tableName(kind: string): 'grades' | 'bag_quantities' | null {
+function tableName(kind: string): 'grades' | 'bag_quantities' | 'uoms' | null {
   if (kind === 'grades') return 'grades';
   if (kind === 'bag-quantities') return 'bag_quantities';
+  if (kind === 'uoms') return 'uoms';
   return null;
 }
-
+// Removed duplicate legacy block – function tableName defined above
 function masterValues(kind: MasterKind, body: Record<string, unknown>): MasterValues | null {
+  if (kind === 'grades' || kind === 'uoms') {
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    return name && name.length <= 100 ? { name } : null;
+  }
+
   if (kind === 'grades') {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     return name && name.length <= 100 ? { name } : null;
@@ -28,7 +34,7 @@ function masterValues(kind: MasterKind, body: Record<string, unknown>): MasterVa
 
 async function findMatchingMaster(kind: MasterKind, values: MasterValues, excludeId?: number): Promise<RowDataPacket | undefined> {
   const table = tableName(kind)!;
-  const where = kind === 'grades'
+  const where = kind === 'grades' || kind === 'uoms'
     ? 'LOWER(TRIM(name)) = LOWER(?)'
     : 'quantity = ? AND LOWER(TRIM(unit)) = LOWER(?)';
   const params = kind === 'grades' ? [values.name] : [values.quantity, values.unit];
