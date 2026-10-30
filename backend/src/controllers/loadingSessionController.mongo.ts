@@ -744,3 +744,94 @@ export async function finalise(req: Request, res: Response): Promise<void> {
     errorResponse(res, error, 'Could not finalise loading session');
   }
 }
+
+/**
+ * POST /api/loading-sessions/:id/cancel
+ *
+ * Lets a dispatcher abandon a session they opened by mistake. Only allowed
+ * before the first unit is scanned: once anything is loaded the session must be
+ * finalised so the dispatch record and stock remain consistent. Cancelling puts
+ * the batch back into DISPATCH_APPROVED so the order can be loaded again.
+ */
+export async function cancel(req: Request, res: Response): Promise<void> {
+  const id = req.params.id;
+  if (!isValidId(id)) {
+    res.status(400).json({ error: 'Invalid loading session id', code: 'INVALID_SESSION_ID' });
+    return;
+  }
+
+  try {
+    const result = await withTransaction(async (ctx: DbContext) => {
+      const session = await ctx.findOne('loading_sessions', { id });
+      if (!session) throw new SyncError('Loading session not found', 'SESSION_NOT_FOUND', 404);
+      if (req.user!.role === 'DISPATCH' && idKey(session.loader_id) !== idKey(req.user!.userId)) {
+        throw new SyncError('You can only cancel your own loading sessions', 'FORBIDDEN', 403);
+      }
+      if (String(session.status) !== 'ACTIVE') {
+        throw new SyncError('This loading session is already closed', 'SESSION_CLOSED', 409, {
+          session_id: session.id,
+          status: session.status,
+        });
+      }
+
+      const scanned = numeric(session.scanned);
+      if (scanned > 0) {
+        throw new SyncError(
+          'This session already has scanned units and cannot be cancelled. Finalise it instead.',
+          'SESSION_HAS_SCANS',
+          409,
+          { session_id: session.id, scanned, total: numeric(session.total) }
+        );
+      }
+
+      const cancelledAt = now();
+      const updated = await ctx.updateOne(
+        'loading_sessions',
+        { id: session.id, status: 'ACTIVE', scanned: 0 },
+        {
+          $set: {
+            status: 'CANCELLED',
+            cancelled_at: cancelledAt,
+            completed_at: cancelledAt,
+          },
+        }
+      );
+      if (updated.matchedCount !== 1) {
+        // A scan slipped in between the read and the update.
+        throw new SyncError(
+          'This session already has scanned units and cannot be cancelled. Finalise it instead.',
+          'SESSION_HAS_SCANS',
+          409,
+          { session_id: session.id }
+        );
+      }
+
+      const batch = await ctx.findOne('batches', { id: session.batch_id });
+      if (batch) {
+        await ctx.updateOne(
+          'batches',
+          { id: batch.id, status: 'LOADING' },
+          { $set: { status: 'DISPATCH_APPROVED' } }
+        );
+      }
+
+      await logActivity(
+        ctx,
+        req.user!,
+        'LOADING_SESSION_CANCELLED',
+        `Loading session ${session.id} cancelled before any scan (batch ${batch?.batch_number ?? session.batch_id})`
+      );
+
+      const cancelledSession = await ctx.findOne('loading_sessions', { id: session.id });
+      return {
+        session: cancelledSession,
+        order_status: 'APPROVED',
+        batch_status: 'DISPATCH_APPROVED',
+      };
+    });
+
+    res.status(200).json(result);
+  } catch (error) {
+    errorResponse(res, error, 'Could not cancel loading session');
+  }
+}

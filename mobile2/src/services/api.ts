@@ -38,11 +38,13 @@ export function getAccessToken() {
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -76,7 +78,12 @@ async function readBody(response: Response): Promise<unknown> {
 
 function toApiError(payload: unknown, status: number): ApiError {
   if (payload && typeof payload === 'object' && 'error' in payload) {
-    return new ApiError(String((payload as { error: unknown }).error), status);
+    const record = payload as { error: unknown; code?: unknown };
+    return new ApiError(
+      String(record.error),
+      status,
+      typeof record.code === 'string' ? record.code : undefined,
+    );
   }
   return new ApiError(`Request failed (${status})`, status);
 }

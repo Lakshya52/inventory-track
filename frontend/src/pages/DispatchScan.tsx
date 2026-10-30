@@ -3,13 +3,14 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { BrowserMultiFormatReader } from '@zxing/library';
 import { api } from '../services/api';
 import {
-  AlertTriangle, Camera, CheckCircle, ClipboardList, Clock, Loader2,
-  PackageCheck, QrCode, RefreshCw, ShieldCheck, Truck, X, XCircle,
+  AlertTriangle, Boxes, Camera, CheckCircle, ClipboardList, Clock, Loader2,
+  PackageCheck, QrCode, RefreshCw, ScanLine, ShieldCheck, Truck, X, XCircle,
 } from 'lucide-react';
 
 const reader = new BrowserMultiFormatReader();
 
 type ScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
+type InlineResult = ScanResult | 'ERROR';
 type MessageKind = 'success' | 'error' | 'warning' | 'info';
 type Outcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 
@@ -20,6 +21,14 @@ interface LoadingSession {
   scanned: number;
   dispatch_order_id: string;
   batch_id: string;
+  batch_number: string | null;
+  product_name: string | null;
+  client_name: string | null;
+  driver_name: string | null;
+  vehicle_number: string | null;
+  container_number: string | null;
+  uom: string | null;
+  started_at: string | null;
 }
 
 interface RecentScan {
@@ -27,6 +36,12 @@ interface RecentScan {
   qr: string;
   result: ScanResult;
   at: string | null;
+}
+
+interface InlineScan {
+  qr: string;
+  result: InlineResult;
+  at: number;
 }
 
 const MESSAGE_STYLES: Record<MessageKind, string> = {
@@ -41,6 +56,14 @@ const RESULT_LABELS: Record<ScanResult, string> = {
   DUPLICATE: 'Duplicate',
   WRONG_BATCH: 'Wrong batch',
   QTY_EXCEEDED: 'Qty exceeded',
+};
+
+const INLINE_STYLES: Record<InlineResult, { wrap: string; label: string }> = {
+  OK: { wrap: 'border-emerald-200 bg-emerald-50 text-emerald-800', label: 'Unit accepted' },
+  DUPLICATE: { wrap: 'border-amber-200 bg-amber-50 text-amber-800', label: 'Already scanned' },
+  WRONG_BATCH: { wrap: 'border-rose-200 bg-rose-50 text-rose-800', label: 'Belongs to another batch' },
+  QTY_EXCEEDED: { wrap: 'border-rose-200 bg-rose-50 text-rose-800', label: 'Quantity exceeded' },
+  ERROR: { wrap: 'border-rose-200 bg-rose-50 text-rose-800', label: 'Scan failed' },
 };
 
 function operationId(): string {
@@ -60,10 +83,29 @@ function resultBadge(result: string): string {
   return 'badge-danger';
 }
 
-function formatTime(value?: string | null): string {
-  if (!value) return '-';
+function text(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const valueText = String(value).trim();
+  return valueText || null;
+}
+
+function formatTime(value?: string | number | null): string {
+  if (value === null || value === undefined || value === '') return '-';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleTimeString();
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function timeValue(value?: string | null): number {
@@ -79,13 +121,23 @@ function normalizeScanResult(value: unknown): ScanResult {
 }
 
 function normalizeSession(raw: any, fallback?: any): LoadingSession {
+  const source = raw?.session ?? raw ?? {};
+  const base = fallback ?? {};
   return {
-    id: String(raw?.id ?? raw?.session_id ?? ''),
-    status: String(raw?.status ?? 'ACTIVE'),
-    total: Math.max(0, Number(raw?.total ?? fallback?.quantity ?? 0)),
-    scanned: Math.max(0, Number(raw?.scanned ?? 0)),
-    dispatch_order_id: String(raw?.dispatch_order_id ?? fallback?.id ?? ''),
-    batch_id: String(raw?.batch_id ?? fallback?.batch_id ?? ''),
+    id: String(source?.id ?? source?.session_id ?? ''),
+    status: String(source?.status ?? 'ACTIVE'),
+    total: Math.max(0, Number(source?.total ?? base?.quantity ?? base?.total ?? 0)),
+    scanned: Math.max(0, Number(source?.scanned ?? 0)),
+    dispatch_order_id: String(source?.dispatch_order_id ?? source?.order_id ?? base?.id ?? ''),
+    batch_id: String(source?.batch_id ?? base?.batch_id ?? ''),
+    batch_number: text(source?.batch_number) ?? text(base?.batch_number),
+    product_name: text(source?.product_name) ?? text(base?.product_name),
+    client_name: text(source?.client_name) ?? text(base?.client_name),
+    driver_name: text(source?.driver_name) ?? text(base?.driver_name),
+    vehicle_number: text(source?.vehicle_number) ?? text(base?.vehicle_number),
+    container_number: text(source?.container_number) ?? text(base?.container_number),
+    uom: text(source?.uom) ?? text(base?.uom),
+    started_at: text(source?.started_at) ?? text(base?.started_at),
   };
 }
 
@@ -99,9 +151,31 @@ function normalizeEvent(event: any, index: number): RecentScan {
   };
 }
 
+function mapRecentEvents(events: any[]): RecentScan[] {
+  return events
+    .map(normalizeEvent)
+    .filter((event) => event.qr)
+    .sort((a, b) => timeValue(b.at) - timeValue(a.at))
+    .slice(0, 12);
+}
+
 function percent(scanned: number, total: number): number {
   if (total <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((scanned / total) * 100)));
+}
+
+function DetailRow({ label, value, mono = false }: { label: string; value?: string | null; mono?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-3 border-b border-surface-100 py-1.5 last:border-0">
+      <dt className="shrink-0 text-surface-400">{label}</dt>
+      <dd
+        className={`min-w-0 truncate text-right font-medium text-surface-700 ${mono ? 'font-mono' : ''}`}
+        title={value || undefined}
+      >
+        {value || '-'}
+      </dd>
+    </div>
+  );
 }
 
 export default function DispatchScan() {
@@ -110,6 +184,8 @@ export default function DispatchScan() {
   const [orderSearch, setOrderSearch] = useState('');
   const [selectedOrderId, setSelectedOrderId] = useState('');
   const [session, setSession] = useState<LoadingSession | null>(null);
+  const [activeSession, setActiveSession] = useState<LoadingSession | null>(null);
+  const [checkingActive, setCheckingActive] = useState(true);
   const [starting, setStarting] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
@@ -117,6 +193,11 @@ export default function DispatchScan() {
   const [message, setMessage] = useState('');
   const [messageKind, setMessageKind] = useState<MessageKind>('info');
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
+  const [lastScan, setLastScan] = useState<InlineScan | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [pollError, setPollError] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [sealNumber, setSealNumber] = useState('');
   const [outcome, setOutcome] = useState<Outcome>('DISPATCHED');
   const [remarks, setRemarks] = useState('');
@@ -135,6 +216,8 @@ export default function DispatchScan() {
   useEffect(() => {
     sessionIdRef.current = session?.id ?? null;
   }, [session?.id]);
+
+  const allScanned = Boolean(session && session.total > 0 && session.scanned >= session.total);
 
   const stopCamera = useCallback(() => {
     try {
@@ -167,10 +250,28 @@ export default function DispatchScan() {
     }
   }, []);
 
+  const loadActiveSession = useCallback(async () => {
+    setCheckingActive(true);
+    try {
+      const list = await api.loadingSessions.active();
+      const rows = Array.isArray(list) ? list : [];
+      if (rows.length > 0) {
+        setActiveSession(normalizeSession(rows[0]));
+      } else {
+        setActiveSession(null);
+      }
+    } catch {
+      // The resume banner is best-effort; the scan flow still works without it.
+    } finally {
+      setCheckingActive(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadOrders();
     void loadToday();
-  }, [loadOrders, loadToday]);
+    void loadActiveSession();
+  }, [loadOrders, loadToday, loadActiveSession]);
 
   const selectedOrder = useMemo(
     () => orders.find((order) => String(order.id) === selectedOrderId) || null,
@@ -189,6 +290,17 @@ export default function DispatchScan() {
         .some((value) => String(value).toLowerCase().includes(needle))
     );
   }, [orders, orderSearch]);
+
+  // Enrich the resume banner with client/driver details once the order list arrives.
+  useEffect(() => {
+    if (!activeSession) return;
+    const order = orders.find((item) => String(item.id) === activeSession.dispatch_order_id);
+    if (!order) return;
+    const enriched = normalizeSession(activeSession, order);
+    if (JSON.stringify(enriched) !== JSON.stringify(activeSession)) {
+      setActiveSession(enriched);
+    }
+  }, [orders, activeSession]);
 
   // Deep link support: /dispatch?order=<id>
   useEffect(() => {
@@ -211,8 +323,61 @@ export default function DispatchScan() {
     if (session) return;
     setSelectedOrderId(id);
     setMessage('');
+    setLastScan(null);
     setScanning(false);
     stopCamera();
+  };
+
+  const resetToOrders = useCallback(() => {
+    setSession(null);
+    setSelectedOrderId('');
+    setRecentScans([]);
+    setLastScan(null);
+    setLastSyncedAt(null);
+    setPollError(false);
+    setSealNumber('');
+    setRemarks('');
+    setOutcome('DISPATCHED');
+    setScanning(false);
+    stopCamera();
+  }, [stopCamera]);
+
+  const resumeSession = async (target: LoadingSession) => {
+    const order = orders.find((item) => String(item.id) === target.dispatch_order_id) || null;
+    let next = normalizeSession(target, order);
+    let events: any[] = [];
+    try {
+      const data = await api.loadingSessions.get(target.id);
+      const raw = data?.session ?? data;
+      if (raw) next = normalizeSession(raw, target);
+      events = Array.isArray(data?.events) ? data.events : [];
+    } catch {
+      // The 2-second poll will hydrate the counters shortly.
+    }
+
+    if (next.status !== 'ACTIVE') {
+      setActiveSession(null);
+      setMessageKind('warning');
+      setMessage('That loading session is no longer active. Choose an approved order to start again.');
+      await Promise.all([loadOrders(), loadActiveSession()]);
+      return;
+    }
+
+    setSession(next);
+    setActiveSession(null);
+    setSelectedOrderId(next.dispatch_order_id);
+    setRecentScans(mapRecentEvents(events));
+    setLastScan(null);
+    setLastSyncedAt(Date.now());
+    setPollError(false);
+    setSealNumber('');
+    setRemarks('');
+    setOutcome('DISPATCHED');
+    setScanning(false);
+    setMessageKind('info');
+    setMessage(
+      `Resumed loading session for order #${next.dispatch_order_id} — ${next.scanned}/${next.total} units already scanned.`
+    );
   };
 
   const startSession = async () => {
@@ -224,17 +389,31 @@ export default function DispatchScan() {
     setStarting(true);
     setMessage('');
     setFinaliseResult(null);
+    setLastScan(null);
+    setScanning(false);
+    stopCamera();
     try {
       const response = await api.loadingSessions.start(selectedOrder.id, operationId());
-      const next = normalizeSession(response?.session ?? response, selectedOrder);
+      const payload = response?.session ?? response;
+      const next = normalizeSession(
+        {
+          ...payload,
+          batch_number: response?.batch_number ?? payload?.batch_number,
+          product_name: response?.product_name ?? payload?.product_name,
+        },
+        selectedOrder
+      );
       if (!next.id) throw new Error('The server did not return a loading session id.');
       setSession(next);
+      setActiveSession(null);
       setRecentScans([]);
+      setLastSyncedAt(Date.now());
+      setPollError(false);
       setSealNumber('');
       setRemarks('');
       setOutcome('DISPATCHED');
       setMessageKind('success');
-      setMessage(`Loading session started for order #${selectedOrder.id}. Scan each unit QR label.`);
+      setMessage(`Loading session started for order #${selectedOrder.id} — scan ${next.total} units.`);
     } catch (err: any) {
       // If the order already has an active session, resume it instead of failing.
       try {
@@ -243,17 +422,8 @@ export default function DispatchScan() {
           (item: any) => String(item.order_id ?? item.dispatch_order_id) === String(selectedOrder.id)
         );
         if (match) {
-          const resumed = normalizeSession(match?.session ?? match, selectedOrder);
-          if (resumed.id) {
-            setSession(resumed);
-            setRecentScans([]);
-            setSealNumber('');
-            setRemarks('');
-            setOutcome('DISPATCHED');
-            setMessageKind('info');
-            setMessage(`Resumed the active loading session for order #${selectedOrder.id}.`);
-            return;
-          }
+          await resumeSession(normalizeSession(match, selectedOrder));
+          return;
         }
       } catch {
         // Fall through to the original error message.
@@ -301,22 +471,21 @@ export default function DispatchScan() {
           ...prev,
         ].slice(0, 12)
       );
+      setLastScan({ qr: qrValue, result, at: Date.now() });
+      setLastSyncedAt(Date.now());
+      setPollError(false);
+      setMessage('');
 
       if (result === 'OK') {
         setMessageKind('success');
-        setMessage(`Scanned ${scanned}/${total} — unit added to this load.`);
       } else if (result === 'DUPLICATE') {
         setMessageKind('warning');
-        setMessage('Already scanned — this QR is already counted in this session.');
-      } else if (result === 'WRONG_BATCH') {
-        setMessageKind('error');
-        setMessage('Belongs to another batch — this QR cannot be loaded for the selected order.');
       } else {
         setMessageKind('error');
-        setMessage(`Quantity exceeded — this order already has ${scanned}/${total} units scanned.`);
       }
       setManualValue('');
     } catch (err: any) {
+      setLastScan({ qr: qrValue, result: 'ERROR', at: Date.now() });
       setMessageKind('error');
       setMessage(err?.message || 'Scan failed. Check the connection and try again.');
     } finally {
@@ -333,7 +502,7 @@ export default function DispatchScan() {
 
   const submitManual = () => {
     const value = manualValue.trim();
-    if (!value || !session || scanInFlightRef.current) return;
+    if (!value || !session || session.status !== 'ACTIVE' || scanInFlightRef.current) return;
     setManualValue('');
     void doScan(value);
   };
@@ -350,25 +519,46 @@ export default function DispatchScan() {
         const data = await api.loadingSessions.get(sessionId);
         if (cancelled || scanInFlightRef.current) return;
         const raw = data?.session ?? data;
+        const status = String(raw?.status ?? 'ACTIVE');
+
         setSession((prev) => {
           if (!prev || prev.id !== sessionId) return prev;
+          const merged = normalizeSession(raw, prev);
           return {
             ...prev,
+            status,
             scanned: Math.max(0, Number(raw?.scanned ?? prev.scanned)),
             total: Math.max(0, Number(raw?.total ?? prev.total)),
-            status: String(raw?.status ?? prev.status),
+            batch_number: merged.batch_number ?? prev.batch_number,
+            product_name: merged.product_name ?? prev.product_name,
+            started_at: merged.started_at ?? prev.started_at,
           };
         });
+        setPollError(false);
+        setLastSyncedAt(Date.now());
+
         const events: any[] = Array.isArray(data?.events) ? data.events : [];
         if (events.length > 0) {
-          const mapped = events
-            .map(normalizeEvent)
-            .filter((event) => event.qr)
-            .sort((a, b) => timeValue(b.at) - timeValue(a.at));
-          setRecentScans(mapped.slice(0, 12));
+          setRecentScans(mapRecentEvents(events));
+        }
+
+        if (status !== 'ACTIVE') {
+          setScanning(false);
+          stopCamera();
+          setActiveSession(null);
+          setSession(null);
+          setSelectedOrderId('');
+          setMessageKind(status === 'CANCELLED' ? 'warning' : 'info');
+          setMessage(
+            status === 'CANCELLED'
+              ? 'This loading session was cancelled. Choose an approved order to start again.'
+              : 'This loading session was closed on another device.'
+          );
+          void Promise.all([loadOrders(), loadToday()]);
         }
       } catch {
         // Keep the last known counter; the next poll retries.
+        if (!cancelled) setPollError(true);
       }
     };
 
@@ -379,7 +569,7 @@ export default function DispatchScan() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [session?.id, session?.status]);
+  }, [session?.id, session?.status, loadOrders, loadToday, stopCamera]);
 
   // Camera scanning. The handler reads live state through a ref so the camera
   // is not restarted on every counter update.
@@ -403,8 +593,8 @@ export default function DispatchScan() {
       try {
         await reader.decodeFromVideoDevice(null, video, (result) => {
           if (cancelled || !result) return;
-          const text = result.getText().trim();
-          if (text) scanHandlerRef.current(text);
+          const value = result.getText().trim();
+          if (value) scanHandlerRef.current(value);
         });
       } catch (err: any) {
         if (cancelled) return;
@@ -425,13 +615,68 @@ export default function DispatchScan() {
     };
   }, [scanning, session?.id, session?.status, stopCamera]);
 
+  // Once every unit is counted, stop the camera so stray scans do not fire errors.
+  useEffect(() => {
+    if (scanning && session && session.total > 0 && session.scanned >= session.total) {
+      stopCamera();
+      setScanning(false);
+    }
+  }, [scanning, session?.total, session?.scanned, stopCamera]);
+
   const toggleCamera = () => {
+    if (!session || session.status !== 'ACTIVE' || allScanned) return;
     if (scanning) {
       stopCamera();
       setScanning(false);
     } else {
       setMessage('');
       setScanning(true);
+    }
+  };
+
+  const openCancelDialog = () => {
+    const target = session ?? activeSession;
+    if (!target) return;
+    if (target.scanned > 0) {
+      setMessageKind('warning');
+      setMessage('Cancelling is only possible before the first scan. Finalise this session instead.');
+      return;
+    }
+    setScanning(false);
+    stopCamera();
+    setCancelOpen(true);
+  };
+
+  const cancelSession = async () => {
+    const target = session ?? activeSession;
+    if (!target || cancelling) return;
+    setCancelling(true);
+    try {
+      await api.loadingSessions.cancel(target.id);
+      const orderId = target.dispatch_order_id;
+      setCancelOpen(false);
+      setSession(null);
+      setActiveSession(null);
+      setRecentScans([]);
+      setLastScan(null);
+      setLastSyncedAt(null);
+      setPollError(false);
+      setScanning(false);
+      stopCamera();
+      setSealNumber('');
+      setRemarks('');
+      setOutcome('DISPATCHED');
+      setSelectedOrderId(orderId);
+      setMessageKind('success');
+      setMessage(`Loading session cancelled for order #${orderId}. The batch is ready to be loaded again.`);
+      await Promise.all([loadOrders(), loadToday()]);
+    } catch (err: any) {
+      setCancelOpen(false);
+      setMessageKind('error');
+      setMessage(err?.message || 'Could not cancel the loading session. Please retry.');
+      await Promise.all([loadOrders(), loadActiveSession()]);
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -461,8 +706,12 @@ export default function DispatchScan() {
       setScanning(false);
       stopCamera();
       setSession(null);
+      setActiveSession(null);
       setSelectedOrderId('');
       setRecentScans([]);
+      setLastScan(null);
+      setLastSyncedAt(null);
+      setPollError(false);
       setSealNumber('');
       setRemarks('');
       setOutcome('DISPATCHED');
@@ -483,11 +732,20 @@ export default function DispatchScan() {
   const progress = percent(scannedCount, totalCount);
   const remaining = Math.max(0, totalCount - scannedCount);
   const shortfall = session ? scannedCount < totalCount : false;
+
+  const cancelTarget = session ?? activeSession;
+  const canCancelSession = Boolean(cancelTarget && cancelTarget.status === 'ACTIVE' && cancelTarget.scanned === 0);
+
   const MessageIcon =
     messageKind === 'success' ? CheckCircle
       : messageKind === 'error' ? XCircle
         : messageKind === 'warning' ? AlertTriangle
           : Clock;
+
+  const LastScanIcon =
+    lastScan?.result === 'OK' ? CheckCircle
+      : lastScan?.result === 'DUPLICATE' ? AlertTriangle
+        : XCircle;
 
   return (
     <div className="page-container max-w-5xl mx-auto">
@@ -503,9 +761,9 @@ export default function DispatchScan() {
       </div>
 
       {message && (
-        <div className={`mb-4 flex items-start gap-2 rounded-xl border p-3 text-sm ${MESSAGE_STYLES[messageKind]}`}>
+        <div className={`mb-4 flex items-start gap-2 rounded-xl border p-3 text-sm ${MESSAGE_STYLES[messageKind]}`} role="status" aria-live="polite">
           <MessageIcon size={16} className="mt-0.5 shrink-0" />
-          <span>{message}</span>
+          <span className="min-w-0">{message}</span>
           <button className="ml-auto shrink-0 opacity-60 hover:opacity-100" onClick={() => setMessage('')} aria-label="Dismiss message">
             <X size={14} />
           </button>
@@ -553,17 +811,63 @@ export default function DispatchScan() {
             </div>
           )}
 
+          {activeSession && (
+            <div className="card mb-4 overflow-hidden border border-brand-200">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-l-4 border-l-brand-500 p-6">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge badge-success">
+                      <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                      ACTIVE SESSION
+                    </span>
+                    <span className="badge badge-info">Order #{activeSession.dispatch_order_id || '-'}</span>
+                    <span className="rounded-lg bg-surface-100 px-2 py-1 font-mono text-xs text-surface-700">
+                      Batch {activeSession.batch_number || '-'}
+                    </span>
+                  </div>
+                  <h2 className="mt-2 flex items-center gap-2 text-base font-bold text-surface-900">
+                    <QrCode size={18} className="text-brand-500" />
+                    Loading already in progress
+                  </h2>
+                  <p className="mt-1 text-sm text-surface-500">
+                    {activeSession.product_name || 'Product'} · {activeSession.scanned}/{activeSession.total} units scanned
+                    {activeSession.client_name ? ` · ${activeSession.client_name}` : ''}
+                  </p>
+                  <p className="mt-1 text-xs text-surface-400">
+                    Started {formatDateTime(activeSession.started_at)}. Resume it to keep scanning instead of starting a duplicate.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button className="btn-primary" onClick={() => void resumeSession(activeSession)}>
+                    <QrCode size={16} /> Resume session
+                  </button>
+                  {activeSession.scanned === 0 && (
+                    <button
+                      className="btn-secondary border-rose-200 text-rose-600 hover:bg-rose-50"
+                      onClick={openCancelDialog}
+                      disabled={cancelling}
+                    >
+                      <XCircle size={16} /> Cancel session
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="card mb-4 p-6">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="section-title flex items-center gap-2">
                   <PackageCheck size={16} className="text-brand-500" /> Approved dispatch orders
+                  <span className="badge badge-neutral">{filteredOrders.length}</span>
+                  {checkingActive && <Loader2 size={13} className="animate-spin text-surface-400" aria-label="Checking active sessions" />}
                 </h2>
                 <p className="mt-1 text-xs text-surface-400">
                   Select the order you are loading. Only QC-approved orders appear here.
                 </p>
               </div>
-              <button className="btn-secondary btn-sm" onClick={() => void loadOrders()} disabled={ordersLoading}>
+              <button className="btn-secondary btn-sm" onClick={() => void Promise.all([loadOrders(), loadActiveSession()])} disabled={ordersLoading}>
                 <RefreshCw size={14} className={ordersLoading ? 'animate-spin' : ''} /> Refresh
               </button>
             </div>
@@ -658,114 +962,236 @@ export default function DispatchScan() {
         </>
       )}
 
-      {session && (
+      {session && session.status !== 'ACTIVE' && (
+        <div className="card mb-4 border border-amber-200 bg-amber-50/50 p-6">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={22} className="mt-0.5 shrink-0 text-amber-600" />
+            <div className="min-w-0 flex-1">
+              <h2 className="section-title">Session {session.status}</h2>
+              <p className="mt-1 text-sm text-surface-600">
+                This loading session is no longer active. Choose an approved order to start a new session.
+              </p>
+              <button className="btn-secondary btn-sm mt-4" onClick={resetToOrders}>
+                Back to orders
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {session && session.status === 'ACTIVE' && (
         <>
-          <div className="card mb-4 p-6">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="section-title flex items-center gap-2">
-                  <QrCode size={16} className="text-brand-500" /> Loading in progress
-                </h2>
-                <p className="mt-1 text-xs text-surface-400">
-                  Order #{session.dispatch_order_id || selectedOrder?.id || '-'} · batch{' '}
-                  <span className="font-mono">{selectedOrder?.batch_number || '-'}</span> ·{' '}
-                  {selectedOrder?.client_name || 'Client'}
-                </p>
-              </div>
-              <span className="badge badge-success">
-                <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                {session.status}
-              </span>
-            </div>
-
-            <div className="mt-5 rounded-2xl bg-surface-50 p-5">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wider text-surface-500">Scanned / total</div>
-                  <div className="mt-1 text-4xl font-bold tabular-nums text-surface-900">
-                    {scannedCount} <span className="text-surface-400">/</span> {totalCount}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-2xl font-bold text-brand-600">{progress}%</div>
-                  <div className="text-xs text-surface-400">complete</div>
-                </div>
-              </div>
-              <div className="mt-4 h-3 w-full overflow-hidden rounded-full bg-surface-200">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${progress >= 100 ? 'bg-emerald-500' : 'bg-brand-500'}`}
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-surface-500">
-                <span>{remaining} unit{remaining === 1 ? '' : 's'} remaining</span>
-                <span>Counters refresh every 2 seconds</span>
-              </div>
-            </div>
-
-            <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-              <input
-                className="input flex-1 font-mono text-sm"
-                placeholder="Scan or type a unit QR code, then press Enter"
-                value={manualValue}
-                onChange={(event) => setManualValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') submitManual();
-                }}
-                disabled={scanBusy}
-              />
-              <button className="btn-secondary" onClick={submitManual} disabled={!manualValue.trim() || scanBusy}>
-                {scanBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-                {scanBusy ? 'Checking...' : 'Add scan'}
-              </button>
-              <button className="btn-primary" onClick={toggleCamera}>
-                <Camera size={16} /> {scanning ? 'Camera on' : 'Scan with camera'}
-              </button>
-            </div>
-
-            {scanning && (
-              <div className="mt-4 space-y-3">
-                <div className="overflow-hidden rounded-xl bg-black">
-                  <video
-                    ref={videoRef}
-                    style={{ width: '100%', height: '300px', objectFit: 'cover' }}
-                    playsInline
-                    muted
-                  />
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="flex items-center gap-2 text-sm text-brand-600">
-                    <Camera size={14} /> Keep scanning — the camera stays on between scans.
-                  </span>
-                  <button className="btn-secondary btn-sm" onClick={toggleCamera}>
-                    <X size={14} /> Stop camera
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-5 overflow-hidden rounded-xl border border-surface-200">
-              <div className="flex items-center justify-between border-b border-surface-100 bg-surface-50 px-4 py-3">
-                <h3 className="text-sm font-semibold text-surface-800">Recent scans</h3>
-                <span className="badge badge-neutral">{recentScans.length}</span>
-              </div>
-              <div className="max-h-60 divide-y divide-surface-100 overflow-y-auto">
-                {recentScans.map((scan) => (
-                  <div key={scan.key} className="flex items-center justify-between gap-3 px-4 py-2.5">
-                    <div className="min-w-0">
-                      <div className="truncate font-mono text-xs text-surface-700" title={scan.qr}>{scan.qr}</div>
-                      <div className="text-[11px] text-surface-400">{formatTime(scan.at)}</div>
-                    </div>
-                    <span className={`badge shrink-0 ${resultBadge(scan.result)}`}>
-                      {RESULT_LABELS[scan.result] || scan.result}
+          <div className="card mb-4 overflow-hidden">
+            <div className="border-b border-surface-100 bg-surface-50/70 px-6 py-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge badge-success">
+                      <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                      {session.status}
+                    </span>
+                    <span className="badge badge-info">Order #{session.dispatch_order_id || '-'}</span>
+                    <span className="rounded-lg bg-white px-2 py-1 font-mono text-xs text-surface-700 ring-1 ring-surface-200">
+                      Batch {session.batch_number || '-'}
                     </span>
                   </div>
-                ))}
-                {recentScans.length === 0 && (
-                  <div className="px-4 py-8 text-center text-xs text-surface-400">
-                    No scans yet. Scan the first unit QR to begin.
+                  <h2 className="mt-2 flex items-center gap-2 text-lg font-bold tracking-tight text-surface-900">
+                    <QrCode size={18} className="text-brand-500" />
+                    {session.product_name || 'Loading in progress'}
+                  </h2>
+                  <p className="mt-1 text-xs text-surface-500">
+                    {session.client_name || 'Client'} · Driver {session.driver_name || '-'} ·{' '}
+                    {session.vehicle_number || 'No vehicle'}
+                    {session.container_number ? ` · Container ${session.container_number}` : ''}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {canCancelSession ? (
+                    <button
+                      className="btn-secondary btn-sm border-rose-200 text-rose-600 hover:bg-rose-50"
+                      onClick={openCancelDialog}
+                      disabled={cancelling}
+                    >
+                      <XCircle size={14} /> Cancel session
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-surface-400" title="Cancelling is only available before the first scan">
+                      Cancel available before first scan
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+              <div className="min-w-0 space-y-4">
+                <div className="rounded-2xl border border-surface-200 bg-surface-50 p-5">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">Scanned units</div>
+                      <div className="mt-1 text-4xl font-bold tabular-nums text-surface-900">
+                        {scannedCount} <span className="text-2xl text-surface-400">/ {totalCount}</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-2xl font-bold ${progress >= 100 ? 'text-emerald-600' : 'text-brand-600'}`}>
+                        {progress}%
+                      </div>
+                      <div className="text-xs text-surface-400">
+                        {remaining === 0 ? 'All units scanned' : `${remaining} unit${remaining === 1 ? '' : 's'} remaining`}
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    className="mt-4 h-3 w-full overflow-hidden rounded-full bg-surface-200"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progress}
+                    aria-label="Loading progress"
+                  >
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${progress >= 100 ? 'bg-emerald-500' : 'bg-brand-500'}`}
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-surface-400">
+                    <span>{lastSyncedAt ? `Last sync ${formatTime(lastSyncedAt)}` : 'Live counter'}</span>
+                    {pollError ? (
+                      <span className="flex items-center gap-1 text-amber-600">
+                        <AlertTriangle size={12} /> Connection issue — retrying
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-emerald-600">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" /> Live
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="input-label" htmlFor="manual-scan">Unit QR code</label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input
+                      id="manual-scan"
+                      className="input flex-1 font-mono text-sm"
+                      placeholder={allScanned ? 'All units scanned — ready to finalise' : 'Scan or type a unit QR code, then press Enter'}
+                      value={manualValue}
+                      onChange={(event) => setManualValue(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitManual();
+                      }}
+                      disabled={scanBusy || allScanned}
+                      autoComplete="off"
+                      spellCheck={false}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={submitManual}
+                      disabled={!manualValue.trim() || scanBusy || allScanned}
+                    >
+                      {scanBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                      {scanBusy ? 'Checking...' : 'Add scan'}
+                    </button>
+                    <button type="button" className="btn-primary" onClick={toggleCamera} disabled={allScanned}>
+                      {scanning ? <X size={16} /> : <Camera size={16} />}
+                      {scanning ? 'Stop camera' : 'Scan with camera'}
+                    </button>
+                  </div>
+                  <p className={`mt-1.5 text-[11px] ${allScanned ? 'font-medium text-emerald-600' : 'text-surface-400'}`}>
+                    {allScanned
+                      ? 'All units are scanned. Add the seal number below and finalise the dispatch.'
+                      : 'The camera stays on between scans. Press Enter to submit a typed code.'}
+                  </p>
+                </div>
+
+                {lastScan && (
+                  <div
+                    className={`flex items-start gap-3 rounded-xl border p-3 ${INLINE_STYLES[lastScan.result].wrap}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <LastScanIcon size={20} className="mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold">{INLINE_STYLES[lastScan.result].label}</div>
+                      <div className="truncate font-mono text-[11px] opacity-75" title={lastScan.qr}>{lastScan.qr}</div>
+                    </div>
+                    <span className="shrink-0 text-[11px] opacity-70">{formatTime(lastScan.at)}</span>
                   </div>
                 )}
+
+                {scanning && (
+                  <div className="space-y-3">
+                    <div className="relative overflow-hidden rounded-2xl bg-black ring-1 ring-surface-200">
+                      <video
+                        ref={videoRef}
+                        className="h-[320px] w-full object-cover"
+                        playsInline
+                        muted
+                      />
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                        <div className="h-48 w-48 rounded-2xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.35)]" />
+                      </div>
+                      <span className="absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" /> Scanning
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="flex items-center gap-2 text-xs text-surface-500">
+                        <Camera size={14} /> Hold the QR inside the frame.
+                      </span>
+                      <button className="btn-secondary btn-sm" onClick={toggleCamera}>
+                        <X size={14} /> Stop camera
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="min-w-0 space-y-4">
+                <div className="rounded-2xl border border-surface-200 bg-white p-4">
+                  <h3 className="flex items-center gap-2 text-sm font-semibold text-surface-800">
+                    <Boxes size={15} className="text-brand-500" /> Batch &amp; vehicle
+                  </h3>
+                  <dl className="mt-3 text-xs">
+                    <DetailRow label="Product" value={session.product_name} />
+                    <DetailRow label="Batch" value={session.batch_number} mono />
+                    <DetailRow label="Client" value={session.client_name} />
+                    <DetailRow label="Driver" value={session.driver_name} />
+                    <DetailRow label="Vehicle" value={session.vehicle_number} mono />
+                    <DetailRow label="Container" value={session.container_number} mono />
+                    <DetailRow label="Started" value={formatDateTime(session.started_at)} />
+                  </dl>
+                </div>
+
+                <div className="overflow-hidden rounded-2xl border border-surface-200 bg-white">
+                  <div className="flex items-center justify-between gap-2 border-b border-surface-100 px-4 py-3">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-surface-800">
+                      <ScanLine size={15} className="text-brand-500" /> Recent scans
+                    </h3>
+                    <span className="badge badge-neutral">{recentScans.length}</span>
+                  </div>
+                  <div className="max-h-[320px] divide-y divide-surface-100 overflow-y-auto">
+                    {recentScans.map((scan) => (
+                      <div key={scan.key} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                        <div className="min-w-0">
+                          <div className="truncate font-mono text-[11px] text-surface-700" title={scan.qr}>{scan.qr}</div>
+                          <div className="text-[11px] text-surface-400">{formatTime(scan.at)}</div>
+                        </div>
+                        <span className={`badge shrink-0 ${resultBadge(scan.result)}`}>
+                          {RESULT_LABELS[scan.result] || scan.result}
+                        </span>
+                      </div>
+                    ))}
+                    {recentScans.length === 0 && (
+                      <div className="px-4 py-8 text-center text-xs text-surface-400">
+                        No scans yet. Scan the first unit QR to begin.
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -785,7 +1211,7 @@ export default function DispatchScan() {
               </span>
             </div>
 
-            {shortfall && (
+            {shortfall ? (
               <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
                 <AlertTriangle size={15} className="mt-0.5 shrink-0" />
                 <span>
@@ -793,6 +1219,13 @@ export default function DispatchScan() {
                   remarks explaining the shortfall.
                 </span>
               </div>
+            ) : (
+              scannedCount > 0 && (
+                <div className="mt-4 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
+                  <CheckCircle size={15} className="mt-0.5 shrink-0" />
+                  <span>All {totalCount} units are scanned. Add the seal number and finalise once the container is sealed.</span>
+                </div>
+              )
             )}
 
             <div className="form-grid mt-4">
@@ -845,13 +1278,13 @@ export default function DispatchScan() {
             <button
               className="btn-primary mt-4 w-full"
               onClick={() => void finalise()}
-              disabled={finalising || !sealNumber.trim()}
+              disabled={finalising || !sealNumber.trim() || scanBusy}
             >
               {finalising ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
               {finalising ? 'Finalising...' : `Finalise ${outcome === 'DISPATCHED' ? 'as dispatched' : 'as not dispatched'}`}
             </button>
             <p className="mt-2 text-center text-xs text-surface-400">
-              After finalising, the session is immutable and the scanner is closed.
+              Stock is deducted only when the outcome is DISPATCHED. After finalising, the session is immutable.
             </p>
           </div>
         </>
@@ -890,6 +1323,72 @@ export default function DispatchScan() {
           </table>
         </div>
       </div>
+
+      {cancelOpen && cancelTarget && (
+        <div
+          className="modal-overlay z-[60]"
+          role="presentation"
+          onClick={() => {
+            if (!cancelling) setCancelOpen(false);
+          }}
+        >
+          <section
+            className="modal-content max-w-md"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cancel-session-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="min-w-0">
+                <h2 id="cancel-session-title" className="text-base font-semibold text-surface-900">
+                  Cancel loading session?
+                </h2>
+                <p className="mt-1 text-xs text-surface-500">
+                  Order #{cancelTarget.dispatch_order_id || '-'} · batch {cancelTarget.batch_number || '-'}
+                </p>
+              </div>
+              <button
+                className="btn-ghost btn-sm"
+                aria-label="Close cancel dialog"
+                disabled={cancelling}
+                onClick={() => setCancelOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body space-y-3 text-sm text-surface-600">
+              <p>No units have been scanned yet, so this session can be cancelled safely.</p>
+              <div className="rounded-xl border border-surface-100 bg-surface-50 p-3 text-xs">
+                <div className="flex justify-between gap-3">
+                  <span className="text-surface-400">Product</span>
+                  <span className="truncate font-medium text-surface-700">{cancelTarget.product_name || '-'}</span>
+                </div>
+                <div className="mt-1 flex justify-between gap-3">
+                  <span className="text-surface-400">Batch</span>
+                  <span className="font-mono font-medium text-surface-700">{cancelTarget.batch_number || '-'}</span>
+                </div>
+                <div className="mt-1 flex justify-between gap-3">
+                  <span className="text-surface-400">Scanned</span>
+                  <span className="font-medium text-surface-700">0 of {cancelTarget.total}</span>
+                </div>
+              </div>
+              <p className="text-xs text-surface-500">
+                The batch returns to DISPATCH_APPROVED so it can be loaded again. No stock change or dispatch record is created.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setCancelOpen(false)} disabled={cancelling}>
+                Keep loading
+              </button>
+              <button className="btn-danger" onClick={() => void cancelSession()} disabled={cancelling}>
+                {cancelling ? <Loader2 size={16} className="animate-spin" /> : <XCircle size={16} />}
+                {cancelling ? 'Cancelling...' : 'Cancel session'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

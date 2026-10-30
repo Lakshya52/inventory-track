@@ -6,7 +6,7 @@ export type BatchStatus = 'QC_PASSED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPR
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
   | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
 
-export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED';
+export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED' | 'CANCELLED';
 export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
 export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 
@@ -198,6 +198,7 @@ export interface LoadingSession {
   remarks: string | null;
   started_at: string;
   completed_at: string | null;
+  cancelled_at?: string | null;
   updated_at: string;
 }
 

@@ -104,7 +104,7 @@ export type LoadingSession = {
   batch_number?: string | null;
   product_name?: string | null;
   loader_name?: string | null;
-  status: 'ACTIVE' | 'CLOSED' | string;
+  status: 'ACTIVE' | 'CLOSED' | 'CANCELLED' | string;
   total: number;
   scanned: number;
   progress?: number;
@@ -113,6 +113,7 @@ export type LoadingSession = {
   remarks?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  cancelled_at?: string | null;
   updated_at?: string | null;
   last_event?: {
     result: ScanResult;

@@ -172,6 +172,16 @@ export const dispatchApi = {
       },
     }),
 
+  /** Cancel an active session that has no scans yet, freeing the order to load again */
+  cancelLoadingSession: (sessionId: string) =>
+    apiRequest<{
+      session: LoadingSession;
+      order_status: string;
+      batch_status: string;
+    }>(`/loading-sessions/${sessionId}/cancel`, {
+      method: 'POST',
+    }),
+
   /** Finalise a loading session with required seal number and outcome */
   finalise: (sessionId: string, payload: FinaliseSessionPayload) =>
     apiRequest<{

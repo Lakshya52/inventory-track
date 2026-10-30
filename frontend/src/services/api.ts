@@ -308,6 +308,7 @@ export const api = {
       }),
     get: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}`),
     active: () => request<any[]>('/loading-sessions/active'),
+    cancel: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}/cancel`, { method: 'POST' }),
     finalise: (id: EntityId, data: {
       seal_number: string;
       outcome: 'DISPATCHED' | 'NOT_DISPATCHED';

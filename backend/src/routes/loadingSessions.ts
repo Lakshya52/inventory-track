@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { active, finalise, getById, scan, start, stream } from '../controllers/loadingSessionController';
+import { active, cancel, finalise, getById, scan, start, stream } from '../controllers/loadingSessionController';
 import { authenticate, authorize } from '../middleware/auth';
 
 const router = Router();
@@ -10,4 +10,5 @@ router.get('/active/stream', authorize('ADMIN', 'QC'), stream);
 router.get('/:id', authorize('DISPATCH', 'QC', 'ADMIN'), getById);
 router.post('/:id/scan', authorize('DISPATCH'), scan);
 router.post('/:id/finalise', authorize('DISPATCH'), finalise);
+router.post('/:id/cancel', authorize('DISPATCH'), cancel);
 export default router;
