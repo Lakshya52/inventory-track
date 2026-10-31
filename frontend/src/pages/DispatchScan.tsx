@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BrowserMultiFormatReader } from '@zxing/library';
 import { api } from '../services/api';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
-  AlertTriangle, Boxes, Camera, CheckCircle, ClipboardList, Clock, Loader2,
+  AlertTriangle, Boxes, Camera, CheckCircle, ClipboardList, Clock, Loader2, RotateCcw,
   PackageCheck, QrCode, RefreshCw, ScanLine, ShieldCheck, Truck, X, XCircle,
 } from 'lucide-react';
 
@@ -27,6 +28,7 @@ interface LoadingSession {
   driver_name: string | null;
   vehicle_number: string | null;
   container_number: string | null;
+  order_lines?: Array<{ batch_id: string; batch_number: string; product_name: string; product_sku?: string; quantity: number; uom?: string }>;
   uom: string | null;
   started_at: string | null;
 }
@@ -131,6 +133,7 @@ function normalizeSession(raw: any, fallback?: any): LoadingSession {
     dispatch_order_id: String(source?.dispatch_order_id ?? source?.order_id ?? base?.id ?? ''),
     batch_id: String(source?.batch_id ?? base?.batch_id ?? ''),
     batch_number: text(source?.batch_number) ?? text(base?.batch_number),
+    order_lines: source?.order_lines ?? base?.items ?? [],
     product_name: text(source?.product_name) ?? text(base?.product_name),
     client_name: text(source?.client_name) ?? text(base?.client_name),
     driver_name: text(source?.driver_name) ?? text(base?.driver_name),
@@ -182,6 +185,7 @@ export default function DispatchScan() {
   const [orders, setOrders] = useState<any[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [orderSearch, setOrderSearch] = useState('');
+  const debouncedOrderSearch = useDebouncedValue(orderSearch, 250);
   const [selectedOrderId, setSelectedOrderId] = useState('');
   const [session, setSession] = useState<LoadingSession | null>(null);
   const [activeSession, setActiveSession] = useState<LoadingSession | null>(null);
@@ -199,6 +203,14 @@ export default function DispatchScan() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [sealNumber, setSealNumber] = useState('');
+  const [recallQr, setRecallQr] = useState('');
+  const [recallReason, setRecallReason] = useState('');
+  const [recallCondition, setRecallCondition] = useState<'DAMAGED' | 'HOLD' | 'OTHER'>('DAMAGED');
+  const [recalling, setRecalling] = useState(false);
+  const [driverName, setDriverName] = useState('');
+  const [driverPhone, setDriverPhone] = useState('');
+  const [vehicleNumber, setVehicleNumber] = useState('');
+  const [containerNumber, setContainerNumber] = useState('');
   const [outcome, setOutcome] = useState<Outcome>('DISPATCHED');
   const [remarks, setRemarks] = useState('');
   const [finalising, setFinalising] = useState(false);
@@ -233,10 +245,17 @@ export default function DispatchScan() {
     setOrdersLoading(true);
     try {
       const list = await api.dispatchOrders.mine({ status: 'APPROVED' });
-      setOrders(Array.isArray(list) ? list : []);
+      const readyOrders = Array.isArray(list) ? list.filter((order: any) =>
+        order.status === 'APPROVED' &&
+        Number(order.quantity) > 0 &&
+        Boolean(order.batch_id) &&
+        Boolean(order.product_name) &&
+        Number(order.qr_count ?? order.quantity) >= Number(order.quantity),
+      ) : [];
+      setOrders(readyOrders);
     } catch (err: any) {
       setMessageKind('error');
-      setMessage(err?.message || 'Could not load approved dispatch orders. Please retry.');
+      setMessage(err?.message || 'Could not load dispatch orders. Please retry.');
     } finally {
       setOrdersLoading(false);
     }
@@ -279,17 +298,17 @@ export default function DispatchScan() {
   );
 
   const filteredOrders = useMemo(() => {
-    const needle = orderSearch.trim().toLowerCase();
+    const needle = debouncedOrderSearch.trim().toLowerCase();
     if (!needle) return orders;
     return orders.filter((order) =>
       [
-        order.id, order.batch_number, order.product_name, order.client_name,
+        order.id, order.batch_number, order.product_name, order.product_sku, order.client_name,
         order.driver_name, order.vehicle_number, order.container_number,
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(needle))
     );
-  }, [orders, orderSearch]);
+  }, [orders, debouncedOrderSearch]);
 
   // Enrich the resume banner with client/driver details once the order list arrives.
   useEffect(() => {
@@ -312,7 +331,7 @@ export default function DispatchScan() {
       setSelectedOrderId(requested);
     } else {
       setMessageKind('info');
-      setMessage(`Order #${requested} is not in your approved list. Choose another approved order below.`);
+      setMessage(`Order #${requested} is not in your open dispatches. Choose another order below.`);
     }
     const next = new URLSearchParams(searchParams);
     next.delete('order');
@@ -336,6 +355,10 @@ export default function DispatchScan() {
     setLastSyncedAt(null);
     setPollError(false);
     setSealNumber('');
+    setDriverName('');
+    setDriverPhone('');
+    setVehicleNumber('');
+    setContainerNumber('');
     setRemarks('');
     setOutcome('DISPATCHED');
     setScanning(false);
@@ -358,7 +381,7 @@ export default function DispatchScan() {
     if (next.status !== 'ACTIVE') {
       setActiveSession(null);
       setMessageKind('warning');
-      setMessage('That loading session is no longer active. Choose an approved order to start again.');
+      setMessage('That loading session is no longer active. Choose an open dispatch order to start again.');
       await Promise.all([loadOrders(), loadActiveSession()]);
       return;
     }
@@ -371,6 +394,10 @@ export default function DispatchScan() {
     setLastSyncedAt(Date.now());
     setPollError(false);
     setSealNumber('');
+    setDriverName(next.driver_name || '');
+    setDriverPhone(order?.driver_phone || '');
+    setVehicleNumber(next.vehicle_number || '');
+    setContainerNumber(next.container_number || '');
     setRemarks('');
     setOutcome('DISPATCHED');
     setScanning(false);
@@ -383,7 +410,7 @@ export default function DispatchScan() {
   const startSession = async () => {
     if (!selectedOrder) {
       setMessageKind('error');
-      setMessage('Select an approved dispatch order before starting a loading session.');
+      setMessage('Select a dispatch order before starting a loading session.');
       return;
     }
     setStarting(true);
@@ -410,6 +437,10 @@ export default function DispatchScan() {
       setLastSyncedAt(Date.now());
       setPollError(false);
       setSealNumber('');
+      setDriverName(selectedOrder.driver_name || '');
+      setDriverPhone(selectedOrder.driver_phone || '');
+      setVehicleNumber(selectedOrder.vehicle_number || '');
+      setContainerNumber(selectedOrder.container_number || '');
       setRemarks('');
       setOutcome('DISPATCHED');
       setMessageKind('success');
@@ -507,6 +538,27 @@ export default function DispatchScan() {
     void doScan(value);
   };
 
+  const submitRecall = async () => {
+    if (!session || !recallQr.trim() || !recallReason.trim() || recalling) return;
+    setRecalling(true);
+    setMessage('');
+    try {
+      const result = await api.loadingSessions.recallQr(session.id, {
+        qr_value: recallQr.trim(), condition: recallCondition, reason: recallReason.trim(),
+      });
+      setSession(current => current && current.id === session.id
+        ? { ...current, total: Number(result?.total ?? Math.max(0, current.total - 1)), scanned: Number(result?.scanned ?? current.scanned) }
+        : current);
+      setRecallQr(''); setRecallReason('');
+      setMessageKind('success');
+      setMessage(`QR recalled (${recallCondition.toLowerCase()}) and excluded from this loading order.`);
+      setLastSyncedAt(Date.now());
+    } catch (err: any) {
+      setMessageKind('error');
+      setMessage(err?.message || 'Could not recall this QR label.');
+    } finally { setRecalling(false); }
+  };
+
   // Keep the active session in sync (including scans made from another device).
   useEffect(() => {
     const sessionId = session?.id;
@@ -551,7 +603,7 @@ export default function DispatchScan() {
           setMessageKind(status === 'CANCELLED' ? 'warning' : 'info');
           setMessage(
             status === 'CANCELLED'
-              ? 'This loading session was cancelled. Choose an approved order to start again.'
+              ? 'This loading session was cancelled. Choose an open dispatch order to start again.'
               : 'This loading session was closed on another device.'
           );
           void Promise.all([loadOrders(), loadToday()]);
@@ -682,9 +734,9 @@ export default function DispatchScan() {
 
   const finalise = async () => {
     if (!session) return;
-    if (!sealNumber.trim()) {
+    if (!driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
       setMessageKind('error');
-      setMessage('Enter the seal number before finalising the loading session.');
+      setMessage('Enter the driver, vehicle, and container details before marking the order dispatched.');
       return;
     }
     setFinalising(true);
@@ -693,6 +745,10 @@ export default function DispatchScan() {
       const response = await api.loadingSessions.finalise(session.id, {
         seal_number: sealNumber.trim(),
         outcome,
+        driver_name: driverName.trim(),
+        driver_phone: driverPhone.trim() || undefined,
+        vehicle_number: vehicleNumber.trim(),
+        container_number: containerNumber.trim(),
         remarks: remarks.trim() || undefined,
         client_operation_id: operationId(),
       });
@@ -700,7 +756,7 @@ export default function DispatchScan() {
       setMessageKind('success');
       setMessage(
         outcome === 'DISPATCHED'
-          ? 'Loading session finalised. The order is marked dispatched.'
+          ? `Loading session finalised. ${Number(response?.loaded_quantity ?? session.scanned).toLocaleString()} loaded units were removed from inventory and the order is marked dispatched.`
           : 'Loading session finalised. The order is marked NOT dispatched.'
       );
       setScanning(false);
@@ -713,6 +769,10 @@ export default function DispatchScan() {
       setLastSyncedAt(null);
       setPollError(false);
       setSealNumber('');
+      setDriverName('');
+      setDriverPhone('');
+      setVehicleNumber('');
+      setContainerNumber('');
       setRemarks('');
       setOutcome('DISPATCHED');
       const next = new URLSearchParams(searchParams);
@@ -779,7 +839,7 @@ export default function DispatchScan() {
                 <div className="min-w-0 flex-1">
                   <h2 className="section-title">Loading session finalised</h2>
                   <p className="mt-1 text-xs text-surface-500">
-                    The seal and outcome were saved. Order and batch statuses now reflect the result.
+                    The seal and outcome were saved. Loaded units have been deducted from inventory.
                   </p>
                   <div className="mt-4 grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
                     <div>
@@ -793,8 +853,8 @@ export default function DispatchScan() {
                       <div className="font-medium text-surface-800">{finaliseResult?.order_status ?? '-'}</div>
                     </div>
                     <div>
-                      <div className="text-surface-500">Batch status</div>
-                      <div className="font-medium text-surface-800">{finaliseResult?.batch_status ?? '-'}</div>
+                      <div className="text-surface-500">Units deducted</div>
+                      <div className="font-semibold text-emerald-700">{Number(finaliseResult?.loaded_quantity ?? 0).toLocaleString()}</div>
                     </div>
                     <div>
                       <div className="text-surface-500">Seal number</div>
@@ -859,12 +919,12 @@ export default function DispatchScan() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="section-title flex items-center gap-2">
-                  <PackageCheck size={16} className="text-brand-500" /> Approved dispatch orders
+                  <PackageCheck size={16} className="text-brand-500" /> Ready for loading
                   <span className="badge badge-neutral">{filteredOrders.length}</span>
                   {checkingActive && <Loader2 size={13} className="animate-spin text-surface-400" aria-label="Checking active sessions" />}
                 </h2>
                 <p className="mt-1 text-xs text-surface-400">
-                  Select the order you are loading. Only QC-approved orders appear here.
+                  Select a dispatch order to start scanning. Orders are ready as soon as Dispatch creates them.
                 </p>
               </div>
               <button className="btn-secondary btn-sm" onClick={() => void Promise.all([loadOrders(), loadActiveSession()])} disabled={ordersLoading}>
@@ -894,22 +954,23 @@ export default function DispatchScan() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-semibold text-surface-900">
-                          {order.product_name || 'Dispatch order'}
+                          {order.product_name}
                         </span>
                         <span className="badge badge-info text-[10px]">Order #{order.id}</span>
                         <span className="rounded bg-surface-100 px-1.5 py-0.5 font-mono text-xs text-surface-700">
-                          {order.batch_number || '-'}
+                          {order.items?.length > 1 ? `${order.items.length} product lines` : order.batch_number}
                         </span>
                       </div>
+                      {order.items?.length > 1 && <div className="mt-2 flex flex-wrap gap-1.5">{order.items.map((item: any) => <span key={String(item.batch_id)} className="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 text-[11px] text-surface-600"><strong className="text-surface-800">{item.product_name}</strong> · {item.batch_number} · {Number(item.quantity).toLocaleString()} x {item.uom || 'units'}</span>)}</div>}
                       <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-surface-500 sm:grid-cols-2 lg:grid-cols-3">
                         <span>Client: <strong className="text-surface-700">{order.client_name || '-'}</strong></span>
-                        <span>Quantity: <strong className="text-surface-700">{order.quantity ?? '-'} {order.uom || ''}</strong></span>
+                        <span>To load: <strong className="text-surface-700">{Number(order.quantity).toLocaleString()} {order.uom || 'units'}</strong></span>
                         <span>Driver: {order.driver_name || '-'}</span>
                         <span>Vehicle: {order.vehicle_number || '-'}</span>
                         <span>Container: {order.container_number || '-'}</span>
                       </div>
                     </div>
-                    <span className="badge badge-success shrink-0">Approved</span>
+                    <span className="badge badge-success shrink-0">Ready to load</span>
                   </button>
                 );
               })}
@@ -920,17 +981,17 @@ export default function DispatchScan() {
                   </div>
                   <div className="text-sm font-semibold text-surface-700">
                     {ordersLoading
-                      ? 'Loading approved orders...'
+                      ? 'Loading dispatch orders...'
                       : orderSearch
-                        ? 'No approved orders match that search'
-                        : 'No approved dispatch orders waiting'}
+                        ? 'No dispatch orders match that search'
+                        : 'No dispatch orders ready for loading'}
                   </div>
                   <div className="mt-1 text-xs text-surface-400">
                     {ordersLoading
                       ? 'Please wait a moment.'
                       : orderSearch
                         ? 'Try a different order number, product or client.'
-                        : 'QC must approve a dispatch order before loading can start.'}
+                      : 'Create a dispatch order from a stocked batch to begin loading.'}
                   </div>
                 </div>
               )}
@@ -969,7 +1030,7 @@ export default function DispatchScan() {
             <div className="min-w-0 flex-1">
               <h2 className="section-title">Session {session.status}</h2>
               <p className="mt-1 text-sm text-surface-600">
-                This loading session is no longer active. Choose an approved order to start a new session.
+                This loading session is no longer active. Choose an open dispatch order to start a new session.
               </p>
               <button className="btn-secondary btn-sm mt-4" onClick={resetToOrders}>
                 Back to orders
@@ -1107,6 +1168,15 @@ export default function DispatchScan() {
                   </p>
                 </div>
 
+                <div className="rounded-2xl bg-amber-50/70 p-4">
+                  <div className="flex items-start gap-2"><RotateCcw size={17} className="mt-0.5 text-amber-700" /><div><h3 className="text-sm font-bold text-slate-900">Recall a product</h3><p className="mt-0.5 text-xs text-slate-600">Use this if an item is damaged or cannot be loaded. Recalled QR codes are excluded from the loading count.</p></div></div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div><label className="input-label" htmlFor="recall-qr">Product QR code</label><input id="recall-qr" className="input font-mono text-sm" value={recallQr} onChange={event => setRecallQr(event.target.value)} placeholder="Scan or enter QR code" autoComplete="off" /></div>
+                    <div><label className="input-label" htmlFor="recall-condition">Condition</label><select id="recall-condition" className="input" value={recallCondition} onChange={event => setRecallCondition(event.target.value as typeof recallCondition)}><option value="DAMAGED">Damaged</option><option value="HOLD">Hold for review</option><option value="OTHER">Other</option></select></div>
+                    <div className="sm:col-span-2"><label className="input-label" htmlFor="recall-reason">Reason</label><div className="flex flex-col gap-2 sm:flex-row"><input id="recall-reason" className="input flex-1" value={recallReason} onChange={event => setRecallReason(event.target.value)} placeholder="Describe why this item is being recalled" /><button type="button" className="btn-secondary shrink-0" onClick={() => void submitRecall()} disabled={recalling || !recallQr.trim() || !recallReason.trim()}>{recalling ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}{recalling ? 'Recalling…' : 'Recall QR'}</button></div></div>
+                  </div>
+                </div>
+
                 {lastScan && (
                   <div
                     className={`flex items-start gap-3 rounded-xl border p-3 ${INLINE_STYLES[lastScan.result].wrap}`}
@@ -1203,7 +1273,7 @@ export default function DispatchScan() {
                   <ShieldCheck size={16} className="text-indigo-500" /> Seal &amp; finalise
                 </h2>
                 <p className="mt-1 text-xs text-surface-400">
-                  A seal number is required. Finalising closes the session and updates the order and batch.
+                  Complete the shipment details after loading, then mark the order dispatched. Driver mobile is optional.
                 </p>
               </div>
               <span className={`badge ${shortfall ? 'badge-warning' : 'badge-success'}`}>
@@ -1223,28 +1293,40 @@ export default function DispatchScan() {
               scannedCount > 0 && (
                 <div className="mt-4 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
                   <CheckCircle size={15} className="mt-0.5 shrink-0" />
-                  <span>All {totalCount} units are scanned. Add the seal number and finalise once the container is sealed.</span>
+                  <span>All {totalCount} units are scanned. Complete the shipment details below to dispatch this order.</span>
                 </div>
               )
             )}
 
             <div className="form-grid mt-4">
               <div>
-                <label className="input-label" htmlFor="seal-number">Seal number *</label>
+                <label className="input-label" htmlFor="driver-name">Driver name *</label>
                 <input
-                  id="seal-number"
-                  className="input font-mono"
-                  placeholder="e.g. SEAL-2026-00123"
-                  value={sealNumber}
-                  onChange={(event) => setSealNumber(event.target.value)}
+                  id="driver-name"
+                  className="input"
+                  value={driverName}
+                  onChange={(event) => setDriverName(event.target.value)}
                   autoComplete="off"
                 />
-                {!sealNumber.trim() && (
-                  <p className="mt-1 text-[11px] text-surface-400">Required before the session can be finalised.</p>
-                )}
               </div>
               <div>
-                <label className="input-label" htmlFor="outcome">Outcome</label>
+                <label className="input-label" htmlFor="driver-phone">Driver mobile (optional)</label>
+                <input id="driver-phone" className="input" type="tel" value={driverPhone} onChange={(event) => setDriverPhone(event.target.value)} autoComplete="tel" />
+              </div>
+              <div>
+                <label className="input-label" htmlFor="vehicle-number">Vehicle number *</label>
+                <input id="vehicle-number" className="input font-mono" value={vehicleNumber} onChange={(event) => setVehicleNumber(event.target.value)} autoComplete="off" />
+              </div>
+              <div>
+                <label className="input-label" htmlFor="container-number">Container number *</label>
+                <input id="container-number" className="input font-mono" value={containerNumber} onChange={(event) => setContainerNumber(event.target.value)} autoComplete="off" />
+              </div>
+              <div>
+                <label className="input-label" htmlFor="seal-number">Seal number (optional)</label>
+                <input id="seal-number" className="input font-mono" value={sealNumber} onChange={(event) => setSealNumber(event.target.value)} autoComplete="off" />
+              </div>
+              <div>
+                <label className="input-label" htmlFor="outcome">Order outcome</label>
                 <select
                   id="outcome"
                   className="input"
@@ -1278,13 +1360,13 @@ export default function DispatchScan() {
             <button
               className="btn-primary mt-4 w-full"
               onClick={() => void finalise()}
-              disabled={finalising || !sealNumber.trim() || scanBusy}
+              disabled={finalising || !driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim() || scanBusy}
             >
               {finalising ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
               {finalising ? 'Finalising...' : `Finalise ${outcome === 'DISPATCHED' ? 'as dispatched' : 'as not dispatched'}`}
             </button>
             <p className="mt-2 text-center text-xs text-surface-400">
-              Stock is deducted only when the outcome is DISPATCHED. After finalising, the session is immutable.
+              Inventory is reserved when the dispatch order is created. The final status and shipment details are saved here.
             </p>
           </div>
         </>

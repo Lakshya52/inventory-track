@@ -1,9 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import { getContext } from '../config/database';
 import { JwtPayload, Role } from '../types';
+import { readAccessToken } from '../services/tokens';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 const USER_TABLES = new Set(['admins', 'qc_users', 'dispatch_users']);
 
 declare global {
@@ -22,7 +21,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   }
   try {
     const token = header.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    const decoded = readAccessToken(token);
     if (!USER_TABLES.has(decoded.table)) {
       res.status(401).json({ error: 'Invalid or expired token' });
       return;
@@ -30,7 +29,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
     const ctx = await getContext();
     const user = await ctx.findOne(decoded.table, { id: decoded.userId }, {
-      projection: { _id: 0, id: 1, is_active: 1 },
+      projection: { _id: 0, id: 1, is_active: 1, tenant_id: 1 },
     });
     if (!user) {
       res.status(401).json({ error: 'User account no longer exists' });
@@ -38,6 +37,10 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     }
     if (Number(user.is_active) !== 1) {
       res.status(403).json({ error: 'Account is deactivated. Contact an administrator.' });
+      return;
+    }
+    if (String(user.tenant_id) !== String(decoded.tenantId)) {
+      res.status(401).json({ error: 'Invalid or expired token' });
       return;
     }
 

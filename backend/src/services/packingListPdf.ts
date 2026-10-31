@@ -99,6 +99,7 @@ function buildLines(data: PackingListData): PdfLine[] {
 
   add('SHIPMENT', 12, 18);
   add(`Driver: ${display(data.driver_name)}`);
+  add(`Driver Mobile: ${display(data.driver_phone)}`);
   add(`Vehicle: ${display(data.vehicle_number)}`);
   add(`Container: ${display(data.container_number)}`);
   add(`Seal Number: ${display(data.seal_number)}`);

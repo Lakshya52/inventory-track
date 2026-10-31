@@ -54,6 +54,18 @@ export interface User {
   role: Role;
   is_active?: number;
   created_at?: string;
+  tenantId?: EntityId;
+  tenant?: Tenant;
+}
+
+export interface Tenant {
+  id: EntityId;
+  name: string;
+  email: string;
+  phone: string;
+  logoUrl: string | null;
+  slug: string;
+  updatedAt?: string;
 }
 
 export interface Product {

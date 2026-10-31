@@ -7,6 +7,7 @@ export interface QrLabel {
   qr_value: string;
   serial_no: number;
   batch_number: string;
+  product_name?: string;
   print_count?: number;
   last_printed_at?: string | null;
 }
@@ -109,7 +110,7 @@ export async function printQrLabels(labels: QrLabel[], job: QrJob): Promise<void
   const images = await qrDataUrls(labels);
   const cards = labels.map((label, index) => `
     <div class="qr-card">
-      <div class="product">${escapeHtml(job.product_name)}</div>
+      <div class="product">${escapeHtml(label.product_name || job.product_name)}</div>
       <div class="batch">${escapeHtml(label.batch_number)} — Unit ${String(label.serial_no).padStart(4, '0')}</div>
       <img src="${images[index]}" width="150" height="150" />
       <div class="label">${escapeHtml(label.qr_value)}</div>

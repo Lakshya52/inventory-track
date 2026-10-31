@@ -525,11 +525,8 @@ async function applyDispatchOrderRaise(
     throw new SyncError('Only dispatch or admin users can raise dispatch orders', 'FORBIDDEN', 403);
   }
   const clientId = Number(input.payload.client_id);
-  const driverName = String(input.payload.driver_name || '').trim().slice(0, 150);
-  const vehicleNumber = String(input.payload.vehicle_number || '').trim().slice(0, 50);
-  const containerNumber = String(input.payload.container_number || '').trim().slice(0, 100);
-  if (!Number.isInteger(clientId) || clientId <= 0 || !driverName || !vehicleNumber || !containerNumber) {
-    throw new SyncError('Select a client and provide the driver, vehicle, and container details', 'DISPATCH_DETAILS_REQUIRED');
+  if (!Number.isInteger(clientId) || clientId <= 0) {
+    throw new SyncError('Select a client for this dispatch order', 'DISPATCH_CLIENT_REQUIRED');
   }
   const [clients] = await conn.execute<RowDataPacket[]>(
     'SELECT id FROM clients WHERE id = ? AND is_active = 1',
@@ -538,7 +535,43 @@ async function applyDispatchOrderRaise(
   if (clients.length === 0) {
     throw new SyncError('Selected client is no longer active', 'CLIENT_NOT_FOUND', 404);
   }
+  if (Array.isArray(input.payload.items)) {
+    const requested = input.payload.items as Array<Record<string, any>>;
+    if (requested.length < 1 || requested.length > 100) throw new SyncError('An order must contain between 1 and 100 product lines', 'INVALID_ORDER_LINES');
+    const seen = new Set<number>();
+    const lines: Array<Record<string, any>> = [];
+    const assignments: Array<{ batchId: number; labelIds: number[] }> = [];
+    for (const line of requested) {
+      const batch = await getBatchForUpdate(conn, { batch_id: line.batch_id });
+      const batchId = Number(batch.id);
+      if (seen.has(batchId)) throw new SyncError('A batch can appear only once in a dispatch order', 'DUPLICATE_ORDER_LINE');
+      seen.add(batchId);
+      const quantity = Number(line.quantity);
+      if (!Number.isInteger(quantity) || quantity < 1) throw new SyncError('Each product line needs a whole-number quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
+      assertStatus(batch, ['QC_PASSED', 'DISPATCH_APPROVED', 'DISPATCH_REJECTED'], `Batch ${batch.batch_number} is not available for dispatch`);
+      const [[counts]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS total, SUM(dispatch_order_id IS NOT NULL) AS reserved, SUM(recall_status = \'RECALLED\') AS recalled FROM qr_labels WHERE batch_id = ?', [batchId]);
+      if (Number(counts.total) !== Number(batch.quantity)) throw new SyncConflictError(`QR labels are incomplete for ${batch.batch_number}`);
+      const available = Math.max(0, Number(batch.quantity) - Number(counts.reserved || 0) - Number(counts.recalled || 0));
+      if (quantity > available) throw new SyncConflictError(`Only ${available} units remain for ${batch.product_name}`, { batch_id: batchId, available_quantity: available, requested_quantity: quantity });
+      const [labels] = await conn.execute<RowDataPacket[]>('SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL ORDER BY serial_no ASC LIMIT ? FOR UPDATE', [batchId, quantity]);
+      if (labels.length !== quantity) throw new SyncConflictError(`Not enough unassigned QR labels remain for ${batch.product_name}`);
+      const [locations] = await conn.execute<RowDataPacket[]>('SELECT location_code, description FROM shelf_locations WHERE id = ?', [batch.shelf_location_id]);
+      const location = locations[0];
+      lines.push({ batch_id: batchId, batch_number: batch.parent_batch_number || batch.batch_number, child_batch_number: batch.batch_number, product_name: batch.product_name, product_sku: batch.product_sku, quantity, uom: batch.uom, location: location?.location_code || batch.storage_location || 'N/A', location_code: location?.location_code ?? null, location_description: location?.description ?? null });
+      assignments.push({ batchId, labelIds: labels.map((label) => Number(label.id)) });
+    }
+    const total = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
+    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?)`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid]);
+    for (const assignment of assignments) for (const labelId of assignment.labelIds) {
+      const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, labelId]);
+      if (updated.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.');
+    }
+    await logActivity(conn, user, 'DISPATCH_ORDER_RAISED', `Dispatch order #${insert.insertId} created with ${lines.length} product lines and ${total} units`);
+    return { entityType: 'dispatch_order', entityId: Number(insert.insertId), data: { id: Number(insert.insertId), batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : 'Multi-product order', product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
+  }
   const batch = await getBatchForUpdate(conn, input.payload);
+  const requestedQuantity = Number(input.payload.quantity);
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) throw new SyncError('Enter a whole-number dispatch quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
   if (input.payload.expected_status && String(input.payload.expected_status) !== String(batch.status)) {
     throw new SyncConflictError('Batch status changed while this order was offline', {
       batch_id: batch.id,
@@ -548,7 +581,7 @@ async function applyDispatchOrderRaise(
   }
   assertStatus(
     batch,
-    ['QC_PASSED', 'DISPATCH_REJECTED'],
+    ['QC_PASSED', 'DISPATCH_APPROVED', 'DISPATCH_REJECTED'],
     `Dispatch order can only be raised for QC_PASSED or DISPATCH_REJECTED batches. Current status: ${batch.status}`
   );
   if (!batch.fg_details_completed_at) {
@@ -578,56 +611,45 @@ async function applyDispatchOrderRaise(
     }
   }
 
-  const [existing] = await conn.execute<RowDataPacket[]>(
-    `SELECT id, status FROM dispatch_orders
-     WHERE batch_id = ? AND status IN ('PENDING', 'APPROVED')
-     ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-    [batch.id]
+  const [[reservation]] = await conn.execute<RowDataPacket[]>(
+    'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND dispatch_order_id IS NOT NULL', [batch.id]
   );
-  if (existing.length > 0) {
-    throw new SyncConflictError(
-      existing[0].status === 'APPROVED'
-        ? 'This batch already has an approved dispatch order'
-        : 'A dispatch order is already pending for this batch',
-      { order_id: existing[0].id, order_status: existing[0].status }
-    );
-  }
+  const [[recalls]] = await conn.execute<RowDataPacket[]>(
+    "SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND recall_status = 'RECALLED'", [batch.id]
+  );
+  const availableQuantity = Math.max(0, Number(batch.quantity) - Number(reservation.count) - Number(recalls.count));
+  if (requestedQuantity > availableQuantity) throw new SyncConflictError(`Only ${availableQuantity} units remain available in this batch`, { batch_id: batch.id, available_quantity: availableQuantity, requested_quantity: requestedQuantity });
+  const [labels] = await conn.execute<RowDataPacket[]>(
+    "SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL ORDER BY serial_no ASC LIMIT ? FOR UPDATE",
+    [batch.id, requestedQuantity]
+  );
+  if (labels.length < requestedQuantity) throw new SyncConflictError('Not enough unassigned QR labels remain in this batch', { available_quantity: labels.length, requested_quantity: requestedQuantity });
 
   const [insert] = await conn.execute<ResultSetHeader>(
     `INSERT INTO dispatch_orders
-      (batch_id, raised_by, status, client_id, driver_name, vehicle_number, container_number,
+      (batch_id, raised_by, status, client_id, quantity,
        client_operation_id, client_created_at, device_uuid)
-     VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?)`,
     [
       batch.id,
       user.userId,
       clientId,
-      driverName,
-      vehicleNumber,
-      containerNumber,
+      requestedQuantity,
       input.operation_id,
       toDate(input.client_timestamp),
       deviceUuid,
     ]
   );
 
-  const [update] = await conn.execute<ResultSetHeader>(
-    `UPDATE batches SET status = 'DISPATCH_ORDER_RAISED', updated_at = CURRENT_TIMESTAMP(3)
-     WHERE id = ? AND status = ?`,
-    [batch.id, batch.status]
-  );
-  if (update.affectedRows !== 1) {
-    throw new SyncConflictError('Batch was changed by another user. Refresh and try again.', {
-      batch_id: batch.id,
-      current_status: batch.status,
-    });
+  for (const label of labels) {
+    const [assigned] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, label.id]);
+    if (assigned.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
-
   await logActivity(
     conn,
     user,
     'DISPATCH_ORDER_RAISED',
-    `Dispatch order raised for batch ${batch.batch_number} (${batch.product_name})`
+    `Dispatch order created for batch ${batch.batch_number} (${batch.product_name}); ${requestedQuantity} units allocated for loading`
   );
 
   return {
@@ -638,7 +660,8 @@ async function applyDispatchOrderRaise(
       batch_id: batch.id,
       batch_number: batch.batch_number,
       product_name: batch.product_name,
-      status: 'PENDING',
+      quantity: requestedQuantity,
+      status: 'APPROVED',
     },
   };
 }
@@ -687,9 +710,10 @@ async function applyDispatchConfirm(
   }
 
   let orderId: number | null = null;
+  let stockReservedAtOrder = false;
   if (batch.status === 'DISPATCH_APPROVED') {
     const [orders] = await conn.execute<RowDataPacket[]>(
-      `SELECT id FROM dispatch_orders
+      `SELECT id, stock_reserved_at_order FROM dispatch_orders
        WHERE batch_id = ? AND status = 'APPROVED'
        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
       [batch.id]
@@ -701,6 +725,7 @@ async function applyDispatchConfirm(
       });
     }
     orderId = Number(orders[0].id);
+    stockReservedAtOrder = Boolean(orders[0].stock_reserved_at_order);
   } else if (batch.status === 'QC_PASSED') {
     const directAllowed = payload.direct === true && (user.role === 'ADMIN' || process.env.ALLOW_DIRECT_DISPATCH === 'true');
     if (!directAllowed) {
@@ -747,17 +772,13 @@ async function applyDispatchConfirm(
 
   if (orderId) {
     await conn.execute(
-      'UPDATE dispatch_orders SET dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+      "UPDATE dispatch_orders SET status = 'CLOSED_DISPATCHED', outcome = 'DISPATCHED', dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
       [orderId]
     );
   }
 
   const dispatchedQuantity = Number(batch.quantity) || 0;
-  const remainingStock = await deductProductStock(
-    conn,
-    Number(batch.product_id),
-    dispatchedQuantity
-  );
+  const remainingStock = stockReservedAtOrder ? null : await deductProductStock(conn, Number(batch.product_id), dispatchedQuantity);
 
   await logActivity(
     conn,
@@ -837,9 +858,10 @@ async function applyDispatchConfirmBulk(
     }
 
     let orderId: number | null = null;
+    let stockReservedAtOrder = false;
     if (batch.status === 'DISPATCH_APPROVED') {
       const [orders] = await conn.execute<RowDataPacket[]>(
-        `SELECT id FROM dispatch_orders
+        `SELECT id, stock_reserved_at_order FROM dispatch_orders
          WHERE batch_id = ? AND status = 'APPROVED'
          ORDER BY id DESC LIMIT 1 FOR UPDATE`,
         [batch.id]
@@ -852,6 +874,7 @@ async function applyDispatchConfirmBulk(
         });
       }
       orderId = Number(orders[0].id);
+      stockReservedAtOrder = Boolean(orders[0].stock_reserved_at_order);
       if (hasRequestedOrderId && (!Number.isInteger(requestedOrderId) || requestedOrderId !== orderId)) {
         throw new SyncConflictError('Scan bags for one approved dispatch order at a time', {
           batch_id: batch.id,
@@ -907,17 +930,13 @@ async function applyDispatchConfirmBulk(
     }
     if (orderId) {
       await conn.execute(
-        'UPDATE dispatch_orders SET dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+        "UPDATE dispatch_orders SET status = 'CLOSED_DISPATCHED', outcome = 'DISPATCHED', dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
         [orderId]
       );
     }
 
     const dispatchedQuantity = Number(batch.quantity) || 0;
-    const remainingStock = await deductProductStock(
-      conn,
-      Number(batch.product_id),
-      dispatchedQuantity
-    );
+    const remainingStock = stockReservedAtOrder ? null : await deductProductStock(conn, Number(batch.product_id), dispatchedQuantity);
     if (remainingStock !== null) {
       stockDeductions.push({
         batch_id: Number(batch.id),

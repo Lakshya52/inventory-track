@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { jsPDF } from 'jspdf';
 import { api, uploadUrl } from '../services/api';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   FileBarChart, Microscope, Truck, ClipboardList, Boxes, Layers,
   Activity, Download, Search, CheckCircle, Eye, X,
@@ -10,14 +11,14 @@ import {
 
 type Tab = 'overview' | 'qc' | 'dispatch' | 'requests' | 'inventory' | 'batches' | 'activity';
 
-const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
-  { key: 'overview', label: 'Overview', icon: <FileBarChart size={15} /> },
-  { key: 'qc', label: 'QC Reports', icon: <Microscope size={15} /> },
-  { key: 'dispatch', label: 'Dispatch Reports', icon: <Truck size={15} /> },
-  { key: 'requests', label: 'Dispatch Requests', icon: <ClipboardList size={15} /> },
-  { key: 'inventory', label: 'Inventory', icon: <Boxes size={15} /> },
-  { key: 'batches', label: 'Batches', icon: <Layers size={15} /> },
-  { key: 'activity', label: 'Activity Log', icon: <Activity size={15} /> },
+const TABS: { key: Tab; label: string; icon: any }[] = [
+  { key: 'overview', label: 'Overview', icon: FileBarChart },
+  { key: 'qc', label: 'QC Reports', icon: Microscope },
+  { key: 'dispatch', label: 'Dispatch Reports', icon: Truck },
+  { key: 'requests', label: 'Dispatch Requests', icon: ClipboardList },
+  { key: 'inventory', label: 'Inventory', icon: Boxes },
+  { key: 'batches', label: 'Batches', icon: Layers },
+  { key: 'activity', label: 'Activity Log', icon: Activity },
 ];
 
 const statusBadge: Record<string, string> = {
@@ -146,6 +147,7 @@ export default function Reports() {
   const [requestStatus, setRequestStatus] = useState('ALL');
   const [batchStatus, setBatchStatus] = useState('ALL');
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 250);
   const [exportFormat, setExportFormat] = useState<'CSV' | 'PDF'>('CSV');
 
   const [imageViewer, setImageViewer] = useState<{ title: string; images: string[] } | null>(null);
@@ -223,36 +225,36 @@ export default function Reports() {
   }, [tab, from, to, qcResult, requestStatus, batchStatus]);
 
   const matchesSearch = (values: (string | number | null | undefined)[]) => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     if (!q) return true;
     return values.some(value => String(value ?? '').toLowerCase().includes(q));
   };
 
   const filteredQc = useMemo(() => qcRecords.filter(r => matchesSearch([
     r.product_name, r.product_sku, r.batch_number, r.tester_name, r.remarks, r.result,
-  ])), [qcRecords, search]);
+  ])), [qcRecords, debouncedSearch]);
 
   const filteredDispatch = useMemo(() => dispatchRecords.filter(r => matchesSearch([
     r.created_at, r.client_name, r.grade, r.batch_number, r.container_number,
     r.vehicle_number, r.product_name, r.product_sku, r.dispatcher_name, r.remarks,
-  ])), [dispatchRecords, search]);
+  ])), [dispatchRecords, debouncedSearch]);
 
   const filteredRequests = useMemo(() => requests.filter(r => matchesSearch([
     r.product_name, r.product_sku, r.batch_number, r.raised_by_name, r.status, r.admin_remarks,
     r.client_name, r.driver_name, r.vehicle_number, r.container_number, r.grade_name,
-  ])), [requests, search]);
+  ])), [requests, debouncedSearch]);
 
   const filteredInventory = useMemo(() => inventory.filter(r => matchesSearch([
     r.name, r.sku, r.grade, r.purity, r.cas_number, r.manufacturer,
-  ])), [inventory, search]);
+  ])), [inventory, debouncedSearch]);
 
   const filteredBatches = useMemo(() => batches.filter(r => matchesSearch([
     r.product_name, r.product_sku, r.batch_number, r.status, r.storage_location,
-  ])), [batches, search]);
+  ])), [batches, debouncedSearch]);
 
   const filteredLogs = useMemo(() => logs.filter(r => matchesSearch([
     r.user_name, r.user_role, r.action, r.description,
-  ])), [logs, search]);
+  ])), [logs, debouncedSearch]);
 
   const handleExport = () => {
     let filename = `report_${new Date().toISOString().slice(0, 10)}`;
@@ -303,104 +305,135 @@ export default function Reports() {
   const showSearch = ['qc', 'dispatch', 'requests', 'inventory', 'batches', 'activity'].includes(tab);
 
   const overviewCards = summary ? [
-    { label: 'QC Checks', value: summary.qcTotal, icon: <Microscope size={18} />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-    { label: 'QC Pass Rate', value: `${summary.qcPassRate}%`, icon: <CheckCircle size={18} />, color: 'text-brand-600', bg: 'bg-brand-50' },
-    { label: 'Dispatches', value: summary.dispatchTotal, icon: <Truck size={18} />, color: 'text-sky-600', bg: 'bg-sky-50' },
-    { label: 'Pending Requests', value: summary.pendingRequests, icon: <ClipboardList size={18} />, color: 'text-amber-600', bg: 'bg-amber-50' },
-    { label: 'Products', value: summary.totalProducts, icon: <Boxes size={18} />, color: 'text-violet-600', bg: 'bg-violet-50' },
-    { label: 'Inventory Value', value: `₹${Number(summary.inventoryValue).toLocaleString('en-IN')}`, icon: <IndianRupee size={18} />, color: 'text-teal-600', bg: 'bg-teal-50' },
+    { label: 'QC Checks', value: summary.qcTotal, icon: <Microscope size={22} />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+    { label: 'QC Pass Rate', value: `${summary.qcPassRate}%`, icon: <CheckCircle size={22} />, color: 'text-brand-600', bg: 'bg-brand-50' },
+    { label: 'Dispatches', value: summary.dispatchTotal, icon: <Truck size={22} />, color: 'text-sky-600', bg: 'bg-sky-50' },
+    { label: 'Pending Requests', value: summary.pendingRequests, icon: <ClipboardList size={22} />, color: 'text-amber-600', bg: 'bg-amber-50' },
+    { label: 'Products', value: summary.totalProducts, icon: <Boxes size={22} />, color: 'text-violet-600', bg: 'bg-violet-50' },
+    { label: 'Inventory Value', value: `₹${Number(summary.inventoryValue).toLocaleString('en-IN')}`, icon: <IndianRupee size={22} />, color: 'text-teal-600', bg: 'bg-teal-50' },
   ] : [];
 
   return (
-    <div className="page-container">
-      <div className="page-header">
+    <div className="page-container space-y-6 max-w-7xl mx-auto">
+      {/* ── Page Header ─────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="page-title">Reports & Logs</h1>
-          <p className="page-subtitle">Every QC check, dispatch, dispatch request, product and inventory record</p>
+          <div className="flex items-center gap-3 mb-1">
+            <div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center">
+              <FileBarChart size={20} className="text-brand-600" />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900">Reports &amp; Audit Logs</h1>
+          </div>
+          <p className="text-base text-slate-500 ml-[52px]">
+            Comprehensive audit ledgers, QC results, dispatch reports, and inventory exports.
+          </p>
         </div>
         {['qc', 'dispatch', 'requests', 'inventory', 'batches', 'activity'].includes(tab) && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <select
               aria-label="Report export format"
-              className="input min-w-[150px]"
+              className="input text-base py-2.5 min-w-[170px]"
               value={exportFormat}
               onChange={(event) => setExportFormat(event.target.value as 'CSV' | 'PDF')}
             >
               <option value="CSV">CSV (Excel-compatible)</option>
               <option value="PDF">PDF</option>
             </select>
-            <button onClick={handleExport} className="btn-secondary"><Download size={16} /> Export {exportFormat}</button>
+            <button onClick={handleExport} className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-base font-medium">
+              <Download size={18} /> Export {exportFormat}
+            </button>
           </div>
         )}
       </div>
 
+      {/* ── Error Banner ─────────────────────────────────────────────────────── */}
       {error && (
-        <div className="mb-4 p-3 rounded-xl text-sm bg-rose-50 text-rose-700 border border-rose-200 flex items-center justify-between">
-          <span className="flex items-center gap-2"><AlertCircle size={16} />{error}</span>
-          <button onClick={() => setError('')}><X size={14} /></button>
+        <div className="p-4 rounded-2xl text-base bg-rose-50 text-rose-700 border-2 border-rose-200 flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2"><AlertCircle size={20} />{error}</span>
+          <button onClick={() => setError('')} className="text-rose-400 hover:text-rose-600"><X size={18} /></button>
         </div>
       )}
 
+      {/* ── KPI Summary Cards ─────────────────────────────────────────────────── */}
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
           {overviewCards.map(card => (
-            <div key={card.label} className="card p-4">
-              <div className={`w-8 h-8 rounded-xl ${card.bg} ${card.color} flex items-center justify-center mb-2`}>{card.icon}</div>
-              <div className="text-xl font-bold text-surface-900">{card.value}</div>
-              <div className="text-xs text-surface-400">{card.label}</div>
+            <div key={card.label} className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs">
+              <div className={`w-11 h-11 rounded-xl ${card.bg} ${card.color} flex items-center justify-center mb-3`}>
+                {card.icon}
+              </div>
+              <div className="text-3xl font-bold text-slate-900 mb-1">{card.value}</div>
+              <div className="text-sm font-medium text-slate-500">{card.label}</div>
             </div>
           ))}
         </div>
       )}
 
-      <div className="flex gap-1 mb-4 overflow-x-auto pb-1">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${
-              tab === t.key ? 'bg-brand-600 text-white shadow-sm' : 'bg-white text-surface-600 hover:bg-surface-100'
-            }`}
-          >
-            {t.icon} {t.label}
-          </button>
-        ))}
+      {/* ── Tab Bar ──────────────────────────────────────────────────────────── */}
+      <div className="border-b-2 border-slate-200">
+        <nav className="-mb-0.5 flex flex-wrap gap-1 sm:gap-2" aria-label="Report sections">
+          {TABS.map(t => {
+            const Icon = t.icon;
+            const isCurrent = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                className={`inline-flex items-center gap-2 border-b-2 px-4 py-3 text-base font-semibold transition-colors ${
+                  isCurrent
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                }`}
+              >
+                <Icon size={18} />
+                {t.label}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
+      {/* ── Filters / Search Bar ─────────────────────────────────────────────── */}
       {(showFilters || showSearch) && (
-        <div className="card p-4 mb-4">
-          <div className="flex flex-wrap items-end gap-3">
+        <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs">
+          <div className="flex flex-wrap items-end gap-4">
             {showSearch && (
-              <div className="relative flex-1 min-w-[220px]">
-                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
-                <input className="input pl-9" placeholder="Search records..." value={search} onChange={e => setSearch(e.target.value)} />
+              <div className="relative flex-1 min-w-[240px]">
+                <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  className="input pl-10 py-2.5 text-base"
+                  placeholder="Search records…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
               </div>
             )}
             {showFilters && (
               <>
-                <div>
-                  <label className="input-label">From</label>
-                  <input type="date" className="input" value={from} onChange={e => setFrom(e.target.value)} />
+                <div className="space-y-1.5">
+                  <label className="text-sm font-semibold text-slate-600">From</label>
+                  <input type="date" className="input py-2.5 text-base" value={from} onChange={e => setFrom(e.target.value)} />
                 </div>
-                <div>
-                  <label className="input-label">To</label>
-                  <input type="date" className="input" value={to} onChange={e => setTo(e.target.value)} />
+                <div className="space-y-1.5">
+                  <label className="text-sm font-semibold text-slate-600">To</label>
+                  <input type="date" className="input py-2.5 text-base" value={to} onChange={e => setTo(e.target.value)} />
                 </div>
               </>
             )}
             {tab === 'qc' && (
-              <div>
-                <label className="input-label">Result</label>
-                <select className="input min-w-[130px]" value={qcResult} onChange={e => setQcResult(e.target.value)}>
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold text-slate-600">Result</label>
+                <select className="input py-2.5 text-base min-w-[140px]" value={qcResult} onChange={e => setQcResult(e.target.value)}>
                   <option value="ALL">All results</option>
                   <option value="PASS">Pass (auto)</option>
                 </select>
               </div>
             )}
             {tab === 'requests' && (
-              <div>
-                <label className="input-label">Status</label>
-                <select className="input min-w-[140px]" value={requestStatus} onChange={e => setRequestStatus(e.target.value)}>
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold text-slate-600">Status</label>
+                <select className="input py-2.5 text-base min-w-[160px]" value={requestStatus} onChange={e => setRequestStatus(e.target.value)}>
                   <option value="ALL">All statuses</option>
                   <option value="PENDING">Pending</option>
                   <option value="APPROVED">Approved</option>
@@ -411,9 +444,9 @@ export default function Reports() {
               </div>
             )}
             {tab === 'batches' && (
-              <div>
-                <label className="input-label">Status</label>
-                <select className="input min-w-[170px]" value={batchStatus} onChange={e => setBatchStatus(e.target.value)}>
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold text-slate-600">Status</label>
+                <select className="input py-2.5 text-base min-w-[180px]" value={batchStatus} onChange={e => setBatchStatus(e.target.value)}>
                   <option value="ALL">All statuses</option>
                   <option value="QC_PASSED">QC Passed</option>
                   <option value="DISPATCH_ORDER_RAISED">Order Raised</option>
@@ -427,93 +460,135 @@ export default function Reports() {
             {(from || to || qcResult !== 'ALL' || requestStatus !== 'ALL' || batchStatus !== 'ALL' || search) && (
               <button
                 onClick={() => { setFrom(''); setTo(''); setQcResult('ALL'); setRequestStatus('ALL'); setBatchStatus('ALL'); setSearch(''); }}
-                className="btn-ghost btn-sm"
+                className="btn-ghost flex items-center gap-2 py-2.5 px-4 text-base"
               >
-                <X size={14} /> Clear
+                <X size={16} /> Clear Filters
               </button>
             )}
           </div>
         </div>
       )}
 
+      {/* ── Loading State ─────────────────────────────────────────────────────── */}
       {loading && (
-        <div className="card p-10 text-center text-sm text-surface-400">Loading report data...</div>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 p-14 text-center text-base text-slate-400 shadow-xs">
+          Loading report data…
+        </div>
       )}
 
+      {/* ── Overview Tab ─────────────────────────────────────────────────────── */}
       {!loading && tab === 'overview' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="card">
-            <div className="card-header flex items-center justify-between">
-              <h3 className="section-title flex items-center gap-2"><ClipboardList size={16} className="text-amber-500" /> Pending Dispatch Requests</h3>
-              <button onClick={() => setTab('requests')} className="text-xs text-brand-600">View all</button>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <ClipboardList size={18} className="text-amber-500" /> Pending Dispatch Requests
+              </h3>
+              <button onClick={() => setTab('requests')} className="text-sm text-brand-600 font-semibold hover:underline">View all</button>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>Product</th><th>Batch</th><th>Raised By</th><th>Status</th></tr></thead>
-                <tbody>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50 border-b-2 border-slate-100">
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Product</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Batch</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Raised By</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
                   {filteredRequests.slice(0, 8).map(r => (
-                    <tr key={r.id}>
-                      <td>
-                        <div className="font-medium text-surface-800">{r.product_name}</div>
-                        <div className="text-xs text-surface-400">{r.product_sku}</div>
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3">
+                        <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                        <div className="text-sm text-slate-400">{r.product_sku}</div>
                       </td>
-                      <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                      <td className="text-sm">{r.raised_by_name || '-'}</td>
-                      <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
+                      <td className="px-4 py-3"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                      <td className="px-4 py-3 text-base text-slate-700">{r.raised_by_name || '-'}</td>
+                      <td className="px-4 py-3"><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
                     </tr>
                   ))}
-                  {filteredRequests.length === 0 && <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title">No pending requests</div></div></td></tr>}
+                  {filteredRequests.length === 0 && (
+                    <tr><td colSpan={4} className="px-4 py-10 text-center text-base text-slate-400">No pending requests</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          <div className="card">
-            <div className="card-header flex items-center justify-between">
-              <h3 className="section-title flex items-center gap-2"><Microscope size={16} className="text-emerald-500" /> Recent QC Results</h3>
-              <button onClick={() => setTab('qc')} className="text-xs text-brand-600">View all</button>
+          <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <Microscope size={18} className="text-emerald-500" /> Recent QC Results
+              </h3>
+              <button onClick={() => setTab('qc')} className="text-sm text-brand-600 font-semibold hover:underline">View all</button>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>Product</th><th>Batch</th><th>Result</th><th>Date</th></tr></thead>
-                <tbody>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50 border-b-2 border-slate-100">
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Product</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Batch</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Result</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Date</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
                   {filteredQc.slice(0, 8).map(r => (
-                    <tr key={r.id}>
-                      <td>
-                        <div className="font-medium text-surface-800">{r.product_name}</div>
-                        <div className="text-xs text-surface-400">{r.product_sku}</div>
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3">
+                        <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                        <div className="text-sm text-slate-400">{r.product_sku}</div>
                       </td>
-                      <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                      <td><span className={`badge ${statusBadge[r.result] || 'badge-neutral'}`}>{r.result}</span></td>
-                      <td className="text-xs text-surface-400">{formatDate(r.created_at)}</td>
+                      <td className="px-4 py-3"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                      <td className="px-4 py-3"><span className={`badge ${statusBadge[r.result] || 'badge-neutral'}`}>{r.result}</span></td>
+                      <td className="px-4 py-3 text-sm text-slate-400">{formatDate(r.created_at)}</td>
                     </tr>
                   ))}
-                  {filteredQc.length === 0 && <tr><td colSpan={4}><div className="empty-state py-8"><div className="empty-title">No QC records yet</div></div></td></tr>}
+                  {filteredQc.length === 0 && (
+                    <tr><td colSpan={4} className="px-4 py-10 text-center text-base text-slate-400">No QC records yet</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          <div className="card lg:col-span-2">
-            <div className="card-header flex items-center justify-between">
-              <h3 className="section-title flex items-center gap-2"><Truck size={16} className="text-sky-500" /> Recent Dispatches</h3>
-              <button onClick={() => setTab('dispatch')} className="text-xs text-brand-600">View all</button>
+          <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden lg:col-span-2">
+            <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <Truck size={18} className="text-sky-500" /> Recent Dispatches
+              </h3>
+              <button onClick={() => setTab('dispatch')} className="text-sm text-brand-600 font-semibold hover:underline">View all</button>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Qty</th><th>Dispatched By</th><th>Remarks</th></tr></thead>
-                <tbody>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50 border-b-2 border-slate-100">
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Date</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Product</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Batch</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Qty</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Dispatched By</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Remarks</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
                   {filteredDispatch.slice(0, 8).map(r => (
-                    <tr key={r.id}>
-                      <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
-                      <td><span className="font-medium text-surface-800">{r.product_name}</span><div className="text-xs text-surface-400">{r.product_sku}</div></td>
-                      <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                      <td className="text-sm">{r.quantity} {r.uom || ''}</td>
-                      <td className="text-sm">{r.dispatcher_name || '-'}</td>
-                      <td className="text-sm text-surface-500">{r.remarks || '-'}</td>
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm text-slate-400">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="px-4 py-3">
+                        <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                        <div className="text-sm text-slate-400">{r.product_sku}</div>
+                      </td>
+                      <td className="px-4 py-3"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                      <td className="px-4 py-3 text-base font-medium text-slate-700">{r.quantity} {r.uom || ''}</td>
+                      <td className="px-4 py-3 text-base text-slate-700">{r.dispatcher_name || '-'}</td>
+                      <td className="px-4 py-3 text-base text-slate-500">{r.remarks || '-'}</td>
                     </tr>
                   ))}
-                  {filteredDispatch.length === 0 && <tr><td colSpan={6}><div className="empty-state py-8"><div className="empty-title">No dispatches yet</div></div></td></tr>}
+                  {filteredDispatch.length === 0 && (
+                    <tr><td colSpan={6} className="px-4 py-10 text-center text-base text-slate-400">No dispatches yet</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -521,213 +596,296 @@ export default function Reports() {
         </div>
       )}
 
+      {/* ── QC Tab ───────────────────────────────────────────────────────────── */}
       {!loading && tab === 'qc' && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><Microscope size={16} className="text-emerald-500" /> QC Reports</h3>
-            <span className="text-xs text-surface-400">{filteredQc.length} records</span>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+          <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Microscope size={18} className="text-emerald-500" /> QC Reports
+            </h3>
+            <span className="text-sm font-medium text-slate-400">{filteredQc.length} records</span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Tester</th><th>Result</th><th>Remarks</th><th>Evidence</th></tr></thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b-2 border-slate-200">
+                  {['Date','Product','Batch','Tester','Result','Remarks','Evidence'].map(h => (
+                    <th key={h} className="px-5 py-3.5 text-left text-sm font-semibold text-slate-600">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
                 {filteredQc.map(r => {
                   const images = parseImages(r.images);
                   return (
-                    <tr key={r.id}>
-                      <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
-                      <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku}{r.grade ? ` · ${r.grade}` : ''}</div></td>
-                      <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                      <td className="text-sm">{r.tester_name || '-'}</td>
-                      <td><span className={`badge ${statusBadge[r.result] || 'badge-neutral'}`}>{r.result}</span></td>
-                      <td className="text-sm text-surface-500 max-w-[220px]">{r.remarks || '-'}</td>
-                      <td>
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-5 py-4 text-sm text-slate-400">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="px-5 py-4">
+                        <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                        <div className="text-sm text-slate-400">{r.product_sku}{r.grade ? ` · ${r.grade}` : ''}</div>
+                      </td>
+                      <td className="px-5 py-4"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.tester_name || '-'}</td>
+                      <td className="px-5 py-4"><span className={`badge ${statusBadge[r.result] || 'badge-neutral'}`}>{r.result}</span></td>
+                      <td className="px-5 py-4 text-base text-slate-500 max-w-[220px]">{r.remarks || '-'}</td>
+                      <td className="px-5 py-4">
                         {images.length > 0
-                          ? <button onClick={() => setImageViewer({ title: `${r.product_name} · ${r.batch_number}`, images })} className="btn-secondary btn-xs"><Eye size={12} /> {images.length}</button>
-                          : <span className="text-xs text-surface-400">-</span>}
+                          ? <button onClick={() => setImageViewer({ title: `${r.product_name} · ${r.batch_number}`, images })} className="btn-secondary btn-xs flex items-center gap-1.5"><Eye size={14} /> {images.length}</button>
+                          : <span className="text-sm text-slate-400">—</span>}
                       </td>
                     </tr>
                   );
                 })}
-                {filteredQc.length === 0 && <tr><td colSpan={7}><div className="empty-state"><div className="empty-title">No QC records found</div><div className="empty-desc">Try changing the date range or result filter</div></div></td></tr>}
+                {filteredQc.length === 0 && (
+                  <tr><td colSpan={7} className="px-5 py-14 text-center text-base text-slate-400">No QC records found. Try changing the date range or result filter.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
+      {/* ── Dispatch Reports Tab ─────────────────────────────────────────────── */}
       {!loading && tab === 'dispatch' && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><Truck size={16} className="text-sky-500" /> Dispatch Reports</h3>
-            <span className="text-xs text-surface-400">{filteredDispatch.length} records</span>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+          <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Truck size={18} className="text-sky-500" /> Dispatch Reports
+            </h3>
+            <span className="text-sm font-medium text-slate-400">{filteredDispatch.length} records</span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Grade</th><th>Lot</th><th>Bags</th><th>Bag Content</th><th>Container</th><th>Vehicle</th><th>Location</th><th>Dispatched By</th><th>Remarks</th><th>Evidence</th></tr></thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b-2 border-slate-200">
+                  {['Date','Party','Product','Grade','Lot','Bags','Bag Content','Container','Vehicle','Location','Dispatched By','Remarks','Evidence'].map(h => (
+                    <th key={h} className="px-5 py-3.5 text-left text-sm font-semibold text-slate-600 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
                 {filteredDispatch.map(r => {
                   const images = parseImages(r.images);
                   return (
-                    <tr key={r.id}>
-                      <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
-                      <td className="text-sm">{r.client_name || '-'}</td>
-                      <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku}</div></td>
-                      <td>{r.grade || '-'}</td>
-                      <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                      <td className="text-sm">{r.quantity} bags</td>
-                      <td className="text-sm">{r.bag_quantity ? `${r.bag_quantity} ${r.bag_quantity_unit || ''}` : '-'}</td>
-                      <td>{r.container_number || '-'}</td>
-                      <td>{r.vehicle_number || '-'}</td>
-                      <td className="text-sm">{r.storage_location || '-'}</td>
-                      <td className="text-sm">{r.dispatcher_name || '-'}</td>
-                      <td className="text-sm text-surface-500 max-w-[220px]">{r.remarks || '-'}</td>
-                      <td>
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-5 py-4 text-sm text-slate-400 whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.client_name || '-'}</td>
+                      <td className="px-5 py-4">
+                        <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                        <div className="text-sm text-slate-400">{r.product_sku}</div>
+                      </td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.grade || '-'}</td>
+                      <td className="px-5 py-4"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                      <td className="px-5 py-4 text-base font-medium text-slate-700">{r.quantity} bags</td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.bag_quantity ? `${r.bag_quantity} ${r.bag_quantity_unit || ''}` : '-'}</td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.container_number || '-'}</td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.vehicle_number || '-'}</td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.storage_location || '-'}</td>
+                      <td className="px-5 py-4 text-base text-slate-700">{r.dispatcher_name || '-'}</td>
+                      <td className="px-5 py-4 text-base text-slate-500 max-w-[200px]">{r.remarks || '-'}</td>
+                      <td className="px-5 py-4">
                         {images.length > 0
-                          ? <button onClick={() => setImageViewer({ title: `${r.product_name} · ${r.batch_number}`, images })} className="btn-secondary btn-xs"><Eye size={12} /> {images.length}</button>
-                          : <span className="text-xs text-surface-400">-</span>}
+                          ? <button onClick={() => setImageViewer({ title: `${r.product_name} · ${r.batch_number}`, images })} className="btn-secondary btn-xs flex items-center gap-1.5"><Eye size={14} /> {images.length}</button>
+                          : <span className="text-sm text-slate-400">—</span>}
                       </td>
                     </tr>
                   );
                 })}
-                {filteredDispatch.length === 0 && <tr><td colSpan={13}><div className="empty-state"><div className="empty-title">No dispatch records found</div><div className="empty-desc">Search by party, grade, lot, container, vehicle, or change the date range</div></div></td></tr>}
+                {filteredDispatch.length === 0 && (
+                  <tr><td colSpan={13} className="px-5 py-14 text-center text-base text-slate-400">No dispatch records found. Search by party, grade, lot, container, vehicle, or change the date range.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
+      {/* ── Dispatch Requests Tab ────────────────────────────────────────────── */}
       {!loading && tab === 'requests' && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><ClipboardList size={16} className="text-amber-500" /> Dispatch Requests</h3>
-            <span className="text-xs text-surface-400">{filteredRequests.length} records</span>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+          <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <ClipboardList size={18} className="text-amber-500" /> Dispatch Requests
+            </h3>
+            <span className="text-sm font-medium text-slate-400">{filteredRequests.length} records</span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot</th><th>Bags</th><th>Client / Transport</th><th>Container</th><th>Raised By</th><th>Status</th><th>QC Remarks</th><th>Reviewed By</th></tr></thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b-2 border-slate-200">
+                  {['Date','Product / Grade','Lot','Bags','Client / Transport','Container','Raised By','Status','Remarks','Reviewed By'].map(h => (
+                    <th key={h} className="px-5 py-3.5 text-left text-sm font-semibold text-slate-600 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
                 {filteredRequests.map(r => (
-                  <tr key={r.id}>
-                    <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
-                    <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku} · {r.grade_name || r.product_grade || '-'}</div></td>
-                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                    <td className="text-sm">{r.quantity} {r.uom || ''}</td>
-                    <td className="text-sm">
+                  <tr key={r.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4 text-sm text-slate-400 whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                    <td className="px-5 py-4">
+                      <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                      <div className="text-sm text-slate-400">{r.product_sku} · {r.grade_name || r.product_grade || '-'}</div>
+                    </td>
+                    <td className="px-5 py-4"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                    <td className="px-5 py-4 text-base font-medium text-slate-700">{r.quantity} {r.uom || ''}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">
                       <div>{r.client_name || '-'}</div>
-                      <div className="text-xs text-surface-400">{r.driver_name || '-'} / {r.vehicle_number || '-'}</div>
+                      <div className="text-sm text-slate-400">{r.driver_name || '-'} / {r.vehicle_number || '-'}</div>
                     </td>
-                    <td>{r.container_number || '-'}</td>
-                    <td className="text-sm">{r.raised_by_name || '-'}</td>
-                    <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
-                    <td className="text-sm text-surface-500 max-w-[220px]">{r.admin_remarks || '-'}</td>
-                    <td className="text-xs text-surface-400">{r.approver_name ? `by ${r.approver_name}` : '-'}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{r.container_number || '-'}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{r.raised_by_name || '-'}</td>
+                    <td className="px-5 py-4"><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
+                    <td className="px-5 py-4 text-base text-slate-500 max-w-[200px]">{r.admin_remarks || '-'}</td>
+                    <td className="px-5 py-4 text-sm text-slate-400">{r.approver_name ? `by ${r.approver_name}` : '-'}</td>
                   </tr>
                 ))}
-                {filteredRequests.length === 0 && <tr><td colSpan={10}><div className="empty-state"><div className="empty-title">No dispatch requests found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
+                {filteredRequests.length === 0 && (
+                  <tr><td colSpan={10} className="px-5 py-14 text-center text-base text-slate-400">No dispatch requests found. Try changing the date range or status filter.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
+      {/* ── Inventory Tab ────────────────────────────────────────────────────── */}
       {!loading && tab === 'inventory' && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><Boxes size={16} className="text-violet-500" /> Products & Inventory</h3>
-            <span className="text-xs text-surface-400">{filteredInventory.length} products</span>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+          <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Boxes size={18} className="text-violet-500" /> Products &amp; Inventory
+            </h3>
+            <span className="text-sm font-medium text-slate-400">{filteredInventory.length} products</span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Product</th><th>Grade / Purity</th><th>Price</th><th>Stock Qty</th><th>Batch Qty</th><th>QC Passed Qty</th><th>Stock Value</th><th>Batches</th></tr></thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b-2 border-slate-200">
+                  {['Product','Grade / Purity','Price','Stock Qty','Batch Qty','QC Passed Qty','Stock Value','Batches'].map(h => (
+                    <th key={h} className="px-5 py-3.5 text-left text-sm font-semibold text-slate-600 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
                 {filteredInventory.map(r => (
-                  <tr key={r.id}>
-                    <td>
-                      <div className="font-medium text-surface-800">{r.name}</div>
-                      <div className="text-xs text-surface-400">{r.sku}{r.cas_number ? ` · CAS ${r.cas_number}` : ''}</div>
+                  <tr key={r.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4">
+                      <div className="text-base font-semibold text-slate-900">{r.name}</div>
+                      <div className="text-sm text-slate-400">{r.sku}{r.cas_number ? ` · CAS ${r.cas_number}` : ''}</div>
                     </td>
-                    <td className="text-sm">{r.grade || '-'}{r.purity ? ` · ${r.purity}` : ''}</td>
-                    <td className="text-sm">{Number(r.price) > 0 ? `₹${Number(r.price).toLocaleString('en-IN')}` : '-'}</td>
-                    <td className="text-sm font-medium">{Number(r.quantity).toLocaleString('en-IN')}</td>
-                    <td className="text-sm">{Number(r.batch_quantity).toLocaleString('en-IN')}</td>
-                    <td className="text-sm text-emerald-600">{Number(r.qc_passed_quantity).toLocaleString('en-IN')}</td>
-                    <td className="text-sm font-medium">₹{Number(r.stock_value).toLocaleString('en-IN')}</td>
-                    <td className="text-sm">{r.batch_count}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{r.grade || '-'}{r.purity ? ` · ${r.purity}` : ''}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{Number(r.price) > 0 ? `₹${Number(r.price).toLocaleString('en-IN')}` : '-'}</td>
+                    <td className="px-5 py-4 text-base font-semibold text-slate-900">{Number(r.quantity).toLocaleString('en-IN')}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{Number(r.batch_quantity).toLocaleString('en-IN')}</td>
+                    <td className="px-5 py-4 text-base font-semibold text-emerald-600">{Number(r.qc_passed_quantity).toLocaleString('en-IN')}</td>
+                    <td className="px-5 py-4 text-base font-semibold text-slate-900">₹{Number(r.stock_value).toLocaleString('en-IN')}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{r.batch_count}</td>
                   </tr>
                 ))}
-                {filteredInventory.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No products found</div></div></td></tr>}
+                {filteredInventory.length === 0 && (
+                  <tr><td colSpan={8} className="px-5 py-14 text-center text-base text-slate-400">No products found.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
+      {/* ── Batches Tab ──────────────────────────────────────────────────────── */}
       {!loading && tab === 'batches' && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><Layers size={16} className="text-brand-500" /> Batch Report</h3>
-            <span className="text-xs text-surface-400">{filteredBatches.length} batches</span>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+          <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Layers size={18} className="text-brand-500" /> Batch Report
+            </h3>
+            <span className="text-sm font-medium text-slate-400">{filteredBatches.length} batches</span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Created</th><th>Product</th><th>Batch</th><th>Qty</th><th>Status</th><th>Mfg Date</th><th>Expiry Date</th><th>Location</th></tr></thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b-2 border-slate-200">
+                  {['Created','Product','Batch','Qty','Status','Mfg Date','Expiry Date','Location'].map(h => (
+                    <th key={h} className="px-5 py-3.5 text-left text-sm font-semibold text-slate-600 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
                 {filteredBatches.map(r => (
-                  <tr key={r.id}>
-                    <td className="text-xs text-surface-400">{formatDate(r.created_at)}</td>
-                    <td><div className="font-medium text-surface-800">{r.product_name}</div><div className="text-xs text-surface-400">{r.product_sku}</div></td>
-                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
-                    <td className="text-sm">{r.quantity} {r.uom || ''}</td>
-                    <td><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{r.status}</span></td>
-                    <td className="text-xs text-surface-400">{formatDate(r.manufacturing_date)}</td>
-                    <td className="text-xs text-surface-400">{formatDate(r.expiry_date)}</td>
-                    <td className="text-sm">{r.storage_location || '-'}</td>
+                  <tr key={r.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4 text-sm text-slate-400">{formatDate(r.created_at)}</td>
+                    <td className="px-5 py-4">
+                      <div className="text-base font-semibold text-slate-900">{r.product_name}</div>
+                      <div className="text-sm text-slate-400">{r.product_sku}</div>
+                    </td>
+                    <td className="px-5 py-4"><span className="font-mono text-sm bg-slate-100 px-2 py-1 rounded-lg">{r.batch_number}</span></td>
+                    <td className="px-5 py-4 text-base font-medium text-slate-700">{r.quantity} {r.uom || ''}</td>
+                    <td className="px-5 py-4"><span className={`badge ${statusBadge[r.status] || 'badge-neutral'}`}>{statusLabel[r.status] || r.status}</span></td>
+                    <td className="px-5 py-4 text-sm text-slate-400">{formatDate(r.manufacturing_date)}</td>
+                    <td className="px-5 py-4 text-sm text-slate-400">{formatDate(r.expiry_date)}</td>
+                    <td className="px-5 py-4 text-base text-slate-700">{r.storage_location || '-'}</td>
                   </tr>
                 ))}
-                {filteredBatches.length === 0 && <tr><td colSpan={8}><div className="empty-state"><div className="empty-title">No batches found</div><div className="empty-desc">Try changing the date range or status filter</div></div></td></tr>}
+                {filteredBatches.length === 0 && (
+                  <tr><td colSpan={8} className="px-5 py-14 text-center text-base text-slate-400">No batches found. Try changing the date range or status filter.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
+      {/* ── Activity Log Tab ─────────────────────────────────────────────────── */}
       {!loading && tab === 'activity' && (
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h3 className="section-title flex items-center gap-2"><Activity size={16} className="text-surface-500" /> System Activity Log</h3>
-            <span className="text-xs text-surface-400">{filteredLogs.length} entries</span>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
+          <div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Activity size={18} className="text-slate-500" /> System Activity Log
+            </h3>
+            <span className="text-sm font-medium text-slate-400">{filteredLogs.length} entries</span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Description</th></tr></thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50 border-b-2 border-slate-200">
+                  {['Time','User','Role','Action','Description'].map(h => (
+                    <th key={h} className="px-5 py-3.5 text-left text-sm font-semibold text-slate-600">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
                 {filteredLogs.map(r => (
-                  <tr key={r.id}>
-                    <td className="text-xs text-surface-400">{new Date(r.created_at).toLocaleString()}</td>
-                    <td className="text-sm">{r.user_name || '-'}</td>
-                    <td className="text-sm">{r.user_role || '-'}</td>
-                    <td><span className="badge badge-neutral">{r.action}</span></td>
-                    <td className="text-sm text-surface-500">{r.description || '-'}</td>
+                  <tr key={r.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-4 text-sm text-slate-400 whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                    <td className="px-5 py-4 text-base font-medium text-slate-800">{r.user_name || '-'}</td>
+                    <td className="px-5 py-4">
+                      <span className="inline-block bg-slate-100 text-slate-600 text-sm font-semibold px-2.5 py-1 rounded-lg">
+                        {r.user_role || '-'}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4"><span className="badge badge-neutral text-sm">{r.action}</span></td>
+                    <td className="px-5 py-4 text-base text-slate-500">{r.description || '-'}</td>
                   </tr>
                 ))}
-                {filteredLogs.length === 0 && <tr><td colSpan={5}><div className="empty-state"><div className="empty-title">No activity found</div></div></td></tr>}
+                {filteredLogs.length === 0 && (
+                  <tr><td colSpan={5} className="px-5 py-14 text-center text-base text-slate-400">No activity found.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
+      {/* ── Image Evidence Viewer ────────────────────────────────────────────── */}
       {imageViewer && (
-        <div className="modal-overlay" onClick={() => setImageViewer(null)}>
+        <div className="modal-overlay">
           <div className="modal-content max-w-3xl" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h2 className="text-base font-semibold text-surface-900">Evidence · {imageViewer.title}</h2>
-              <button onClick={() => setImageViewer(null)} className="btn-ghost btn-sm"><X size={16} /></button>
+              <h2 className="text-xl font-bold text-slate-900">Evidence · {imageViewer.title}</h2>
+              <button onClick={() => setImageViewer(null)} className="btn-ghost btn-sm"><X size={18} /></button>
             </div>
             <div className="modal-body grid grid-cols-1 sm:grid-cols-2 gap-4">
               {imageViewer.images.map((image, index) => (
-                <a key={`${image}-${index}`} href={uploadUrl(image)} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-surface-200 hover:border-brand-300">
+                <a key={`${image}-${index}`} href={uploadUrl(image)} target="_blank" rel="noreferrer" className="block rounded-2xl overflow-hidden border-2 border-slate-200 hover:border-brand-300">
                   <img src={uploadUrl(image)} alt={`Evidence ${index + 1}`} className="w-full h-48 object-cover" />
                 </a>
               ))}

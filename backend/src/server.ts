@@ -27,6 +27,8 @@ import { rateLimit } from './middleware/rateLimit';
 import { ensureAdminSchema } from './config/schema';
 import { checkDatabase, closePool } from './config/database';
 import { getUpload } from './controllers/uploadController';
+import { uploadTenantLogo } from './controllers/tenantUploadController';
+import { getCurrentTenantLogo } from './controllers/tenantController';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -76,6 +78,7 @@ app.use('/api', rateLimit({
 }));
 
 app.get('/uploads/:filename', (req, res) => { void getUpload(req, res); });
+app.get('/api/tenants/:tenantId/logo', (req, res) => { void getCurrentTenantLogo(req, res); });
 
 app.use('/api/auth/login', rateLimit({
   windowMs: 60_000,
@@ -83,6 +86,7 @@ app.use('/api/auth/login', rateLimit({
   message: 'Too many sign-in attempts. Please wait a minute and try again.',
 }));
 app.use('/api/auth', authRoutes);
+app.post('/api/tenant-logo', uploadTenantLogo);
 app.use('/api/users', userRoutes);
 app.use('/api/profile', profileRoutes());
 app.use('/api/products', productRoutes);

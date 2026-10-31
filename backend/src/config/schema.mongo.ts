@@ -5,6 +5,9 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
   const sparseUnique = { unique: true, partialFilterExpression: { client_operation_id: { $type: 'string' } } } as const;
 
   await Promise.all([
+    ctx.collection('tenants').createIndex({ email_key: 1 }, unique),
+    ctx.collection('tenants').createIndex({ slug: 1 }, unique),
+    ctx.collection('qr_reprint_requests').createIndex({ tenant_id: 1, status: 1, requested_at: -1 }),
     ctx.collection('admins').createIndex({ email: 1 }, unique),
     ctx.collection('qc_users').createIndex({ email: 1 }, unique),
     ctx.collection('dispatch_users').createIndex({ email: 1 }, unique),
@@ -24,6 +27,8 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('vendors').createIndex({ is_active: 1 }),
     ctx.collection('grades').createIndex({ name: 1 }, unique),
     ctx.collection('grades').createIndex({ is_active: 1 }),
+    ctx.collection('uoms').createIndex({ name: 1 }, unique),
+    ctx.collection('uoms').createIndex({ is_active: 1 }),
     ctx.collection('bag_quantities').createIndex({ name: 1 }, unique),
     ctx.collection('bag_quantities').createIndex({ is_active: 1 }),
 
@@ -31,6 +36,8 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('batches').createIndex({ batch_number: 1 }),
     ctx.collection('batches').createIndex({ product_id: 1, created_at: -1 }),
     ctx.collection('batches').createIndex({ batch_group_id: 1 }),
+    ctx.collection('batch_groups').createIndex({ group_key: 1 }, unique),
+    ctx.collection('batch_groups').createIndex({ batch_number: 1 }, unique),
     ctx.collection('batches').createIndex({ status: 1, updated_at: 1 }),
     ctx.collection('batches').createIndex({ updated_at: 1 }),
     ctx.collection('batches').createIndex({ shelf_location_id: 1 }),
@@ -119,6 +126,25 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
 export async function ensureAdminSchema(): Promise<void> {
   const ctx = await getContext();
   await ensureIndexes(ctx);
+  await ctx.collection('tenants').createIndex({ email_key: 1 }, { unique: true });
+  await ctx.collection('tenants').createIndex({ slug: 1 }, { unique: true });
+  for (const table of ['admins', 'qc_users', 'dispatch_users']) {
+    await ctx.collection(table).createIndex({ tenant_id: 1, email: 1 }, { unique: true, partialFilterExpression: { tenant_id: { $type: 'number' } } });
+  }
+  const firstAdmin = await ctx.findOne('admins', {}, { projection: { _id: 0, id: 1, name: 1, email: 1 } });
+  let legacyTenant = await ctx.findOne('tenants', { slug: 'legacy-workspace' }, { projection: { _id: 0, id: 1 } });
+  if (!legacyTenant && firstAdmin) {
+    try {
+      const id = await ctx.insert('tenants', { name: 'Legacy workspace', email: firstAdmin.email || 'legacy@invalid.local', email_key: '__legacy_workspace__', phone: '0000000000', slug: 'legacy-workspace', is_active: 1 });
+      legacyTenant = { id };
+    } catch (error) { if (!isDuplicateKey(error)) throw error; legacyTenant = await ctx.findOne('tenants', { slug: 'legacy-workspace' }, { projection: { _id: 0, id: 1 } }); }
+  }
+  if (legacyTenant) {
+    for (const collection of ['admins', 'qc_users', 'dispatch_users', 'products', 'batches', 'qc_records', 'dispatch_records', 'dispatch_orders', 'clients', 'vendors', 'shelf_locations', 'activity_logs']) {
+      await ctx.updateMany(collection, { tenant_id: { $exists: false } }, { $set: { tenant_id: legacyTenant.id } });
+      await ctx.updateMany(collection, { tenant_id: null }, { $set: { tenant_id: legacyTenant.id } });
+    }
+  }
   for (const collection of ['grades', 'bag_quantities', 'vendors', 'shelf_locations']) {
     await ctx.updateMany(
       collection,

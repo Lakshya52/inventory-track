@@ -2,17 +2,18 @@ import { Request, Response } from 'express';
 import { getContext, idKey, isDuplicateKey, isValidId } from '../config/database';
 import { EntityId } from '../services/queryService';
 
-type MasterKind = 'grades' | 'bag-quantities';
+type MasterKind = 'grades' | 'bag-quantities' | 'uoms';
 type MasterValues = { name: string; quantity?: number; unit?: string; is_active?: number };
 
-function collectionName(kind: string): 'grades' | 'bag_quantities' | null {
+function collectionName(kind: string): 'grades' | 'bag_quantities' | 'uoms' | null {
   if (kind === 'grades') return 'grades';
   if (kind === 'bag-quantities') return 'bag_quantities';
+  if (kind === 'uoms') return 'uoms';
   return null;
 }
 
 function masterValues(kind: MasterKind, body: Record<string, unknown>): MasterValues | null {
-  if (kind === 'grades') {
+  if (kind === 'grades' || kind === 'uoms') {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     return name && name.length <= 100 ? { name, is_active: 1 } : null;
   }
@@ -27,7 +28,7 @@ function masterValues(kind: MasterKind, body: Record<string, unknown>): MasterVa
 }
 
 function isSameMaster(item: Record<string, any>, kind: MasterKind, values: MasterValues): boolean {
-  if (kind === 'grades') {
+  if (kind === 'grades' || kind === 'uoms') {
     return String(item.name || '').trim().toLowerCase() === values.name.toLowerCase();
   }
   const sameAmount = Number(item.quantity) === values.quantity;
@@ -38,7 +39,7 @@ function isSameMaster(item: Record<string, any>, kind: MasterKind, values: Maste
 
 async function findMatchingMaster(
   ctx: Awaited<ReturnType<typeof getContext>>,
-  collection: 'grades' | 'bag_quantities',
+  collection: 'grades' | 'bag_quantities' | 'uoms',
   kind: MasterKind,
   values: MasterValues,
   excludeId?: EntityId
@@ -64,17 +65,17 @@ export async function list(req: Request, res: Response): Promise<void> {
 export async function create(req: Request, res: Response): Promise<void> {
   const collection = collectionName(req.params.kind);
   if (!collection) { res.status(404).json({ error: 'Master type not found' }); return; }
-  const values = masterValues(req.params.kind as MasterKind, req.body);
+  const kind = req.params.kind as MasterKind;
+  const values = masterValues(kind, req.body);
   if (!values) {
     res.status(400).json({
-      error: req.params.kind === 'grades'
-        ? 'Enter a grade name with no more than 100 characters'
+      error: kind === 'grades' || kind === 'uoms'
+        ? `Enter a ${kind === 'grades' ? 'grade' : 'UOM'} name with no more than 100 characters`
         : 'Enter a positive bag quantity (up to four decimal places) and a unit of no more than 40 characters',
     });
     return;
   }
   const ctx = await getContext();
-  const kind = req.params.kind as MasterKind;
   const existing = await findMatchingMaster(ctx, collection, kind, values);
   if (existing) {
     if (Number(existing.is_active) === 1 || existing.is_active === true) {
@@ -97,11 +98,12 @@ export async function create(req: Request, res: Response): Promise<void> {
 export async function update(req: Request, res: Response): Promise<void> {
   const collection = collectionName(req.params.kind);
   if (!collection) { res.status(404).json({ error: 'Master type not found' }); return; }
-  const values = masterValues(req.params.kind as MasterKind, req.body);
+  const kind = req.params.kind as MasterKind;
+  const values = masterValues(kind, req.body);
   if (!values) {
     res.status(400).json({
-      error: req.params.kind === 'grades'
-        ? 'Enter a grade name with no more than 100 characters'
+      error: kind === 'grades' || kind === 'uoms'
+        ? `Enter a ${kind === 'grades' ? 'grade' : 'UOM'} name with no more than 100 characters`
         : 'Enter a positive bag quantity (up to four decimal places) and a unit of no more than 40 characters',
     });
     return;
@@ -109,7 +111,6 @@ export async function update(req: Request, res: Response): Promise<void> {
   const id = parseId(req.params.id);
   if (!id) { res.status(400).json({ error: 'Invalid master value ID' }); return; }
   const ctx = await getContext();
-  const kind = req.params.kind as MasterKind;
   const duplicate = await findMatchingMaster(ctx, collection, kind, values, id);
   if (duplicate) {
     res.status(409).json({ error: 'Another master value with the same name or amount and unit already exists' });
@@ -149,7 +150,7 @@ export async function setStatus(req: Request, res: Response): Promise<void> {
   if (isActive) {
     const item = await ctx.findOne(collection, { id }, { projection: { _id: 0, id: 1, name: 1, quantity: 1, unit: 1 } });
     if (!item) { res.status(404).json({ error: 'Master value not found' }); return; }
-    const values: MasterValues = kind === 'grades'
+    const values: MasterValues = kind === 'grades' || kind === 'uoms'
       ? { name: String(item.name) }
       : { name: String(item.name), quantity: Number(item.quantity), unit: String(item.unit) };
     if (await findMatchingMaster(ctx, collection, kind, values, id)) {

@@ -1,7 +1,13 @@
 import multer from 'multer';
+import { useMongo } from './database';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { pipeline } from 'stream';
 import { getDb } from './database.mongo';
+import fs from 'fs';
+import path from 'path';
+
+const uploadDirectory = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
+fs.mkdirSync(uploadDirectory, { recursive: true });
 
 class MongoGridFsStorage implements multer.StorageEngine {
   _handleFile(
@@ -51,13 +57,21 @@ class MongoGridFsStorage implements multer.StorageEngine {
 }
 
 export const upload = multer({
-  storage: new MongoGridFsStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  storage: useMongo ? new MongoGridFsStorage() : multer.diskStorage({
+    destination: uploadDirectory,
+    filename: (_req, file, callback) => callback(null, `${Date.now()}-${randomFilename(file.originalname)}`),
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
-    if (file.mimetype.startsWith('image/')) callback(null, true);
+    if (/^image\/(png|jpeg|webp|svg\+xml)$/.test(file.mimetype)) callback(null, true);
     else callback(new Error('Only image files are allowed'));
   },
 });
+
+function randomFilename(original: string): string {
+  const ext = original.toLowerCase().match(/\.(png|jpe?g|webp|svg)$/)?.[0] || '.img';
+  return `${Math.random().toString(16).slice(2)}${ext}`;
+}
 
 export const importUpload = multer({
   storage: multer.memoryStorage(),

@@ -70,6 +70,75 @@ async function addUniqueIndexIfMissing(
  * without a destructive seed. Every statement must be safe to run repeatedly.
  */
 export async function ensureAdminSchema(): Promise<void> {
+  await execute(`CREATE TABLE IF NOT EXISTS qr_reprint_requests (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    qr_job_id VARCHAR(64) NOT NULL,
+    job_code VARCHAR(100) NULL,
+    label_ids LONGTEXT NOT NULL,
+    requested_count INT UNSIGNED NOT NULL,
+    requested_by VARCHAR(64) NOT NULL,
+    requested_by_name VARCHAR(200) NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fulfilled_by VARCHAR(64) NULL,
+    fulfilled_by_name VARCHAR(200) NULL,
+    fulfilled_at TIMESTAMP NULL,
+    INDEX idx_qr_reprint_tenant_status (tenant_id, status, requested_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await execute(`CREATE TABLE IF NOT EXISTS tenants (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    email VARCHAR(254) NOT NULL,
+    email_key VARCHAR(254) NOT NULL UNIQUE,
+    phone VARCHAR(32) NOT NULL,
+    logo_url VARCHAR(500) NULL,
+    logo_data LONGTEXT NULL,
+    logo_mime_type VARCHAR(100) NULL,
+    slug VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await addColumnIfMissing('tenants', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+  await addColumnIfMissing('tenants', 'logo_data', 'LONGTEXT NULL');
+  await addColumnIfMissing('tenants', 'logo_mime_type', 'VARCHAR(100) NULL');
+  await addColumnIfMissing('admins', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('qc_users', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('dispatch_users', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('products', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('batches', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('qc_records', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('dispatch_records', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('dispatch_orders', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('dispatch_orders', 'order_lines', 'JSON NULL');
+  await addColumnIfMissing('clients', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('vendors', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('shelf_locations', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('activity_logs', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addIndexIfMissing('admins', 'idx_admins_tenant', 'tenant_id');
+  await addIndexIfMissing('qc_users', 'idx_qc_tenant', 'tenant_id');
+  await addIndexIfMissing('dispatch_users', 'idx_dispatch_tenant', 'tenant_id');
+  const legacyTenants = await query<RowDataPacket[]>("SELECT id FROM tenants WHERE email_key = '__legacy_workspace__' LIMIT 1");
+  let legacyTenantId = legacyTenants[0]?.id as number | undefined;
+  if (!legacyTenantId) {
+    const users = await query<RowDataPacket[]>("SELECT id, name, email FROM admins ORDER BY id LIMIT 1");
+    if (users.length) {
+      try {
+        const result = await execute("INSERT INTO tenants (name, email, email_key, phone, slug) VALUES ('Legacy workspace', ?, '__legacy_workspace__', '0000000000', 'legacy-workspace')", [users[0].email || 'legacy@invalid.local']);
+        legacyTenantId = result.insertId;
+      } catch {
+        const fallback = await query<RowDataPacket[]>("SELECT id FROM tenants WHERE slug = 'legacy-workspace' LIMIT 1");
+        legacyTenantId = fallback[0]?.id as number | undefined;
+      }
+    }
+  }
+  if (legacyTenantId) {
+    for (const table of USER_TABLES) await execute(`UPDATE \`${table}\` SET tenant_id = ? WHERE tenant_id IS NULL`, [legacyTenantId]);
+    for (const table of ['products', 'batches', 'qc_records', 'dispatch_records', 'dispatch_orders', 'clients', 'vendors', 'shelf_locations', 'activity_logs']) {
+      await execute(`UPDATE \`${table}\` SET tenant_id = ? WHERE tenant_id IS NULL`, [legacyTenantId]);
+    }
+  }
   for (const table of USER_TABLES) {
     await addColumnIfMissing(
       table,
@@ -107,6 +176,15 @@ export async function ensureAdminSchema(): Promise<void> {
     "driver_name",
     "VARCHAR(150) NULL",
   );
+  await addColumnIfMissing("dispatch_orders", "driver_phone", "VARCHAR(32) NULL");
+  await addColumnIfMissing("dispatch_orders", "stock_reserved_at_order", "DATETIME(3) NULL");
+  await addColumnIfMissing("dispatch_orders", "quantity", "INT UNSIGNED NULL");
+  await addColumnIfMissing("qr_labels", "dispatch_order_id", "INT NULL");
+  await addColumnIfMissing("qr_labels", "recall_status", "VARCHAR(20) NULL");
+  await addColumnIfMissing("qr_labels", "recall_condition", "VARCHAR(30) NULL");
+  await addColumnIfMissing("qr_labels", "recall_reason", "VARCHAR(1000) NULL");
+  await addColumnIfMissing("qr_labels", "recalled_by", "VARCHAR(64) NULL");
+  await addColumnIfMissing("qr_labels", "recalled_at", "DATETIME(3) NULL");
   await addColumnIfMissing(
     "dispatch_orders",
     "vehicle_number",
@@ -132,7 +210,22 @@ export async function ensureAdminSchema(): Promise<void> {
     "DATETIME(3) NULL",
   );
   await addColumnIfMissing("batches", "batch_group_id", "CHAR(36) NULL");
+  await addColumnIfMissing("batches", "parent_batch_number", "VARCHAR(100) NULL");
   await addIndexIfMissing("batches", "idx_batches_group", "batch_group_id");
+
+  await execute(`CREATE TABLE IF NOT EXISTS batch_groups (
+    group_key CHAR(36) PRIMARY KEY,
+    batch_number VARCHAR(100) NOT NULL UNIQUE,
+    tenant_id BIGINT UNSIGNED NULL,
+    created_by INT NOT NULL,
+    product_count INT NOT NULL,
+    total_quantity INT NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'QC_PASSED',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_batch_groups_created (created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await addColumnIfMissing('batch_groups', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addIndexIfMissing('batch_groups', 'idx_batch_groups_tenant', 'tenant_id');
 
   // Offline idempotency / provenance columns. The server timestamp stays in
   // created_at; client_created_at preserves the time the field user acted.
@@ -194,11 +287,27 @@ export async function ensureAdminSchema(): Promise<void> {
     KEY idx_vendors_active (is_active)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await execute(`INSERT INTO vendors (vendor_code, name, category, is_active)
     VALUES ('SELF', 'Self', 'Internal', 1)
     ON DUPLICATE KEY UPDATE name = 'Self', category = 'Internal', is_active = 1`);
 
   await execute(`CREATE TABLE IF NOT EXISTS grades (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
@@ -212,11 +321,27 @@ export async function ensureAdminSchema(): Promise<void> {
     LEFT JOIN grades g ON g.name = TRIM(p.grade)
     WHERE p.grade IS NOT NULL AND TRIM(p.grade) <> '' AND g.id IS NULL`);
 
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await execute(`CREATE TABLE IF NOT EXISTS bag_quantities (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(120) NOT NULL UNIQUE,
     quantity DECIMAL(14,4) NOT NULL,
     unit VARCHAR(40) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -256,12 +381,28 @@ export async function ensureAdminSchema(): Promise<void> {
     KEY idx_devices_last_seen (last_seen_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await execute(`CREATE TABLE IF NOT EXISTS device_sync_state (
     device_uuid VARCHAR(100) NOT NULL PRIMARY KEY,
     last_pull_at DATETIME(3) NULL,
     last_push_at DATETIME(3) NULL,
     last_error TEXT NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   await execute(`CREATE TABLE IF NOT EXISTS sync_operations (
@@ -286,6 +427,14 @@ export async function ensureAdminSchema(): Promise<void> {
     KEY idx_sync_status_time (status, server_timestamp)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await execute(`CREATE TABLE IF NOT EXISTS refresh_tokens (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     token_hash CHAR(64) NOT NULL,
@@ -299,6 +448,14 @@ export async function ensureAdminSchema(): Promise<void> {
     UNIQUE KEY uq_refresh_token (token_hash),
     KEY idx_refresh_user (user_role, user_id),
     KEY idx_refresh_expiry (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Each QR label identifies one unit within a single batch.
@@ -316,6 +473,14 @@ export async function ensureAdminSchema(): Promise<void> {
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await execute(`CREATE TABLE IF NOT EXISTS qr_labels (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     print_job_id INT NOT NULL,
@@ -331,6 +496,14 @@ export async function ensureAdminSchema(): Promise<void> {
     KEY idx_qr_labels_job (print_job_id),
     FOREIGN KEY (print_job_id) REFERENCES qr_print_jobs(id) ON DELETE CASCADE,
     FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await execute(`CREATE TABLE IF NOT EXISTS uoms (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Preserve the foreign-key index before removing the legacy unique index.

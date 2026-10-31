@@ -33,10 +33,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.me = exports.logout = exports.refresh = exports.login = void 0;
+exports.registerTenant = exports.me = exports.logout = exports.refresh = exports.login = void 0;
 const database_1 = require("../config/database");
 const mysqlImpl = __importStar(require("./authController.mysql"));
 const mongoImpl = __importStar(require("./authController.mongo"));
+const tenantController_1 = require("./tenantController");
+Object.defineProperty(exports, "registerTenant", { enumerable: true, get: function () { return tenantController_1.registerTenant; } });
 const implementation = database_1.useMongo ? mongoImpl : mysqlImpl;
 exports.login = implementation.login;
 exports.refresh = implementation.refresh;

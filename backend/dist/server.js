@@ -65,6 +65,8 @@ const rateLimit_1 = require("./middleware/rateLimit");
 const schema_1 = require("./config/schema");
 const database_1 = require("./config/database");
 const uploadController_1 = require("./controllers/uploadController");
+const tenantUploadController_1 = require("./controllers/tenantUploadController");
+const tenantController_1 = require("./controllers/tenantController");
 const app = (0, express_1.default)();
 const PORT = Number(process.env.PORT) || 3001;
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
@@ -111,12 +113,14 @@ app.use('/api', (0, rateLimit_1.rateLimit)({
     max: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 600,
 }));
 app.get('/uploads/:filename', (req, res) => { void (0, uploadController_1.getUpload)(req, res); });
+app.get('/api/tenants/:tenantId/logo', (req, res) => { void (0, tenantController_1.getCurrentTenantLogo)(req, res); });
 app.use('/api/auth/login', (0, rateLimit_1.rateLimit)({
     windowMs: 60_000,
     max: Number(process.env.LOGIN_RATE_LIMIT_PER_MINUTE) || 20,
     message: 'Too many sign-in attempts. Please wait a minute and try again.',
 }));
 app.use('/api/auth', auth_1.default);
+app.post('/api/tenant-logo', tenantUploadController_1.uploadTenantLogo);
 app.use('/api/users', users_1.default);
 app.use('/api/profile', (0, users_1.profileRoutes)());
 app.use('/api/products', products_1.default);

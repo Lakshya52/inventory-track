@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { EntityId, Vendor } from '../types';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   Factory, Plus, Search, Pencil, Trash2, X, Power, Building2,
   Mail, Phone, MapPin, BadgeCheck, Handshake
@@ -19,9 +20,10 @@ const emptyForm = {
   is_active: true,
 };
 
-export default function Vendors() {
+export default function Vendors({ embedded = false }: { embedded?: boolean }) {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 250);
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<EntityId | null>(null);
@@ -37,7 +39,7 @@ export default function Vendors() {
   useEffect(() => { loadVendors(); }, []);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     return vendors.filter(v => {
       const matchesSearch = !q || [v.name, v.vendor_code, v.contact_person, v.email, v.phone, v.gst_number, v.category]
         .some(value => (value || '').toLowerCase().includes(q));
@@ -47,7 +49,7 @@ export default function Vendors() {
         (statusFilter === 'inactive' && v.is_active === 0);
       return matchesSearch && matchesStatus;
     });
-  }, [vendors, search, statusFilter]);
+  }, [vendors, debouncedSearch, statusFilter]);
 
   const activeCount = vendors.filter(v => v.is_active === 1).length;
 
@@ -128,19 +130,31 @@ export default function Vendors() {
   };
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center shrink-0">
-            <Factory size={20} />
+    <div className={embedded ? 'space-y-4' : 'page-container'}>
+      {!embedded ? (
+        <div className="page-header">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center shrink-0">
+              <Factory size={20} />
+            </div>
+            <div>
+              <h1 className="page-title">Vendors</h1>
+              <p className="page-subtitle">Add, update, deactivate and remove raw material vendor and supplier records</p>
+            </div>
           </div>
-          <div>
-            <h1 className="page-title">Vendors</h1>
-            <p className="page-subtitle">Add, update, deactivate and remove raw material vendor and supplier records</p>
-          </div>
+          <button onClick={openCreate} className="btn-primary"><Plus size={16} /> Add Vendor</button>
         </div>
-        <button onClick={openCreate} className="btn-primary"><Plus size={16} /> Add Vendor</button>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+          <div>
+            <h2 className="section-title">Vendors Master</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Manage raw material suppliers, manufacturers, and source vendors ({vendors.length} total)</p>
+          </div>
+          <button onClick={openCreate} className="btn-primary">
+            <Plus size={16} /> Add Vendor
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {[

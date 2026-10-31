@@ -1,7 +1,7 @@
 export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 export type BatchStatus = 'QC_PASSED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'LOADING' | 'DISPATCHED' | 'NOT_DISPATCHED';
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
-export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED';
+export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED' | 'CANCELLED';
 export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
 export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 export interface Product {
@@ -132,6 +132,7 @@ export interface JwtPayload {
     name: string;
     email: string;
     table: 'admins' | 'qc_users' | 'dispatch_users';
+    tenantId: string | number;
 }
 export type SyncOperationType = 'QC_SUBMIT' | 'QC_SUBMIT_BULK' | 'DISPATCH_ORDER_RAISE' | 'DISPATCH_CONFIRM' | 'DISPATCH_CONFIRM_BULK' | 'BATCH_CREATE_AUTO_PASS' | 'QC_ORDER_APPROVE' | 'QC_ORDER_REJECT' | 'LOADING_SESSION_START' | 'LOADING_SESSION_SCAN' | 'LOADING_SESSION_FINALISE';
 export type SyncOperationStatus = 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'FAILED';
@@ -166,6 +167,7 @@ export interface LoadingSession {
     remarks: string | null;
     started_at: string;
     completed_at: string | null;
+    cancelled_at?: string | null;
     updated_at: string;
 }
 export interface LoadingScanEvent {

@@ -2,16 +2,29 @@
 // On Vercel, set API_URL to the Render service origin.
 import type { QrJob, QrLabel } from '../utils/qrPdf';
 import type { EntityId, Role } from '../types';
+import type { Tenant } from '../types';
 
-const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '');
+const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '').replace(/\/api$/i, '');
 const BASE_URL = `${API_ORIGIN}/api`;
+
+function apiOrigin(): string {
+  return API_ORIGIN;
+}
 
 function idPath(id: EntityId): string {
   return encodeURIComponent(String(id));
 }
 
 export function uploadUrl(filename: string): string {
-  return `${API_ORIGIN}/uploads/${filename}`;
+  return `${apiOrigin()}/uploads/${filename}`;
+}
+
+export function resolveUploadUrl(url: string | null | undefined): string {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('/api/tenants/') && url.endsWith('/logo')) return `${API_ORIGIN}${url}`;
+  const prefix = '/uploads/';
+  return url.startsWith(prefix) ? `${apiOrigin()}${url}` : url;
 }
 
 function token(): string | null {
@@ -35,12 +48,31 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   auth: {
+    register: (data: { name: string; companyName: string; mobile: string; email: string; password: string }) =>
+      request<{ token: string; user: any; tenant: any }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+    uploadLogo: async (file: File): Promise<string> => {
+      const form = new FormData();
+      form.append('file', file);
+      const headers: Record<string, string> = {};
+      const authToken = token();
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const response = await fetch(`${BASE_URL}/tenant-logo`, { method: 'POST', body: form, headers });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Logo upload failed');
+      if (typeof data.logoUrl !== 'string' || !/^\/api\/tenants\/[^/]+\/logo$/.test(data.logoUrl)) {
+        throw new Error('Upload succeeded but the server returned an invalid logo URL.');
+      }
+      return data.logoUrl;
+    },
     login: (email: string, password: string) =>
       request<{ token: string; user: any }>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       }),
     me: () => request<any>('/auth/me'),
+    tenant: () => request<Tenant>('/auth/tenant'),
+    updateTenant: (data: Pick<Tenant, 'name' | 'email' | 'phone' | 'logoUrl'>) =>
+      request<Tenant>('/auth/tenant', { method: 'PUT', body: JSON.stringify(data) }),
     refresh: (refreshToken: string) =>
       request<any>('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
     logout: (refreshToken?: string) =>
@@ -160,10 +192,11 @@ export const api = {
     },
     create: (data: {
       product_id: EntityId;
-      batch_number: string;
+      batch_number?: string;
       quantity: number;
       batch_count?: number;
       uom?: string;
+      shelf_location_id?: EntityId;
       unit_price?: number;
       manufacturing_date?: string;
       expiry_date?: string;
@@ -181,6 +214,8 @@ export const api = {
       message: string;
     }> =>
       request('/batches', { method: 'POST', body: JSON.stringify(data) }),
+    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; uom: string; shelf_location_id: EntityId; unit_price?: number }> }) =>
+      request<{ id: string; batch_group_id: string; batch_number: string; product_count: number; total_quantity: number; batches: Array<any>; labels: Array<QrLabel>; message: string }>('/batches/group', { method: 'POST', body: JSON.stringify(data) }),
     finishGoods: (id: EntityId, data: { vendor_id: EntityId; grade_id: EntityId; bag_quantity_id: EntityId; shelf_location_id?: EntityId }) =>
       request<any>(`/batches/${idPath(id)}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
     getByBarcode: (barcode: string) =>
@@ -197,6 +232,11 @@ export const api = {
       get: (id: EntityId) => request<any>(`/qc/qr-jobs/${idPath(id)}`),
       reprint: (id: EntityId, data: { quantity?: number; label_ids?: EntityId[] }) =>
         request<any>(`/qc/qr-jobs/${idPath(id)}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
+    requestReprint: (id: EntityId, label_ids: EntityId[]) =>
+      request<any>(`/qc/qr-jobs/${idPath(id)}/reprint-request`, { method: 'POST', body: JSON.stringify({ label_ids }) }),
+    reprintRequests: () => request<any[]>('/qc/qr-jobs/reprint-requests'),
+    completeReprintRequest: (id: EntityId) =>
+      request<any>(`/qc/qr-jobs/reprint-requests/${idPath(id)}/complete`, { method: 'POST', body: '{}' }),
     },
     stats: () => request<any>('/qc/stats'),
     pending: (params?: { page?: number; limit?: number; q?: string }) => {
@@ -244,7 +284,7 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; driver_name: string; vehicle_number: string; container_number: string; client_operation_id?: string }) =>
+    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number }>; client_operation_id?: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
     pending: (params?: { q?: string }) => {
       const qs = new URLSearchParams();
@@ -306,12 +346,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ qr_value, client_operation_id }),
       }),
+    recallQr: (id: EntityId, data: { qr_value: string; condition: 'DAMAGED' | 'HOLD' | 'OTHER'; reason: string }) =>
+      request<any>(`/loading-sessions/${idPath(id)}/recall-qr`, { method: 'POST', body: JSON.stringify(data) }),
     get: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}`),
     active: () => request<any[]>('/loading-sessions/active'),
     cancel: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}/cancel`, { method: 'POST' }),
     finalise: (id: EntityId, data: {
       seal_number: string;
       outcome: 'DISPATCHED' | 'NOT_DISPATCHED';
+      driver_name: string;
+      driver_phone?: string;
+      vehicle_number: string;
+      container_number: string;
       remarks?: string;
       client_operation_id?: string;
     }) => request<any>(`/loading-sessions/${idPath(id)}/finalise`, {

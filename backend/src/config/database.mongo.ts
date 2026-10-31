@@ -55,6 +55,7 @@ const CREATED_AT_COLLECTIONS = new Set([
   'clients',
   'vendors',
   'batches',
+  'batch_groups',
   'qr_print_jobs',
   'qr_labels',
   'qc_records',
@@ -70,6 +71,7 @@ const CREATED_AT_COLLECTIONS = new Set([
 ]);
 
 const UPDATED_AT_COLLECTIONS = new Set([
+  'tenants',
   'products',
   'shelf_locations',
   'clients',

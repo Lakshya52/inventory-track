@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { Printer, Package, Eye, AlertTriangle, Download } from 'lucide-react';
+import { Printer, Package, Eye, AlertTriangle, Download, FileText, CheckCircle2, Truck, X } from 'lucide-react';
 import type { EntityId } from '../types';
 
 function itemLocation(item: any): string {
@@ -13,11 +13,17 @@ function itemBarcode(item: any, packingData: any): string {
   return item.barcode || packingData.barcode || '-';
 }
 
-function packingStatus(status: string | null | undefined): { label: string; className: string } {
-  if (status === 'CLOSED_DISPATCHED') return { label: 'Dispatched', className: 'badge-success' };
-  if (status === 'CLOSED_NOT_DISPATCHED') return { label: 'Not dispatched', className: 'badge-danger' };
-  if (status === 'APPROVED') return { label: 'Approved', className: 'badge-info' };
-  return { label: status || '-', className: 'badge-neutral' };
+function getPackingStatus(status: string | null | undefined): { label: string; bg: string } {
+  if (status === 'CLOSED_DISPATCHED' || status === 'DISPATCHED') {
+    return { label: 'Dispatched (Completed)', bg: 'bg-emerald-100 text-emerald-900 border-emerald-300' };
+  }
+  if (status === 'CLOSED_NOT_DISPATCHED' || status === 'NOT_DISPATCHED') {
+    return { label: 'Not Dispatched', bg: 'bg-rose-100 text-rose-900 border-rose-300' };
+  }
+  if (status === 'APPROVED' || status === 'DISPATCH_APPROVED') {
+    return { label: 'Ready to Load', bg: 'bg-blue-100 text-blue-900 border-blue-300' };
+  }
+  return { label: status || 'Pending', bg: 'bg-slate-100 text-slate-800 border-slate-300' };
 }
 
 function escapeHtml(value: unknown): string {
@@ -78,61 +84,48 @@ export default function PackingList() {
     const win = window.open('', '_blank');
     if (!win) return;
     win.document.write(`
-      <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Packing List - Order #${packingData.order_id}</title>
+      <!DOCTYPE html><html><head><title>Packing List - Order #${escapeHtml(packingData.order_id)}</title>
       <style>
-        @page { margin: 15mm; }
-        body { font-family: 'Inter', Arial, sans-serif; padding: clamp(12px, 4vw, 20px); }
-        h1 { font-size: 20px; margin-bottom: 4px; color: #1e293b; }
-        .meta { margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 12px 20px; font-size: 12px; color: #64748b; }
-        .table-wrap { max-width: 100%; overflow-x: auto; }
-        table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 12px; }
-        th { background: #f8fafc; padding: 10px 12px; text-align: left; border: 1px solid #e2e8f0; font-weight: 600; color: #475569; }
-        td { padding: 10px 12px; border: 1px solid #e2e8f0; color: #334155; }
-        tr:nth-child(even) { background: #f8fafc; }
-        .footer { margin-top: 30px; font-size: 11px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 15px; }
-        button { margin-bottom: 20px; padding: 8px 20px; background: #6366f1; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; }
-        button:hover { background: #4f46e5; }
-        @media print { button { display: none; } .table-wrap { overflow: visible; } table { min-width: 0; } }
+        body { font-family: system-ui, -apple-system, sans-serif; padding: 28px; color: #1e293b; }
+        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px; }
+        .title { font-size: 22px; font-weight: bold; color: #0f172a; }
+        .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; background: #f8fafc; border: 1px solid #cbd5e1; padding: 14px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th { background: #f1f5f9; padding: 10px; text-align: left; font-size: 11px; text-transform: uppercase; border-bottom: 2px solid #cbd5e1; }
+        td { padding: 9px 10px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
+        .footer { margin-top: 32px; font-size: 11px; color: #94a3b8; text-align: center; }
       </style></head><body>
-      <button onclick="window.print()">Print / Save PDF</button>
-      <h1>Packing List</h1>
-      <div class="meta">
-        <span><strong>Order ID:</strong> #${escapeHtml(packingData.order_id)}</span>
-        <span><strong>Status:</strong> ${escapeHtml(packingData.status)}</span>
-        <span><strong>Seal number:</strong> ${escapeHtml(packingData.seal_number || '-')}</span>
-        <span><strong>Outcome:</strong> ${escapeHtml(packingData.outcome || packingStatus(packingData.status).label)}</span>
-        <span><strong>Client:</strong> ${escapeHtml(packingData.client?.name || '-')}</span>
-        <span><strong>Contact:</strong> ${escapeHtml(packingData.client?.contact_person || '-')}</span>
-        <span><strong>Email:</strong> ${escapeHtml(packingData.client?.email || '-')}</span>
-        <span><strong>Phone:</strong> ${escapeHtml(packingData.client?.phone || '-')}</span>
-        <span><strong>Address:</strong> ${escapeHtml(packingData.client?.address || '-')}</span>
-        <span><strong>GST:</strong> ${escapeHtml(packingData.client?.gst_number || '-')}</span>
-        <span><strong>Driver:</strong> ${escapeHtml(packingData.driver_name || '-')}</span>
-        <span><strong>Vehicle:</strong> ${escapeHtml(packingData.vehicle_number || '-')}</span>
-        <span><strong>Container:</strong> ${escapeHtml(packingData.container_number || '-')}</span>
-        <span><strong>Grade:</strong> ${escapeHtml(packingData.grade || '-')}</span>
-        <span><strong>Batch:</strong> ${escapeHtml(packingData.batch_number || 'N/A')}</span>
-        <span><strong>Generated:</strong> ${escapeHtml(new Date(packingData.generated_at).toLocaleString())}</span>
+      <div class="header">
+        <div><div class="title">PACKING LIST</div><div>Aceone Manufacturing System</div></div>
+        <div style="text-align:right;"><strong>Order #${escapeHtml(packingData.order_id)}</strong><div>Date: ${new Date().toLocaleDateString()}</div></div>
       </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Bags</th><th>Bag Content</th><th>Location</th><th>Barcode</th></tr></thead>
+      <div class="meta">
+        <div><strong>Product:</strong> ${escapeHtml(packingData.product_name || '-')}</div>
+        <div><strong>Batch Number:</strong> ${escapeHtml(packingData.batch_number || '-')}</div>
+        <div><strong>Client:</strong> ${escapeHtml(packingData.client_name || '-')}</div>
+        <div><strong>Driver:</strong> ${escapeHtml(packingData.driver_name || '-')}</div>
+        <div><strong>Driver mobile:</strong> ${escapeHtml(packingData.driver_phone || '-')}</div>
+        <div><strong>Vehicle:</strong> ${escapeHtml(packingData.vehicle_number || '-')}</div>
+        <div><strong>Container:</strong> ${escapeHtml(packingData.container_number || '-')}</div>
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Qty</th><th>Packaging</th><th>Location</th><th>QR Barcode</th></tr></thead>
         <tbody>
           ${packingData.items.map((item: any, i: number) => `
             <tr>
-              <td>☐</td>
               <td>${i + 1}</td>
               <td>${escapeHtml(item.product_name || '-')}</td>
               <td>${escapeHtml(item.grade || packingData.grade || '-')}</td>
               <td>${escapeHtml(item.sku || '-')}</td>
-              <td style="font-family:monospace;font-size:11px;">${escapeHtml(item.batch_number || packingData.batch_number || '-')}</td>
-              <td>${escapeHtml(item.quantity)} bags</td>
+              <td style="font-family:monospace;">${escapeHtml(item.batch_number || packingData.batch_number || '-')}</td>
+              <td><strong>${escapeHtml(item.quantity)} bags</strong></td>
               <td>${escapeHtml([item.bag_quantity, item.bag_quantity_unit].filter(Boolean).join(' ') || '-')}</td>
               <td>${escapeHtml(itemLocation(item))}</td>
-              <td style="font-size:10px;font-family:monospace;">${escapeHtml(itemBarcode(item, packingData))}</td>
+              <td style="font-family:monospace;font-size:11px;">${escapeHtml(itemBarcode(item, packingData))}</td>
             </tr>`).join('')}
         </tbody>
-      </table></div>
-      <div class="footer">Generated by Aceone Inventory System</div>
+      </table>
+      <div class="footer">Generated by Aceone Inventory &amp; Product Scanning System</div>
       <script>window.onload = function() { setTimeout(function() { window.print(); }, 500); };<\/script>
       </body></html>
     `);
@@ -140,117 +133,219 @@ export default function PackingList() {
   };
 
   const processedOrders = orders.filter((order) =>
-    ['APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'].includes(order.status)
+    ['APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED', 'DISPATCHED'].includes(order.status)
   );
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Packing List</h1>
-          <p className="page-subtitle">Packing lists are downloadable immediately after QC approval and reflect the frozen snapshot taken at approval time.</p>
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* 1. PAGE HEADER */}
+      <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 sm:p-6 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-teal-100 text-teal-800 flex items-center justify-center shrink-0">
+            <FileText size={24} />
+          </div>
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              Packaging Lists
+            </h1>
+            <p className="text-sm sm:text-base text-slate-500 mt-0.5">
+              Shipment manifests and packing lists ready to print or download as PDF.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-bold bg-blue-100 text-blue-900 border border-blue-200">
+            {processedOrders.length} Dispatch Orders
+          </span>
         </div>
       </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-xl text-sm flex items-center gap-2 bg-rose-50 text-rose-700 border border-rose-200">
-          <AlertTriangle size={16} /> {error}
+        <div className="p-4 rounded-xl text-sm font-semibold bg-rose-50 text-rose-800 border-2 border-rose-200 flex items-center gap-3">
+          <AlertTriangle size={18} className="text-rose-600 shrink-0" />
+          <span>{error}</span>
         </div>
       )}
 
-      <div className="card mb-6">
-        <div className="card-header"><h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Approved orders</h3></div>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>Date</th><th>Product / Grade</th><th>Lot / Qty</th><th>Client</th><th>Driver / Vehicle</th><th>Container</th><th>Seal / Outcome</th><th>Status</th><th className="text-right">Actions</th></tr></thead>
-            <tbody>
+      {/* 2. ORDERS TABLE */}
+      <div className="bg-white rounded-2xl border-2 border-slate-200 overflow-hidden shadow-xs">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Package size={20} className="text-slate-700" />
+            <h2 className="text-lg font-bold text-slate-900">Dispatch Orders &amp; Packing Lists</h2>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-600 font-bold uppercase text-xs tracking-wider">
+              <tr>
+                <th className="px-5 py-4">Product &amp; Grade</th>
+                <th className="px-5 py-4">Batch Lot &amp; Quantity</th>
+                <th className="px-5 py-4">Client Destination</th>
+                <th className="px-5 py-4">Transport Info</th>
+                <th className="px-5 py-4">Status</th>
+                <th className="px-5 py-4 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
               {processedOrders.map((order) => {
-                const status = packingStatus(order.status);
+                const status = getPackingStatus(order.status);
+                const isSelected = packingData && String(packingData.order_id) === String(order.id);
+
                 return (
-                  <tr key={order.id}>
-                    <td className="text-xs text-surface-400">{new Date(order.created_at).toLocaleDateString()}</td>
-                    <td><span className="font-medium text-surface-800">{order.product_name}</span><div className="text-xs text-surface-400">{order.grade_name || order.product_grade || '-'}</div></td>
-                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{order.batch_number}</span><div className="text-xs text-surface-400">{order.quantity} bags · {order.bag_quantity_name || ''}</div></td>
-                    <td>{order.client_name || '-'}</td>
-                    <td className="text-xs">{order.driver_name || '-'} / {order.vehicle_number || '-'}</td>
-                    <td>{order.container_number || '-'}</td>
-                    <td className="text-xs">{order.seal_number || '-'}<div className="text-surface-400">{order.outcome || status.label}</div></td>
-                    <td><span className={`badge ${status.className}`}>{status.label}</span></td>
-                    <td className="text-right">
-                      <div className="flex flex-wrap items-center justify-end gap-1">
-                        <button onClick={() => handleViewPacking(order.id)} disabled={loading} className="btn-primary btn-sm">
-                          <Eye size={14} /> {loading ? 'Loading...' : 'View / Print'}
+                  <tr
+                    key={order.id}
+                    className={`transition-colors ${isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50/80'}`}
+                  >
+                    <td className="px-5 py-4">
+                      <div className="font-bold text-slate-900 text-base">{order.product_name}</div>
+                      <div className="text-xs text-slate-500 font-medium mt-0.5">
+                        {order.grade_name || order.product_grade || 'Standard Grade'}
+                      </div>
+                    </td>
+
+                    <td className="px-5 py-4">
+                      <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">
+                        {order.batch_number}
+                      </span>
+                      <div className="text-xs text-slate-600 font-semibold mt-1">
+                        {order.quantity} bags
+                      </div>
+                    </td>
+
+                    <td className="px-5 py-4">
+                      <div className="font-bold text-slate-800">{order.client_name || 'Standard Client'}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {order.created_at ? new Date(order.created_at).toLocaleDateString() : '-'}
+                      </div>
+                    </td>
+
+                    <td className="px-5 py-4">
+                      <div className="font-semibold text-slate-800 text-sm">
+                        {order.vehicle_number || '-'}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        Driver: {order.driver_name || '-'} · Cont: {order.container_number || '-'}
+                      </div>
+                    </td>
+
+                    <td className="px-5 py-4">
+                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${status.bg}`}>
+                        {status.label}
+                      </span>
+                    </td>
+
+                    <td className="px-5 py-4 text-right">
+                      <div className="flex items-center justify-end gap-2 flex-wrap">
+                        <button
+                          onClick={() => handleViewPacking(order.id)}
+                          disabled={loading}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 transition-colors"
+                        >
+                          <Eye size={14} /> View List
                         </button>
                         <button
                           onClick={() => handleDownloadPdf(order)}
                           disabled={downloadingId === String(order.id)}
-                          className="btn-secondary btn-sm"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 transition-colors"
                         >
-                          <Download size={14} /> {downloadingId === String(order.id) ? 'Downloading…' : 'Download PDF'}
+                          <Download size={14} />
+                          {downloadingId === String(order.id) ? 'Downloading...' : 'PDF'}
                         </button>
                       </div>
                     </td>
                   </tr>
                 );
               })}
-              {processedOrders.length === 0 && <tr><td colSpan={9}><div className="empty-state"><div className="empty-title">No approved packing lists yet</div></div></td></tr>}
+
+              {processedOrders.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="py-12 text-center text-slate-400">
+                    <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-2 text-slate-400">
+                      <Package size={24} />
+                    </div>
+                    <p className="text-base font-bold text-slate-700">No dispatch orders found</p>
+                    <p className="text-sm text-slate-500 mt-0.5">Packing lists appear here as soon as a dispatch order is created.</p>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
+      {/* 3. PACKING LIST DETAIL PANEL (When an order is selected) */}
       {packingData && (
-        <div className="card">
-          <div className="card-header">
-            <div className="flex items-center justify-between w-full flex-wrap gap-2">
-              <h3 className="section-title flex items-center gap-2"><Package size={16} className="text-brand-500" /> Packing List — Order #{packingData.order_id}</h3>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => handleDownloadPdf({ id: packingData.order_id, batch_number: packingData.batch_number })}
-                  disabled={downloadingId === String(packingData.order_id)}
-                  className="btn-secondary btn-sm"
-                >
-                  <Download size={14} /> {downloadingId === String(packingData.order_id) ? 'Downloading…' : 'Download PDF'}
-                </button>
-                <button onClick={handlePrint} className="btn-primary btn-sm"><Printer size={14} /> Print / Save PDF</button>
-              </div>
+        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-sm overflow-hidden">
+          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50/50">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">
+                Packing List Details — Order #{packingData.order_id}
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">Batch: {packingData.batch_number} · Client: {packingData.client_name}</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleDownloadPdf({ id: packingData.order_id, batch_number: packingData.batch_number })}
+                disabled={downloadingId === String(packingData.order_id)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 shadow-2xs"
+              >
+                <Download size={14} /> Download PDF
+              </button>
+              <button
+                onClick={handlePrint}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-brand-600 hover:bg-brand-700 text-white shadow-2xs"
+              >
+                <Printer size={14} /> Print Document
+              </button>
             </div>
           </div>
-          <div className="p-4 border-b border-surface-200 flex flex-wrap gap-4 text-xs text-surface-500">
-            <span><strong>Batch:</strong> {packingData.batch_number || 'N/A'}</span>
-            <span><strong>Client:</strong> {packingData.client?.name || '-'}</span>
-            <span><strong>Contact:</strong> {packingData.client?.contact_person || '-'}</span>
-            <span><strong>Email:</strong> {packingData.client?.email || '-'}</span>
-            <span><strong>Phone:</strong> {packingData.client?.phone || '-'}</span>
-            <span><strong>Address:</strong> {packingData.client?.address || '-'}</span>
-            <span><strong>GST:</strong> {packingData.client?.gst_number || '-'}</span>
-            <span><strong>Driver:</strong> {packingData.driver_name || '-'}</span>
-            <span><strong>Vehicle:</strong> {packingData.vehicle_number || '-'}</span>
-            <span><strong>Container:</strong> {packingData.container_number || '-'}</span>
-            <span><strong>Grade:</strong> {packingData.grade || '-'}</span>
-            <span><strong>Status:</strong> {packingData.status}</span>
-            <span><strong>Seal number:</strong> {packingData.seal_number || '-'}</span>
-            <span><strong>Outcome:</strong> {packingData.outcome || packingStatus(packingData.status).label}</span>
-            <span><strong>Generated:</strong> {new Date(packingData.generated_at).toLocaleString()}</span>
-            {packingData.raised_by_name && <span><strong>Raised by:</strong> {packingData.raised_by_name}</span>}
-            {packingData.admin_remarks && <span><strong>Admin remarks:</strong> {packingData.admin_remarks}</span>}
+
+          <div className="p-5 border-b border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm bg-white">
+            <div>
+              <span className="block text-xs font-bold text-slate-400 uppercase">Product</span>
+              <span className="font-bold text-slate-900">{packingData.product_name || '-'}</span>
+            </div>
+            <div>
+              <span className="block text-xs font-bold text-slate-400 uppercase">Driver / Truck</span>
+              <span className="font-bold text-slate-900">{packingData.driver_name || '-'} ({packingData.vehicle_number || '-'})</span>
+            </div>
+            <div>
+              <span className="block text-xs font-bold text-slate-400 uppercase">Container #</span>
+              <span className="font-bold text-slate-900">{packingData.container_number || '-'}</span>
+            </div>
+            <div>
+              <span className="block text-xs font-bold text-slate-400 uppercase">Seal Number</span>
+              <span className="font-bold text-slate-900">{packingData.seal_number || 'Awaiting Loading'}</span>
+            </div>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Loaded</th><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Bags</th><th>Bag Content</th><th>Location</th><th>Barcode</th></tr></thead>
-              <tbody>
-                {packingData.items.map((item: any, i: number) => (
-                  <tr key={i}>
-                    <td><input type="checkbox" aria-label={`Batch ${item.batch_number || packingData.batch_number} loaded`} /></td>
-                    <td className="text-sm text-surface-400">{i + 1}</td>
-                    <td><span className="font-medium text-surface-800">{item.product_name || '-'}</span></td>
-                    <td>{item.grade || packingData.grade || '-'}</td>
-                    <td className="text-sm">{item.sku || '-'}</td>
-                    <td><span className="font-mono text-xs bg-surface-100 px-2 py-1 rounded-lg">{item.batch_number || packingData.batch_number}</span></td>
-                    <td className="text-sm">{item.quantity} bags</td>
-                    <td className="text-sm">{[item.bag_quantity, item.bag_quantity_unit].filter(Boolean).join(' ') || '-'}</td>
-                    <td className="text-sm">{itemLocation(item)}</td>
-                    <td className="font-mono text-xs text-surface-500">{itemBarcode(item, packingData)}</td>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-xs">
+                <tr>
+                  <th className="px-5 py-3">#</th>
+                  <th className="px-5 py-3">Product Name</th>
+                  <th className="px-5 py-3">SKU</th>
+                  <th className="px-5 py-3">Batch Number</th>
+                  <th className="px-5 py-3">Quantity</th>
+                  <th className="px-5 py-3">Storage Location</th>
+                  <th className="px-5 py-3">QR Barcode</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {packingData.items?.map((item: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-slate-50/50">
+                    <td className="px-5 py-3 font-bold text-slate-400">{idx + 1}</td>
+                    <td className="px-5 py-3 font-bold text-slate-900">{item.product_name}</td>
+                    <td className="px-5 py-3 text-xs text-slate-500">{item.sku}</td>
+                    <td className="px-5 py-3 font-mono text-xs font-bold text-slate-800">{item.batch_number}</td>
+                    <td className="px-5 py-3 font-bold text-slate-900">{item.quantity} bags</td>
+                    <td className="px-5 py-3 text-xs text-slate-700">{itemLocation(item)}</td>
+                    <td className="px-5 py-3 font-mono text-xs text-slate-500">{itemBarcode(item, packingData)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,13 +1,11 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt, { SignOptions } from 'jsonwebtoken';
 import { createHash, randomBytes } from 'crypto';
 import { query, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
 import { JwtPayload, Role } from '../types';
+import { issueAccessToken } from '../services/tokens';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
-const JWT_EXPIRES_IN: SignOptions['expiresIn'] = (process.env.JWT_EXPIRES_IN || '24h') as any;
 const REFRESH_TOKEN_DAYS = Number(process.env.REFRESH_TOKEN_DAYS) || 30;
 
 const USER_TABLES: { table: JwtPayload['table']; role: Role }[] = [
@@ -18,14 +16,6 @@ const USER_TABLES: { table: JwtPayload['table']; role: Role }[] = [
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
-}
-
-function signAccessToken(user: { id: number; name: string; email: string }, role: Role, table: JwtPayload['table']): string {
-  return jwt.sign(
-    { userId: user.id, role, name: user.name, email: user.email, table },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
-  );
 }
 
 async function issueRefreshToken(
@@ -47,7 +37,7 @@ async function issueRefreshToken(
 
 async function findActiveUser(role: Role, table: JwtPayload['table'], id: number): Promise<RowDataPacket | null> {
   const rows = await query<RowDataPacket[]>(
-    `SELECT id, name, email, is_active FROM \`${table}\` WHERE id = ?`,
+    `SELECT id, name, email, is_active, tenant_id FROM \`${table}\` WHERE id = ?`,
     [id]
   );
   if (rows.length === 0 || Number(rows[0].is_active) !== 1) return null;
@@ -62,7 +52,7 @@ export async function login(req: Request, res: Response): Promise<void> {
   }
 
   for (const c of USER_TABLES) {
-    const rows = await query<RowDataPacket[]>(`SELECT * FROM \`${c.table}\` WHERE email = ?`, [email]);
+  const rows = await query<RowDataPacket[]>(`SELECT * FROM \`${c.table}\` WHERE LOWER(email) = LOWER(?)`, [email]);
     if (rows.length > 0) {
       const user = rows[0];
       const valid = await bcrypt.compare(password, user.password_hash);
@@ -74,14 +64,15 @@ export async function login(req: Request, res: Response): Promise<void> {
         res.status(403).json({ error: 'Account is deactivated. Contact an administrator.' });
         return;
       }
+      if (!user.tenant_id) { res.status(403).json({ error: 'This account is not assigned to a tenant. Contact support.' }); return; }
       const account = user as unknown as { id: number; name: string; email: string };
-      const token = signAccessToken(account, c.role, c.table);
+      const token = issueAccessToken(account, c.role, c.table, user.tenant_id);
       const refresh = await issueRefreshToken(account, c.role, c.table, device_uuid);
       res.json({
         token,
         refreshToken: refresh.refreshToken,
         refreshExpiresAt: refresh.refreshExpiresAt,
-        user: { id: user.id, name: user.name, email: user.email, role: c.role },
+        user: { id: user.id, tenantId: user.tenant_id, name: user.name, email: user.email, role: c.role },
       });
       return;
     }
@@ -115,7 +106,7 @@ export async function refresh(req: Request, res: Response): Promise<void> {
       if (supportedTables[record.user_table] !== record.user_role) return null;
 
       const user = await findActiveUser(record.user_role as Role, record.user_table as JwtPayload['table'], record.user_id);
-      if (!user) return null;
+      if (!user || user.tenant_id == null) return null;
 
       await conn.execute(
         'UPDATE refresh_tokens SET revoked_at = NOW(3) WHERE id = ? AND revoked_at IS NULL',
@@ -132,10 +123,10 @@ export async function refresh(req: Request, res: Response): Promise<void> {
 
       const account = user as unknown as { id: number; name: string; email: string };
       return {
-        token: signAccessToken(account, record.user_role as Role, record.user_table as JwtPayload['table']),
+        token: issueAccessToken(account, record.user_role as Role, record.user_table as JwtPayload['table'], user.tenant_id),
         refreshToken: next,
         refreshExpiresAt: expiresAt.toISOString(),
-        user: { id: account.id, name: account.name, email: account.email, role: record.user_role },
+        user: { id: account.id, tenantId: user.tenant_id, name: account.name, email: account.email, role: record.user_role },
       };
     });
 
@@ -178,8 +169,8 @@ export async function me(_req: Request, res: Response): Promise<void> {
     return;
   }
   const rows = await query<RowDataPacket[]>(
-    `SELECT id, name, email, is_active, created_at FROM \`${_req.user.table}\` WHERE id = ?`,
-    [_req.user.userId]
+    `SELECT id, name, email, is_active, created_at, tenant_id FROM \`${_req.user.table}\` WHERE id = ? AND tenant_id = ?`,
+    [_req.user.userId, _req.user.tenantId]
   );
   if (rows.length === 0) {
     res.status(404).json({ error: 'User not found' });
@@ -189,5 +180,5 @@ export async function me(_req: Request, res: Response): Promise<void> {
     res.status(403).json({ error: 'Account is deactivated. Contact an administrator.' });
     return;
   }
-  res.json({ ...rows[0], role: _req.user.role });
+  res.json({ ...rows[0], tenantId: rows[0].tenant_id, role: _req.user.role });
 }

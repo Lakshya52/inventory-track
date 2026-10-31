@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Package, Eye, EyeOff } from 'lucide-react';
 
 export default function Login() {
@@ -92,6 +93,7 @@ export default function Login() {
             <button className="btn-primary w-full" type="submit" disabled={loading}>
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
+            <p className="text-center text-sm text-surface-500">New to Aceone? <Link to="/register" className="font-semibold text-brand-600 hover:text-brand-700">Create a workspace</Link></p>
           </form>
         </div>
       </div>

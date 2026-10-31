@@ -148,6 +148,7 @@ export interface JwtPayload {
   name: string;
   email: string;
   table: 'admins' | 'qc_users' | 'dispatch_users';
+  tenantId: string | number;
 }
 
 export type SyncOperationType =

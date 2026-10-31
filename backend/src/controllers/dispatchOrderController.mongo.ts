@@ -56,19 +56,40 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
   const approverNames = new Map(approvers);
   const clients = await mapNames(ctx, 'clients', orders.map((order) => order.client_id));
   const qrStats = await batchQrStats(ctx, orders.map((order) => order.batch_id));
+  const orderLabels = await ctx.find('qr_labels', { dispatch_order_id: { $in: orders.map((order) => order.id) } }, { projection: { _id: 0, dispatch_order_id: 1 } });
+  const orderQrCounts = new Map<string, number>();
+  for (const label of orderLabels) {
+    const key = idKey(label.dispatch_order_id);
+    orderQrCounts.set(key, (orderQrCounts.get(key) || 0) + 1);
+  }
 
-  return orders.map((order) => {
+  return orders.flatMap((order) => {
     const batch = batches.get(idKey(order.batch_id));
+    const orderQuantity = Number(order.quantity ?? batch?.quantity ?? 0);
     const product = batch ? products.get(idKey(batch.product_id)) : undefined;
+    // Historical/imported order rows can lack a real QC batch relationship.
+    // They cannot be loaded safely because no batch QR labels can be validated.
+    if (!batch || !product || !Number.isFinite(orderQuantity) || orderQuantity < 1) return [];
     const outcome = order.outcome
       ?? (order.status === 'CLOSED_DISPATCHED' ? 'DISPATCHED'
         : order.status === 'CLOSED_NOT_DISPATCHED' ? 'NOT_DISPATCHED' : null);
-    return {
+    const items = Array.isArray(order.order_lines) && order.order_lines.length ? order.order_lines : [{
+      batch_id: batch.id,
+      batch_number: batch.parent_batch_number || batch.batch_number,
+      child_batch_number: batch.batch_number,
+      product_name: product?.name ?? null,
+      product_sku: product?.sku ?? null,
+      quantity: orderQuantity,
+      uom: batch.uom ?? null,
+      location: batch.storage_location ?? null,
+    }];
+    return [{
       ...order,
       outcome,
-      batch_number: batch?.batch_number ?? null,
+      batch_number: items.length === 1 ? items[0].batch_number : 'Multi-product order',
       barcode_value: batch?.barcode_value ?? null,
-      quantity: batch?.quantity ?? null,
+      quantity: orderQuantity,
+      items,
       uom: batch?.uom ?? null,
       batch_status: batch?.status ?? null,
       storage_location: batch?.storage_location ?? null,
@@ -77,14 +98,14 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       bag_quantity_name: bagQuantities.get(idKey(batch?.bag_quantity_id))?.name ?? null,
       bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
       bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
-      qr_count: qrStats.get(idKey(order.batch_id))?.count ?? 0,
-      product_name: product?.name ?? null,
-      product_sku: product?.sku ?? null,
+      qr_count: orderQrCounts.get(idKey(order.id)) ?? qrStats.get(idKey(order.batch_id))?.count ?? 0,
+      product_name: items.map((item: any) => item.product_name).filter(Boolean).join(', ') || product?.name || null,
+      product_sku: items.length === 1 ? items[0].product_sku : null,
       raised_by_name: raisedBy.get(idKey(order.raised_by)) ?? null,
       admin_name: approverNames.get(idKey(order.id)) ?? null,
       client_name: clients.get(idKey(order.client_id)) ?? null,
       approver_name: approverNames.get(idKey(order.id)) ?? null,
-    };
+    }];
   });
 }
 
@@ -101,7 +122,8 @@ async function orderFilterForSearch(
 export async function raise(req: Request, res: Response): Promise<void> {
   const batchId = req.body.batch_id;
   const barcodeValue = req.body.barcode_value;
-  if (!batchId && !barcodeValue) {
+  const items = Array.isArray(req.body.items) ? req.body.items : null;
+  if (!batchId && !barcodeValue && (!items || items.length === 0)) {
     res.status(400).json({ error: 'Batch ID or barcode value is required' });
     return;
   }
@@ -114,10 +136,12 @@ export async function raise(req: Request, res: Response): Promise<void> {
       batch_id: batchId ? (batchId as EntityId) : undefined,
       barcode_value: barcodeValue ? String(barcodeValue) : undefined,
       expected_status: req.body.expected_status || undefined,
+      quantity: req.body.quantity,
+      items: items?.map((item: any) => ({ batch_id: item.batch_id, quantity: item.quantity })),
       client_id: req.body.client_id as EntityId,
-      driver_name: String(req.body.driver_name || ''),
-      vehicle_number: String(req.body.vehicle_number || ''),
-      container_number: String(req.body.container_number || ''),
+      driver_name: '',
+      vehicle_number: '',
+      container_number: '',
     },
   };
 
@@ -420,6 +444,7 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
   ]);
 
   const storageLocation = location?.location_code || batch?.storage_location || null;
+  const orderQuantity = Number(order.quantity ?? batch?.quantity ?? 0);
   const items = storedItems.length > 0
     ? storedItems
     : [{
@@ -427,7 +452,7 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
         sku: product?.sku ?? null,
         batch_number: batch?.batch_number ?? null,
         barcode: batch?.barcode_value ?? null,
-        quantity: batch?.quantity ?? null,
+        quantity: orderQuantity,
         uom: batch?.uom ?? null,
         grade: grade?.name ?? product?.grade ?? null,
         bag_quantity: bagQuantity?.quantity ?? null,
@@ -441,6 +466,7 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
     ok: true,
     data: {
       order_id: order.id,
+      quantity: orderQuantity,
       status: order.status,
       batch_number: batch?.batch_number ?? null,
       barcode: batch?.barcode_value ?? null,
@@ -451,6 +477,7 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
       client: client || null,
       client_name: client?.name ?? null,
       driver_name: order.driver_name,
+      driver_phone: order.driver_phone ?? null,
       vehicle_number: order.vehicle_number,
       container_number: order.container_number,
       seal_number: order.seal_number ?? null,

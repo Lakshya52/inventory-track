@@ -2,8 +2,9 @@ import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { EntityId, ShelfLocation } from '../types';
 import { MapPin, Plus, Pencil, Trash2, X, Power } from 'lucide-react';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
-export default function ShelfLocations() {
+export default function ShelfLocations({ embedded = false }: { embedded?: boolean }) {
   const [locations, setLocations] = useState<ShelfLocation[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<EntityId | null>(null);
@@ -14,6 +15,7 @@ export default function ShelfLocations() {
   const [shelf, setShelf] = useState('');
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 250);
 
   const loadLocations = async () => {
     try {
@@ -72,25 +74,42 @@ export default function ShelfLocations() {
   };
 
   const filteredLocations = locations.filter(l =>
-    !search ||
-    l.location_code.toLowerCase().includes(search.toLowerCase()) ||
-    (l.description || '').toLowerCase().includes(search.toLowerCase()) ||
-    (l.warehouse || '').toLowerCase().includes(search.toLowerCase()) ||
-    (l.rack || '').toLowerCase().includes(search.toLowerCase()) ||
-    (l.shelf || '').toLowerCase().includes(search.toLowerCase())
+    !debouncedSearch ||
+    l.location_code.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (l.description || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (l.warehouse || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (l.rack || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (l.shelf || '').toLowerCase().includes(debouncedSearch.toLowerCase())
   );
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Shelf Locations</h1>
-          <p className="page-subtitle">Define and manage warehouse storage locations</p>
+    <div className={embedded ? 'space-y-4' : 'page-container'}>
+      {!embedded ? (
+        <div className="page-header">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200/60 flex items-center justify-center shrink-0">
+              <MapPin size={20} />
+            </div>
+            <div>
+              <h1 className="page-title">Shelf Locations</h1>
+              <p className="page-subtitle">Define and manage warehouse storage locations</p>
+            </div>
+          </div>
+          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+            <Plus size={16} /> Add Location
+          </button>
         </div>
-        <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
-          <Plus size={16} /> Add Location
-        </button>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+          <div>
+            <h2 className="section-title">Shelf Locations Master</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Define warehouse storage locations, racks, and shelves ({locations.length} total)</p>
+          </div>
+          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+            <Plus size={16} /> Add Location
+          </button>
+        </div>
+      )}
 
       {error && !showForm && (
         <div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">

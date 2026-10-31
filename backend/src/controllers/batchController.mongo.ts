@@ -101,7 +101,7 @@ export async function create(req: Request, res: Response): Promise<void> {
         batch_number: number,
         batch_group_id: batchGroupId,
         quantity: bagCount,
-        uom: 'pcs',
+        uom: String(uom || 'pcs').trim().slice(0, 40) || 'pcs',
         unit_price: Number(unit_price) || 0,
         manufacturing_date: parseDateValue(manufacturing_date),
         expiry_date: parseDateValue(expiry_date),
@@ -164,6 +164,7 @@ export async function create(req: Request, res: Response): Promise<void> {
         description: `QC batch ${number} created for ${product.name} with ${bagCount} products (auto-passed)`,
       });
     }
+    await tx.updateOne('products', { id: productId }, { $inc: { quantity: bagCount * batchCount } });
     return createdBatches;
   });
 
@@ -330,6 +331,14 @@ export async function list(_req: Request, res: Response): Promise<void> {
     batches.map((batch) => batch.shelf_location_id)
   );
   const qr = await batchQrStats(ctx, batches.map((batch) => batch.id));
+  const reservedByBatch = new Map<string, number>();
+  const recalledByBatch = new Map<string, number>();
+  const labels = await ctx.find('qr_labels', { batch_id: { $in: batches.map((batch) => batch.id) } }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1 } });
+  for (const label of labels) {
+    const key = idKey(label.batch_id);
+    if (label.dispatch_order_id) reservedByBatch.set(key, (reservedByBatch.get(key) || 0) + 1);
+    if (label.recall_status === 'RECALLED') recalledByBatch.set(key, (recalledByBatch.get(key) || 0) + 1);
+  }
   const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', batches.map((batch) => batch.vendor_id));
   const grades = await mapByIds<Record<string, any>>(ctx, 'grades', batches.map((batch) => batch.grade_id));
   const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', batches.map((batch) => batch.bag_quantity_id));
@@ -350,6 +359,9 @@ export async function list(_req: Request, res: Response): Promise<void> {
       location_code: location?.location_code ?? null,
       qr_count: stats?.count ?? 0,
       qr_job_id: stats?.jobId ?? null,
+      reserved_quantity: reservedByBatch.get(idKey(batch.id)) || 0,
+      recalled_quantity: recalledByBatch.get(idKey(batch.id)) || 0,
+      available_quantity: Math.max(0, Number(batch.quantity) - (reservedByBatch.get(idKey(batch.id)) || 0) - (recalledByBatch.get(idKey(batch.id)) || 0)),
     };
   }));
 }

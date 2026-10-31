@@ -182,11 +182,14 @@ async function buildActiveSessions(
     return {
       id: session.id,
       session_id: session.id,
+      order_lines: session.order_lines ?? [],
       order_id: session.dispatch_order_id,
       dispatch_order_id: session.dispatch_order_id,
       batch_id: session.batch_id,
       batch_number: batch?.batch_number ?? null,
-      product_name: product?.name ?? null,
+      product_name: Array.isArray(session.order_lines) && session.order_lines.length
+        ? session.order_lines.map((line: any) => line.product_name).filter(Boolean).join(', ')
+        : product?.name ?? null,
       loader_name: loaderNames.get(idKey(session.loader_id))
         ?? adminLoaders.get(idKey(session.loader_id))
         ?? null,
@@ -229,7 +232,10 @@ export async function start(req: Request, res: Response): Promise<void> {
 
       const batch = await ctx.findOne('batches', { id: order.batch_id });
       if (!batch) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
-      const total = numeric(batch.quantity);
+      const orderLines = Array.isArray(order.order_lines) && order.order_lines.length
+        ? order.order_lines.map((line: any) => ({ batch_id: line.batch_id, quantity: numeric(line.quantity), batch_number: line.batch_number, product_name: line.product_name, product_sku: line.product_sku, uom: line.uom }))
+        : [{ batch_id: batch.id, quantity: numeric(order.quantity, numeric(batch.quantity)), batch_number: batch.parent_batch_number || batch.batch_number, product_name: null, product_sku: null, uom: batch.uom }];
+      const total = orderLines.reduce((sum: number, line: any) => sum + line.quantity, 0);
       if (total <= 0) {
         throw new SyncError('Batch quantity must be greater than zero', 'INVALID_QUANTITY', 400, {
           batch_id: batch.id,
@@ -239,7 +245,7 @@ export async function start(req: Request, res: Response): Promise<void> {
 
       const existing = await ctx.findOne(
         'loading_sessions',
-        { status: 'ACTIVE', $or: [{ dispatch_order_id: order.id }, { batch_id: batch.id }] }
+        { status: 'ACTIVE', dispatch_order_id: order.id }
       );
       if (existing) {
         throw new SyncError('An active loading session already exists for this order or batch', 'SESSION_EXISTS', 409, {
@@ -255,6 +261,8 @@ export async function start(req: Request, res: Response): Promise<void> {
         sessionId = await ctx.insert('loading_sessions', {
           dispatch_order_id: order.id,
           batch_id: batch.id,
+          batch_ids: orderLines.map((line: any) => line.batch_id),
+          order_lines: orderLines,
           loader_id: req.user!.userId,
           status: 'ACTIVE',
           total,
@@ -272,23 +280,6 @@ export async function start(req: Request, res: Response): Promise<void> {
         throw error;
       }
 
-      const batchUpdate = await ctx.updateOne(
-        'batches',
-        { id: batch.id, status: batch.status },
-        { $set: { status: 'LOADING' } }
-      );
-      if (batchUpdate.matchedCount !== 1) {
-        // On standalone MongoDB there is no rollback, so close the session we
-        // just created rather than leaving an ACTIVE row that blocks retries.
-        await ctx.updateOne('loading_sessions', { id: sessionId, status: 'ACTIVE' }, {
-          $set: { status: 'CLOSED', completed_at: now() },
-        });
-        throw new SyncError('Batch was changed by another user', 'BATCH_CONFLICT', 409, {
-          batch_id: batch.id,
-          current_status: batch.status,
-        });
-      }
-
       const product = batch.product_id
         ? await ctx.findOne('products', { id: batch.product_id })
         : null;
@@ -297,7 +288,7 @@ export async function start(req: Request, res: Response): Promise<void> {
         ctx,
         req.user!,
         'LOADING_SESSION_STARTED',
-        `Loading session started for order ${order.id} / batch ${batch.batch_number} (${product?.name ?? 'unknown product'}). Total units: ${total}`
+        `Loading session started for order ${order.id} / ${orderLines.length} product line(s). Total units: ${total}`
       );
 
       return {
@@ -308,10 +299,12 @@ export async function start(req: Request, res: Response): Promise<void> {
           scanned: 0,
           dispatch_order_id: order.id,
           batch_id: batch.id,
+          order_lines: orderLines,
         },
         order_id: order.id,
         batch_number: batch.batch_number ?? null,
-        product_name: product?.name ?? null,
+        product_name: orderLines.map((line: any) => line.product_name).filter(Boolean).join(', ') || product?.name || null,
+        order_lines: orderLines,
         total,
       };
     });
@@ -373,7 +366,8 @@ export async function scan(req: Request, res: Response): Promise<void> {
 
     const label = await ctx.findOne('qr_labels', { qr_value: qrValue });
     const resolvedBatchId = label?.batch_id ?? null;
-    const batchMatches = Boolean(label) && idKey(label!.batch_id) === idKey(session.batch_id);
+    const allowedBatchIds = Array.isArray(session.batch_ids) ? session.batch_ids : [session.batch_id];
+    const batchMatches = Boolean(label) && allowedBatchIds.some((batchId: unknown) => idKey(batchId) === idKey(label!.batch_id)) && idKey(label!.dispatch_order_id) === idKey(session.dispatch_order_id);
 
     if (!batchMatches) {
       let eventId: string | null = null;
@@ -398,6 +392,11 @@ export async function scan(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    if (label?.recall_status === 'RECALLED') {
+      res.status(409).json({ error: 'This QR label has been recalled and cannot be loaded', code: 'QR_RECALLED', result: 'RECALLED', scanned: numeric(session.scanned), total: numeric(session.total) });
+      return;
+    }
+
     const alreadyScanned = await ctx.findOne('loading_scan_events', {
       session_id: session.id,
       qr_value: qrValue,
@@ -412,7 +411,7 @@ export async function scan(req: Request, res: Response): Promise<void> {
             session.id,
             req.user!.userId,
             qrValue,
-            session.batch_id,
+            label!.batch_id,
             'DUPLICATE',
             clientOperationId
           );
@@ -434,7 +433,7 @@ export async function scan(req: Request, res: Response): Promise<void> {
         session.id,
         req.user!.userId,
         qrValue,
-        session.batch_id,
+        label!.batch_id,
         'QTY_EXCEEDED',
         clientOperationId
       );
@@ -449,7 +448,7 @@ export async function scan(req: Request, res: Response): Promise<void> {
         session.id,
         req.user!.userId,
         qrValue,
-        session.batch_id,
+        label!.batch_id,
         'OK',
         clientOperationId
       );
@@ -503,6 +502,57 @@ export async function scan(req: Request, res: Response): Promise<void> {
   } catch (error) {
     errorResponse(res, error, 'Could not record loading scan');
   }
+}
+
+/** POST /api/loading-sessions/:id/recall-qr */
+export async function recallQr(req: Request, res: Response): Promise<void> {
+  const id = req.params.id;
+  const qrValue = trimmed(req.body?.qr_value);
+  const reason = trimmed(req.body?.reason).slice(0, 1000);
+  const condition = trimmed(req.body?.condition).toUpperCase();
+  if (!isValidId(id) || !qrValue || !reason || !['DAMAGED', 'HOLD', 'RETURN_TO_STOCK'].includes(condition)) {
+    res.status(400).json({ error: 'Provide a valid QR code, recall reason, and condition', code: 'INVALID_RECALL_DETAILS' });
+    return;
+  }
+  try {
+    const result = await withTransaction(async (ctx: DbContext) => {
+      const session = await ctx.findOne('loading_sessions', { id, status: 'ACTIVE' }) as SessionRow | null;
+      if (!session) throw new SyncError('Active loading session not found', 'SESSION_NOT_FOUND', 404);
+      if (req.user!.role === 'DISPATCH' && idKey(session.loader_id) !== idKey(req.user!.userId)) {
+        throw new SyncError('You can only recall products from your own loading session', 'FORBIDDEN', 403);
+      }
+      const label = await ctx.findOne('qr_labels', { qr_value: qrValue, dispatch_order_id: session.dispatch_order_id });
+      if (!label) throw new SyncError('QR label does not belong to this batch', 'QR_NOT_IN_BATCH', 404);
+      const allowedBatchIds = Array.isArray(session.batch_ids) ? session.batch_ids : [session.batch_id];
+      if (!allowedBatchIds.some((batchId: unknown) => idKey(batchId) === idKey(label.batch_id))) throw new SyncError('QR label does not belong to this dispatch order', 'QR_NOT_IN_BATCH', 404);
+      if (label.recall_status === 'RECALLED') throw new SyncError('This QR label has already been recalled', 'QR_ALREADY_RECALLED', 409);
+      const scanned = await ctx.findOne('loading_scan_events', { session_id: session.id, qr_value: qrValue, result: 'OK' });
+      if (scanned) throw new SyncError('This QR was already accepted as loaded and cannot be recalled from this session', 'QR_ALREADY_LOADED', 409);
+      const batch = await ctx.findOne('batches', { id: label.batch_id });
+      if (!batch) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
+      const update = await ctx.updateOne('qr_labels', { id: label.id, recall_status: { $ne: 'RECALLED' } }, { $set: {
+        recall_status: 'RECALLED', recall_condition: condition, recall_reason: reason,
+        recalled_by: req.user!.userId, recalled_at: now(),
+      } });
+      if (update.matchedCount !== 1) throw new SyncError('This QR label was already recalled', 'QR_ALREADY_RECALLED', 409);
+      const sessionUpdate = await ctx.updateOne('loading_sessions', { id: session.id, status: 'ACTIVE', total: { $gt: numeric(session.scanned) } }, { $inc: { total: -1 } });
+      if (sessionUpdate.matchedCount !== 1) throw new SyncError('No unscanned units remain to recall', 'NO_UNSCANNED_UNITS', 409);
+      // New orders do not reduce stock until dispatch finalization. For a
+      // legacy order that reserved stock at creation, restore this unit now.
+      if (condition === 'RETURN_TO_STOCK') {
+        await ctx.updateOne('qr_labels', { id: label.id, dispatch_order_id: session.dispatch_order_id }, { $set: { dispatch_order_id: null, recall_status: null, recall_condition: null, recall_reason: null, recalled_by: null, recalled_at: null } });
+        const order = await ctx.findOne('dispatch_orders', { id: session.dispatch_order_id });
+        if (order?.stock_reserved_at_order) {
+          await ctx.updateOne('products', { id: batch.product_id }, { $inc: { quantity: 1 } });
+          await ctx.updateOne('dispatch_orders', { id: session.dispatch_order_id }, { $inc: { returned_to_stock_quantity: 1 } });
+        }
+      }
+      await logActivity(ctx, req.user!, 'DISPATCH_QR_RECALLED', `QR ${qrValue} recalled from batch ${batch.batch_number}; condition ${condition}; reason: ${reason}`);
+      const updated = await ctx.findOne('loading_sessions', { id: session.id });
+      return { message: 'QR label recalled and excluded from loading', condition, scanned: numeric(updated?.scanned), total: numeric(updated?.total) };
+    });
+    res.json(result);
+  } catch (error) { errorResponse(res, error, 'Could not recall QR label'); }
 }
 
 /** GET /api/loading-sessions/active */
@@ -599,7 +649,9 @@ export async function getById(req: Request, res: Response): Promise<void> {
       session: {
         ...session,
         batch_number: batch?.batch_number ?? null,
-        product_name: product?.name ?? null,
+        product_name: Array.isArray(session.order_lines) && session.order_lines.length
+          ? session.order_lines.map((line: any) => line.product_name).filter(Boolean).join(', ')
+          : product?.name ?? null,
         loader_name: loader?.name ?? adminLoader?.name ?? null,
       },
       events,
@@ -617,9 +669,13 @@ export async function finalise(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const sealNumber = trimmed(req.body?.seal_number);
-  if (!sealNumber) {
-    res.status(400).json({ error: 'Seal number is required', code: 'SEAL_NUMBER_REQUIRED' });
+  const driverName = trimmed(req.body?.driver_name).slice(0, 150);
+  const driverPhone = trimmed(req.body?.driver_phone).slice(0, 32) || null;
+  const vehicleNumber = trimmed(req.body?.vehicle_number).slice(0, 50);
+  const containerNumber = trimmed(req.body?.container_number).slice(0, 100);
+  const sealNumber = trimmed(req.body?.seal_number).slice(0, 100) || null;
+  if (!driverName || !vehicleNumber || !containerNumber) {
+    res.status(400).json({ error: 'Driver, vehicle, and container details are required', code: 'SHIPMENT_DETAILS_REQUIRED' });
     return;
   }
   const outcome = trimmed(req.body?.outcome).toUpperCase();
@@ -679,6 +735,10 @@ export async function finalise(req: Request, res: Response): Promise<void> {
         {
           $set: {
             status: orderStatus,
+            driver_name: driverName,
+            driver_phone: driverPhone,
+            vehicle_number: vehicleNumber,
+            container_number: containerNumber,
             seal_number: sealNumber,
             outcome,
             dispatched_at: outcome === 'DISPATCHED' ? completedAt : order.dispatched_at ?? null,
@@ -687,8 +747,7 @@ export async function finalise(req: Request, res: Response): Promise<void> {
         }
       );
 
-      const batchStatus = outcome === 'DISPATCHED' ? 'DISPATCHED' : 'NOT_DISPATCHED';
-      await ctx.updateOne('batches', { id: batch.id }, { $set: { status: batchStatus } });
+      const batchStatus = batch.status;
 
       const dispatchRecord: Record<string, any> = {
         batch_id: batch.id,
@@ -701,9 +760,46 @@ export async function finalise(req: Request, res: Response): Promise<void> {
       if (clientOperationId) dispatchRecord.client_operation_id = clientOperationId;
       const dispatchRecordId = await ctx.insert('dispatch_records', dispatchRecord);
 
-      if (outcome === 'DISPATCHED') {
-        const quantity = numeric(batch.quantity, numeric(session.total));
-        await deductProductStock(ctx, batch.product_id, quantity);
+      if (outcome === 'NOT_DISPATCHED' && order.stock_reserved_at_order) {
+        const returnedLabels = await ctx.count('qr_labels', { batch_id: batch.id, dispatch_order_id: order.id, recall_condition: 'RETURN_TO_STOCK' });
+        const restoreQuantity = Math.max(0, numeric(order.quantity, numeric(session.total)) - Math.max(returnedLabels, numeric(order.returned_to_stock_quantity)));
+        if (restoreQuantity > 0) {
+          await ctx.updateOne('products', { id: batch.product_id }, { $inc: { quantity: restoreQuantity } });
+        }
+      } else if (outcome === 'NOT_DISPATCHED' && !order.stock_reserved_at_order) {
+        const batchIds = Array.isArray(order.order_lines) && order.order_lines.length
+          ? order.order_lines.map((line: any) => line.batch_id)
+          : [batch.id];
+        await ctx.updateMany('qr_labels', { batch_id: { $in: batchIds }, dispatch_order_id: order.id, recall_status: { $ne: 'RECALLED' } }, { $set: { dispatch_order_id: null } });
+      } else if (outcome === 'DISPATCHED' && !order.stock_reserved_at_order && Array.isArray(order.order_lines) && order.order_lines.length > 0) {
+        const loadedEvents = await ctx.find('loading_scan_events', { session_id: session.id, result: 'OK' }, { projection: { _id: 0, qr_value: 1, batch_id: 1 } });
+        for (const line of order.order_lines) {
+          const lineBatch = await ctx.findOne('batches', { id: line.batch_id });
+          if (!lineBatch) continue;
+          const loadedForLine = loadedEvents.filter((event) => idKey(event.batch_id) === idKey(line.batch_id));
+          if (loadedForLine.length) await deductProductStock(ctx, lineBatch.product_id, loadedForLine.length);
+          const loadedQrValues = loadedForLine.map((event) => event.qr_value);
+          await ctx.updateMany('qr_labels', {
+            batch_id: line.batch_id,
+            dispatch_order_id: order.id,
+            recall_status: { $ne: 'RECALLED' },
+            qr_value: { $nin: loadedQrValues },
+          }, { $set: { dispatch_order_id: null } });
+        }
+      } else if (outcome === 'DISPATCHED' && !order.stock_reserved_at_order) {
+        // New orders deduct only the units actually scanned and loaded.
+        // Older orders marked stock_reserved_at_order were already deducted
+        // when created and must not be charged a second time.
+        const quantity = numeric(session.scanned);
+        if (quantity > 0) await deductProductStock(ctx, batch.product_id, quantity);
+        const loadedLabels = await ctx.find('loading_scan_events', { session_id: session.id, result: 'OK' }, { projection: { _id: 0, qr_value: 1 } });
+        const loadedQrValues = loadedLabels.map((label) => label.qr_value);
+        await ctx.updateMany('qr_labels', {
+          batch_id: batch.id,
+          dispatch_order_id: order.id,
+          recall_status: { $ne: 'RECALLED' },
+          qr_value: { $nin: loadedQrValues },
+        }, { $set: { dispatch_order_id: null } });
       }
 
       await logActivity(
@@ -736,6 +832,7 @@ export async function finalise(req: Request, res: Response): Promise<void> {
         order_status: orderStatus,
         batch_status: batchStatus,
         dispatch_record_id: dispatchRecordId,
+        loaded_quantity: outcome === 'DISPATCHED' ? scanned : 0,
       };
     });
 

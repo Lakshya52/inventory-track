@@ -94,7 +94,7 @@ export async function create(req: Request, res: Response): Promise<void> {
            shelf_location_id, storage_location, notes, barcode_value, batch_group_id, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QC_PASSED')`,
         [
-          productId, number, bagCount, 'pcs', Number(unit_price) || 0,
+          productId, number, bagCount, String(uom || 'pcs').trim().slice(0, 40) || 'pcs', Number(unit_price) || 0,
           manufacturing_date || null, expiry_date || null, shelf_location_id || null,
           storage_location || null, notes || null, qcBarcode, batchGroupId,
         ]
@@ -156,6 +156,7 @@ export async function create(req: Request, res: Response): Promise<void> {
         [req.user!.userId, req.user!.name, req.user!.role, `QC batch ${number} created for ${product.name} with ${bagCount} products`]
       );
     }
+    await conn.execute('UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ?', [bagCount * batchCount, productId]);
     return createdBatches;
   });
   res.status(201).json({
@@ -308,7 +309,10 @@ export async function list(req: Request, res: Response): Promise<void> {
             s.location_code, v.name AS vendor_name, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
-            (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id
+            (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL) AS reserved_quantity,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED') AS recalled_quantity,
+            GREATEST(0, b.quantity - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL) - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED')) AS available_quantity
      FROM batches b JOIN products p ON b.product_id = p.id
      LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
      LEFT JOIN vendors v ON v.id = b.vendor_id

@@ -11,10 +11,11 @@ const USER_TYPES: Record<string, UserTypeInfo> = {
   dispatch: { table: 'dispatch_users', role: 'DISPATCH' },
 };
 
-async function emailExists(email: string, exclude?: { table: string; id: string }): Promise<boolean> {
+async function emailExists(email: string, tenantId: string | number, exclude?: { table: string; id: string }): Promise<boolean> {
   const ctx = await getContext();
   for (const info of Object.values(USER_TYPES)) {
     const rows = await ctx.find(info.table, {
+      tenant_id: tenantId,
       email: equalsIgnoreCase(email),
       $nor: [{ email: /^__role_archive_/i }],
     }, {
@@ -66,11 +67,11 @@ function publicUser(row: Record<string, any>, role: string): Record<string, unkn
   };
 }
 
-export async function listAllUsers(_req: Request, res: Response): Promise<void> {
+export async function listAllUsers(req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
   const results = await Promise.all(
     Object.values(USER_TYPES).map(async info => {
-      const rows = await ctx.find(info.table, { email: { $not: /^__role_archive_/i } }, {
+      const rows = await ctx.find(info.table, { tenant_id: req.user?.tenantId, email: { $not: /^__role_archive_/i } }, {
         sort: { created_at: -1 },
         projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1 },
       });
@@ -90,7 +91,7 @@ export async function listUsers(req: Request, res: Response): Promise<void> {
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
   const ctx = await getContext();
-  const users = await ctx.find(info.table, { email: { $not: /^__role_archive_/i } }, {
+  const users = await ctx.find(info.table, { tenant_id: req.user?.tenantId, email: { $not: /^__role_archive_/i } }, {
     sort: { created_at: -1 },
     projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1 },
   });
@@ -114,12 +115,13 @@ export async function addUser(req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
   try {
     const normalizedEmail = email.trim().toLowerCase();
-    if (await emailExists(normalizedEmail)) {
+    if (await emailExists(normalizedEmail, req.user!.tenantId)) {
       res.status(400).json({ error: 'Email already exists' });
       return;
     }
     const hash = await bcrypt.hash(password, 10);
     const id = await ctx.insert(info.table, {
+      tenant_id: req.user!.tenantId,
       name: name.trim(),
       email: normalizedEmail,
       password_hash: hash,
@@ -157,7 +159,7 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  if (await emailExists(normalizedEmail, { table: info.table, id })) {
+  if (await emailExists(normalizedEmail, req.user!.tenantId, { table: info.table, id })) {
     res.status(400).json({ error: 'Email already exists' });
     return;
   }
@@ -165,22 +167,23 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   try {
     if (targetInfo.table === info.table) {
       const ctx = await getContext();
-      const result = await ctx.updateOne(info.table, { id }, {
+      const result = await ctx.updateOne(info.table, { id, tenant_id: req.user!.tenantId }, {
         $set: { name: name.trim(), email: normalizedEmail },
       });
       if (result.matchedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
     } else {
       const result = await withTransaction(async ctx => {
-        const source = await ctx.findOne(info.table, { id });
+        const source = await ctx.findOne(info.table, { id, tenant_id: req.user!.tenantId });
         if (!source) return null;
         const targetId = await ctx.insert(targetInfo.table, {
+          tenant_id: req.user!.tenantId,
           name: name.trim(),
           email: normalizedEmail,
           password_hash: source.password_hash,
           is_active: Number(source.is_active) === 1 ? 1 : 0,
           created_at: source.created_at,
         });
-        const archived = await ctx.updateOne(info.table, { id }, {
+        const archived = await ctx.updateOne(info.table, { id, tenant_id: req.user!.tenantId }, {
           $set: { email: archiveEmail(info.role, id), is_active: 0 },
         });
         if (archived.matchedCount === 0) throw new Error('User role migration could not be completed');
@@ -220,7 +223,7 @@ export async function changePassword(req: Request, res: Response): Promise<void>
 
   const hash = await bcrypt.hash(password, 10);
   const ctx = await getContext();
-  const result = await ctx.updateOne(info.table, { id }, { $set: { password_hash: hash } });
+  const result = await ctx.updateOne(info.table, { id, tenant_id: req.user!.tenantId }, { $set: { password_hash: hash } });
   if (result.matchedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
 
   await logActivity(req, 'USER_PASSWORD_CHANGED', `Password changed for ${info.role} user #${id}`);
@@ -242,7 +245,7 @@ export async function setUserStatus(req: Request, res: Response): Promise<void> 
   }
 
   const ctx = await getContext();
-  const result = await ctx.updateOne(info.table, { id }, { $set: { is_active: active ? 1 : 0 } });
+  const result = await ctx.updateOne(info.table, { id, tenant_id: req.user!.tenantId }, { $set: { is_active: active ? 1 : 0 } });
   if (result.matchedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
 
   await logActivity(
@@ -265,7 +268,7 @@ export async function deleteUser(req: Request, res: Response): Promise<void> {
   }
 
   const ctx = await getContext();
-  const result = await ctx.deleteOne(info.table, { id });
+  const result = await ctx.deleteOne(info.table, { id, tenant_id: req.user!.tenantId });
   if (result.deletedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
 
   await logActivity(req, 'USER_DELETED', `${info.role} user #${id} deleted`);
@@ -276,7 +279,7 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
   if (!req.user) { res.status(401).json({ error: 'Not authenticated' }); return; }
   const { name, currentPassword, newPassword } = req.body;
   const ctx = await getContext();
-  const user = await ctx.findOne(req.user.table, { id: req.user.userId });
+  const user = await ctx.findOne(req.user.table, { id: req.user.userId, tenant_id: req.user.tenantId });
   if (!user) { res.status(404).json({ error: 'User not found' }); return; }
 
   if (newPassword) {
@@ -290,11 +293,11 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
       return;
     }
     const hash = await bcrypt.hash(newPassword, 10);
-    await ctx.updateOne(req.user.table, { id: req.user.userId }, {
+    await ctx.updateOne(req.user.table, { id: req.user.userId, tenant_id: req.user.tenantId }, {
       $set: { name: name || req.user.name, password_hash: hash },
     });
   } else {
-    await ctx.updateOne(req.user.table, { id: req.user.userId }, {
+    await ctx.updateOne(req.user.table, { id: req.user.userId, tenant_id: req.user.tenantId }, {
       $set: { name: name || req.user.name },
     });
   }

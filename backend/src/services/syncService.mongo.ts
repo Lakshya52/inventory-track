@@ -520,17 +520,55 @@ async function applyDispatchOrderRaise(
     throw new SyncError('Only dispatch or admin users can raise dispatch orders', 'FORBIDDEN', 403);
   }
   const clientId = input.payload.client_id as EntityId;
-  const driverName = String(input.payload.driver_name || '').trim().slice(0, 150);
-  const vehicleNumber = String(input.payload.vehicle_number || '').trim().slice(0, 50);
-  const containerNumber = String(input.payload.container_number || '').trim().slice(0, 100);
-  if (!isValidId(clientId) || !driverName || !vehicleNumber || !containerNumber) {
-    throw new SyncError('Select a client and provide the driver, vehicle, and container details', 'DISPATCH_DETAILS_REQUIRED');
+  if (!isValidId(clientId)) {
+    throw new SyncError('Select a client for this dispatch order', 'DISPATCH_CLIENT_REQUIRED');
   }
   const client = await ctx.findOne('clients', { id: clientId, is_active: 1 }, { projection: { id: 1 } });
   if (!client) {
     throw new SyncError('Selected client is no longer active', 'CLIENT_NOT_FOUND', 404);
   }
+  if (Array.isArray(input.payload.items)) {
+    const requested = input.payload.items as Array<Record<string, any>>;
+    if (requested.length < 1 || requested.length > 100) throw new SyncError('An order must contain between 1 and 100 product lines', 'INVALID_ORDER_LINES');
+    const seen = new Set<string>();
+    const lines: Array<Record<string, any>> = [];
+    const assignments: Array<{ batchId: EntityId; labelIds: EntityId[] }> = [];
+    for (const line of requested) {
+      const batch = await getBatchForUpdate(ctx, { batch_id: line.batch_id });
+      const batchKey = idKey(batch.id);
+      if (seen.has(batchKey)) throw new SyncError('A batch can appear only once in a dispatch order', 'DUPLICATE_ORDER_LINE');
+      seen.add(batchKey);
+      const quantity = Number(line.quantity);
+      if (!Number.isInteger(quantity) || quantity < 1) throw new SyncError('Each product line needs a whole-number quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
+      if (!['QC_PASSED', 'DISPATCH_APPROVED'].includes(String(batch.status))) throw new SyncError(`Batch ${batch.batch_number} is not available for dispatch`, 'INVALID_BATCH_STATE', 409);
+      const qrCount = await ctx.count('qr_labels', { batch_id: batch.id });
+      if (qrCount !== Number(batch.quantity)) throw new SyncConflictError(`QR labels are incomplete for ${batch.batch_number}`, { batch_id: batch.id, expected: Number(batch.quantity), actual: qrCount });
+      const reserved = await ctx.count('qr_labels', { batch_id: batch.id, dispatch_order_id: { $exists: true, $ne: null } });
+      const recalled = await ctx.count('qr_labels', { batch_id: batch.id, recall_status: 'RECALLED' });
+      const available = Math.max(0, Number(batch.quantity) - reserved - recalled);
+      if (quantity > available) throw new SyncConflictError(`Only ${available} units remain for ${batch.product_name}`, { batch_id: batch.id, available_quantity: available, requested_quantity: quantity });
+      const labels = await ctx.find('qr_labels', { batch_id: batch.id, recall_status: { $ne: 'RECALLED' }, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { sort: { serial_no: 1 }, limit: quantity, projection: { _id: 0, id: 1 } });
+      if (labels.length !== quantity) throw new SyncConflictError(`Not enough unassigned QR labels remain for ${batch.product_name}`, { available_quantity: labels.length, requested_quantity: quantity });
+      const location = batch.shelf_location_id ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1, description: 1 } }) : null;
+      const lineSnapshot = { batch_id: batch.id, batch_number: batch.parent_batch_number || batch.batch_number, product_name: batch.product_name, product_sku: batch.product_sku, quantity, uom: batch.uom, location: location?.location_code || batch.storage_location || 'N/A', location_code: location?.location_code ?? null, location_description: location?.description ?? null };
+      lines.push(lineSnapshot);
+      assignments.push({ batchId: batch.id as EntityId, labelIds: labels.map((label) => label.id as EntityId) });
+    }
+    const total = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
+    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, client_id: clientId, quantity: total, client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, driver_name: null, driver_phone: null, vehicle_number: null, container_number: null, dispatched_at: null });
+    for (const assignment of assignments) for (const labelId of assignment.labelIds) {
+      const assigned = await ctx.updateOne('qr_labels', { id: labelId, batch_id: assignment.batchId, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
+      if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: assignment.batchId });
+    }
+    for (const line of lines) await ctx.insert('packing_list_items', { dispatch_order_id: orderId, ...line });
+    await logActivity(ctx, user, 'DISPATCH_ORDER_RAISED', `Dispatch order ${orderId} created with ${lines.length} product lines and ${total} units`);
+    return { entityType: 'dispatch_order', entityId: orderId, data: { id: orderId, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : `Multi-product order`, product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
+  }
   const batch = await getBatchForUpdate(ctx, input.payload);
+  const requestedQuantity = Number(input.payload.quantity);
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) {
+    throw new SyncError('Enter a whole-number dispatch quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
+  }
   if (input.payload.expected_status && String(input.payload.expected_status) !== String(batch.status)) {
     throw new SyncConflictError('Batch status changed while this order was offline', {
       batch_id: batch.id,
@@ -538,7 +576,7 @@ async function applyDispatchOrderRaise(
       current_status: batch.status,
     });
   }
-  if (String(batch.status) !== 'QC_PASSED') {
+  if (!['QC_PASSED', 'DISPATCH_APPROVED'].includes(String(batch.status))) {
     throw new SyncError(
       `Dispatch order can only be raised for QC_PASSED batches. Current status: ${batch.status}`,
       'INVALID_BATCH_STATE',
@@ -571,52 +609,43 @@ async function applyDispatchOrderRaise(
     }
   }
 
-  const existing = await ctx.find('dispatch_orders', {
-    batch_id: batch.id,
-    status: { $in: ['PENDING', 'APPROVED'] },
-  }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1, status: 1 } });
-  if (existing.length > 0) {
-    throw new SyncError(
-      existing[0].status === 'APPROVED'
-        ? 'This batch already has an approved dispatch order'
-        : 'A dispatch order is already pending for this batch',
-      'OPEN_ORDER_EXISTS',
-      409,
-      { order_id: existing[0].id, order_status: existing[0].status }
-    );
+  const reservedLabels = await ctx.count('qr_labels', { batch_id: batch.id, dispatch_order_id: { $exists: true, $ne: null } });
+  const recalledLabels = await ctx.count('qr_labels', { batch_id: batch.id, recall_status: 'RECALLED' });
+  const availableQuantity = Math.max(0, Number(batch.quantity) - reservedLabels - recalledLabels);
+  if (requestedQuantity > availableQuantity) {
+    throw new SyncConflictError(`Only ${availableQuantity} units remain available in this batch`, { batch_id: batch.id, available_quantity: availableQuantity, requested_quantity: requestedQuantity });
   }
+  const labels = await ctx.find('qr_labels', { batch_id: batch.id, recall_status: { $ne: 'RECALLED' }, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { sort: { serial_no: 1 }, limit: requestedQuantity, projection: { _id: 0, id: 1 } });
+  if (labels.length < requestedQuantity) throw new SyncConflictError('Not enough unassigned QR labels remain in this batch', { available_quantity: labels.length, requested_quantity: requestedQuantity });
 
   const orderId = await ctx.insert('dispatch_orders', {
     batch_id: batch.id,
     raised_by: user.userId,
-    status: 'PENDING',
+    status: 'APPROVED',
     admin_id: null,
     admin_remarks: null,
     client_id: clientId,
-    driver_name: driverName,
-    vehicle_number: vehicleNumber,
-    container_number: containerNumber,
+    quantity: requestedQuantity,
+    driver_name: null,
+    driver_phone: null,
+    vehicle_number: null,
+    container_number: null,
     client_operation_id: input.operation_id,
     client_created_at: toDate(input.client_timestamp),
     device_uuid: deviceUuid,
     dispatched_at: null,
   });
 
-  const update = await ctx.updateOne('batches', { id: batch.id, status: batch.status }, {
-    $set: { status: 'DISPATCH_ORDER_RAISED' },
-  });
-  if (update.matchedCount !== 1) {
-    throw new SyncConflictError('Batch was changed by another user. Refresh and try again.', {
-      batch_id: batch.id,
-      current_status: batch.status,
-    });
+  for (const label of labels) {
+    const assigned = await ctx.updateOne('qr_labels', { id: label.id, batch_id: batch.id, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
+    if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
 
   await logActivity(
     ctx,
     user,
     'DISPATCH_ORDER_RAISED',
-    `Dispatch order raised for batch ${batch.batch_number} (${batch.product_name})`
+    `Dispatch order created for batch ${batch.batch_number} (${batch.product_name}); ${requestedQuantity} units allocated for loading`
   );
 
   return {
@@ -627,7 +656,8 @@ async function applyDispatchOrderRaise(
       batch_id: batch.id,
       batch_number: batch.batch_number,
       product_name: batch.product_name,
-      status: 'PENDING',
+      quantity: requestedQuantity,
+    status: 'APPROVED',
     },
   };
 }
@@ -676,11 +706,12 @@ async function applyDispatchConfirm(
   }
 
   let orderId: EntityId | null = null;
+  let stockReservedAtOrder = false;
   if (batch.status === 'DISPATCH_APPROVED') {
     const orders = await ctx.find('dispatch_orders', {
       batch_id: batch.id,
       status: 'APPROVED',
-    }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1 } });
+    }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1, stock_reserved_at_order: 1 } });
     if (orders.length === 0) {
       throw new SyncConflictError('No approved dispatch order was found for this batch', {
         batch_id: batch.id,
@@ -688,6 +719,7 @@ async function applyDispatchConfirm(
       });
     }
     orderId = orders[0].id as EntityId;
+    stockReservedAtOrder = Boolean(orders[0].stock_reserved_at_order);
   } else if (batch.status === 'QC_PASSED') {
     const directAllowed = payload.direct === true && (user.role === 'ADMIN' || process.env.ALLOW_DIRECT_DISPATCH === 'true');
     if (!directAllowed) {
@@ -725,15 +757,11 @@ async function applyDispatchConfirm(
   }
 
   if (orderId) {
-    await ctx.updateOne('dispatch_orders', { id: orderId }, { $set: { dispatched_at: now() } });
+    await ctx.updateOne('dispatch_orders', { id: orderId }, { $set: { status: 'CLOSED_DISPATCHED', outcome: 'DISPATCHED', dispatched_at: now() } });
   }
 
   const dispatchedQuantity = Number(batch.quantity) || 0;
-  const remainingStock = await deductProductStock(
-    ctx,
-    batch.product_id as EntityId,
-    dispatchedQuantity
-  );
+  const remainingStock = stockReservedAtOrder ? null : await deductProductStock(ctx, batch.product_id as EntityId, dispatchedQuantity);
 
   await logActivity(
     ctx,
@@ -813,11 +841,12 @@ async function applyDispatchConfirmBulk(
     }
 
     let orderId: EntityId | null = null;
+    let stockReservedAtOrder = false;
     if (batch.status === 'DISPATCH_APPROVED') {
       const orders = await ctx.find('dispatch_orders', {
         batch_id: batch.id,
         status: 'APPROVED',
-      }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1 } });
+      }, { sort: { created_at: -1 }, limit: 1, projection: { _id: 0, id: 1, stock_reserved_at_order: 1 } });
       if (orders.length === 0) {
         throw new SyncConflictError('No approved dispatch order was found for a scanned QR code', {
           batch_id: batch.id,
@@ -826,6 +855,7 @@ async function applyDispatchConfirmBulk(
         });
       }
       orderId = orders[0].id as EntityId;
+      stockReservedAtOrder = Boolean(orders[0].stock_reserved_at_order);
       if (hasRequestedOrderId && (!isValidId(requestedOrderId) || idKey(requestedOrderId) !== idKey(orderId))) {
         throw new SyncConflictError('Scan bags for one approved dispatch order at a time', {
           batch_id: batch.id,
@@ -872,15 +902,11 @@ async function applyDispatchConfirmBulk(
       });
     }
     if (orderId) {
-      await ctx.updateOne('dispatch_orders', { id: orderId }, { $set: { dispatched_at: now() } });
+      await ctx.updateOne('dispatch_orders', { id: orderId }, { $set: { status: 'CLOSED_DISPATCHED', outcome: 'DISPATCHED', dispatched_at: now() } });
     }
 
     const dispatchedQuantity = Number(batch.quantity) || 0;
-    const remainingStock = await deductProductStock(
-      ctx,
-      batch.product_id as EntityId,
-      dispatchedQuantity
-    );
+    const remainingStock = stockReservedAtOrder ? null : await deductProductStock(ctx, batch.product_id as EntityId, dispatchedQuantity);
     if (remainingStock !== null) {
       stockDeductions.push({
         batch_id: batch.id as EntityId,

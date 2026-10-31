@@ -15,10 +15,19 @@ function errorResponse(res: Response, error: unknown, fallback: string): void {
   res.status(500).json({ error: fallback });
 }
 
+function withOrderLines(order: any): any {
+  let items = order.order_lines;
+  if (typeof items === 'string') { try { items = JSON.parse(items); } catch { items = []; } }
+  if (!Array.isArray(items)) items = [];
+  if (!items.length) items = [{ batch_id: order.batch_id, batch_number: order.batch_number, product_name: order.product_name, product_sku: order.product_sku, quantity: order.quantity, uom: order.uom, location: order.storage_location || null }];
+  return { ...order, items, batch_number: items.length === 1 ? items[0].batch_number : 'Multi-product order', product_name: items.map((item: any) => item.product_name).filter(Boolean).join(', ') || order.product_name };
+}
+
 export async function raise(req: Request, res: Response): Promise<void> {
   const batchId = req.body.batch_id;
   const barcodeValue = req.body.barcode_value;
-  if (!batchId && !barcodeValue) {
+  const items = Array.isArray(req.body.items) ? req.body.items : null;
+  if (!batchId && !barcodeValue && (!items || items.length === 0)) {
     res.status(400).json({ error: 'Batch ID or barcode value is required' });
     return;
   }
@@ -32,9 +41,11 @@ export async function raise(req: Request, res: Response): Promise<void> {
       barcode_value: barcodeValue ? String(barcodeValue) : undefined,
       expected_status: req.body.expected_status || undefined,
       client_id: Number(req.body.client_id),
-      driver_name: String(req.body.driver_name || ''),
-      vehicle_number: String(req.body.vehicle_number || ''),
-      container_number: String(req.body.container_number || ''),
+      quantity: req.body.quantity,
+      items: items?.map((item: any) => ({ batch_id: Number(item.batch_id), quantity: item.quantity })),
+      driver_name: '',
+      vehicle_number: '',
+      container_number: '',
     },
   };
 
@@ -69,7 +80,7 @@ export async function listPending(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
   const search = searchClause(q);
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, p.name AS product_name,
+    `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, p.name AS product_name,
             p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             u.name AS raised_by_name, c.name AS client_name,
@@ -87,7 +98,7 @@ export async function listPending(req: Request, res: Response): Promise<void> {
      ORDER BY d.created_at ASC LIMIT 100`,
     search.params
   );
-  res.json(orders);
+  res.json(orders.map(withOrderLines));
 }
 
 export async function listAll(req: Request, res: Response): Promise<void> {
@@ -102,7 +113,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
   }
   params.push(...search.params);
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.status AS batch_status,
+    `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, b.status AS batch_status,
             p.name AS product_name,
             p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
@@ -123,7 +134,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
      ORDER BY d.created_at DESC LIMIT 100`,
     params
   );
-  res.json(orders);
+  res.json(orders.map(withOrderLines));
 }
 
 export async function listMine(req: Request, res: Response): Promise<void> {
@@ -138,7 +149,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   }
   params.push(...search.params);
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom, b.status AS batch_status,
+    `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, b.status AS batch_status,
             p.name AS product_name,
             p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
@@ -157,7 +168,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
      ORDER BY d.created_at DESC LIMIT 100`,
     params
   );
-  res.json(orders);
+  res.json(orders.map(withOrderLines));
 }
 
 export async function approve(req: Request, res: Response): Promise<void> {
@@ -266,7 +277,7 @@ type PackingListResult =
 async function buildPackingListData(req: Request): Promise<PackingListResult> {
   const { id } = req.params;
   const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, b.quantity, b.uom,
+    `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom,
             COALESCE(s.location_code, b.storage_location) AS storage_location,
             p.name AS product_name, p.sku, u.name AS raised_by_name, COALESCE(aa.name, qu.name) AS approver_name,
             COALESCE(g.name, p.grade) AS grade, v.name AS vendor_name,
@@ -300,9 +311,11 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
     'SELECT * FROM packing_list_items WHERE dispatch_order_id = ? ORDER BY id ASC',
     [id]
   );
+  let orderLines = order.order_lines;
+  if (typeof orderLines === 'string') { try { orderLines = JSON.parse(orderLines); } catch { orderLines = []; } }
   const items = storedItems.length > 0
     ? storedItems
-    : [{
+    : Array.isArray(orderLines) && orderLines.length > 0 ? orderLines : [{
         product_name: order.product_name,
         sku: order.sku,
         batch_number: order.batch_number,
@@ -319,6 +332,7 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
     ok: true,
     data: {
       order_id: order.id,
+      quantity: Number(order.quantity),
       status: order.status,
       batch_number: order.batch_number,
       barcode: order.barcode_value,
@@ -328,6 +342,7 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
       client: order.client_id ? await getClient(order.client_id) : null,
       client_name: order.client_name || null,
       driver_name: order.driver_name,
+      driver_phone: order.driver_phone || null,
       vehicle_number: order.vehicle_number,
       container_number: order.container_number,
       seal_number: order.seal_number || null,

@@ -2,8 +2,9 @@ import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { Client, EntityId } from '../types';
 import { Building2, Plus, Pencil, Trash2, X, Handshake } from 'lucide-react';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
-export default function Clients() {
+export default function Clients({ embedded = false }: { embedded?: boolean }) {
   const [clients, setClients] = useState<Client[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<EntityId | null>(null);
@@ -15,6 +16,7 @@ export default function Clients() {
   const [gst, setGst] = useState('');
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 250);
 
   const loadClients = async () => {
     try {
@@ -52,27 +54,39 @@ export default function Clients() {
   };
 
   const filteredClients = clients.filter(c =>
-    !search ||
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    (c.contact_person || '').toLowerCase().includes(search.toLowerCase()) ||
-    (c.gst_number || '').toLowerCase().includes(search.toLowerCase()) ||
-    (c.email || '').toLowerCase().includes(search.toLowerCase())
+    !debouncedSearch ||
+    c.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (c.contact_person || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (c.gst_number || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (c.email || '').toLowerCase().includes(debouncedSearch.toLowerCase())
   );
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 border border-blue-200/60 flex items-center justify-center shrink-0">
-            <Building2 size={20} />
+    <div className={embedded ? 'space-y-4' : 'page-container'}>
+      {!embedded ? (
+        <div className="page-header">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 border border-blue-200/60 flex items-center justify-center shrink-0">
+              <Building2 size={20} />
+            </div>
+            <div>
+              <h1 className="page-title">Clients</h1>
+              <p className="page-subtitle">Manage client accounts and dispatch delivery destinations</p>
+            </div>
           </div>
-          <div>
-            <h1 className="page-title">Clients</h1>
-            <p className="page-subtitle">Manage client accounts and dispatch delivery destinations</p>
-          </div>
+          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
         </div>
-        <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+          <div>
+            <h2 className="section-title">Client Master</h2>
+            <p className="text-xs text-surface-500 mt-0.5">Manage corporate client accounts and delivery destinations ({clients.length} total)</p>
+          </div>
+          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+            <Plus size={16} /> Add Client
+          </button>
+        </div>
+      )}
 
       {error && !showForm && (
         <div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">
