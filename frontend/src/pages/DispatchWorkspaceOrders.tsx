@@ -6,6 +6,7 @@ import {
 	ClipboardList,
 	Download,
 	FileText,
+	Minus,
 	MapPin,
 	Package,
 	Plus,
@@ -125,6 +126,9 @@ export default function DispatchWorkspaceOrders() {
 		() => selectedIds.map((id) => batchById.get(id)).filter(Boolean),
 		[selectedIds, batchById],
 	);
+	const selectedBatchCount = useMemo(() => new Set(
+		selectedBatches.map((batch: any) => String(batch.parent_batch_id ?? batch.parent_batch_number ?? batch.batch_number ?? batch.id)),
+	).size, [selectedBatches]);
 	const availableFor = (batch: any) =>
 		Number(
 			batch.available_quantity ??
@@ -153,11 +157,12 @@ export default function DispatchWorkspaceOrders() {
 		});
 	};
 	const setQuantity = (id: string, raw: string, max: number) => {
-		const value =
-			raw === ""
-				? 0
-				: Math.max(0, Math.min(max, Math.floor(Number(raw) || 0)));
+		const value = raw === "" ? 0 : Math.max(1, Math.min(max, Math.floor(Number(raw) || 1)));
 		setQuantities((current) => ({ ...current, [id]: value }));
+	};
+	const adjustQuantity = (id: string, delta: number, max: number) => {
+		const current = Number(quantities[id] || 1);
+		setQuantity(id, String(current + delta), max);
 	};
 
 	const downloadPdf = async (order: any) => {
@@ -399,13 +404,13 @@ export default function DispatchWorkspaceOrders() {
 													</div>
 												</div>
 												<div className="flex items-center gap-1.5">
+													<button type="button" className="flex h-9 w-9 items-center justify-center rounded-lg border border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Decrease quantity for ${batch.product_name}`} disabled={!selected || qty <= 1} onClick={() => adjustQuantity(key, -1, available)}><Minus size={14} /></button>
 													<input
 														aria-label={`Quantity from ${batch.batch_number}`}
-														className="input h-10 w-[92px] text-center font-semibold tabular-nums"
-														type="number"
+														className="input h-10 w-[72px] text-center font-semibold tabular-nums"
+														type="text"
 														inputMode="numeric"
-														min="0"
-														max={available}
+														pattern="[0-9]*"
 														value={
 															selected
 																? (quantities[
@@ -413,12 +418,7 @@ export default function DispatchWorkspaceOrders() {
 																	] ?? "")
 																: ""
 														}
-														onFocus={() => {
-															if (!selected)
-																toggleBatch(
-																	key,
-																);
-														}}
+																onFocus={() => { if (!selected) toggleBatch(key); }}
 														onChange={(event) =>
 															setQuantity(
 																key,
@@ -429,6 +429,7 @@ export default function DispatchWorkspaceOrders() {
 														}
 														placeholder="Qty"
 													/>
+													<button type="button" className="flex h-9 w-9 items-center justify-center rounded-lg border border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Increase quantity for ${batch.product_name}`} disabled={!selected || qty >= available} onClick={() => { if (!selected) toggleBatch(key); adjustQuantity(key, 1, available); }}><Plus size={14} /></button>
 													<button
 														type="button"
 														className="rounded-lg border border-surface-200 px-2.5 py-2 text-xs font-semibold text-surface-600 hover:border-brand-300 hover:bg-white hover:text-brand-700 disabled:opacity-40"
@@ -520,10 +521,10 @@ export default function DispatchWorkspaceOrders() {
 							<div className="grid grid-cols-2 gap-3">
 								<div className="rounded-xl bg-surface-50 p-3">
 									<div className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">
-										Batch lines
+										Batches
 									</div>
 									<div className="mt-1 text-2xl font-bold tabular-nums text-surface-900">
-										{selectedIds.length}
+										{selectedBatchCount}
 									</div>
 								</div>
 								<div className="rounded-xl bg-brand-50 p-3">
@@ -619,7 +620,7 @@ export default function DispatchWorkspaceOrders() {
 									</>
 								) : (
 									<>
-										Create one order{" "}
+										Create dispatch order{" "}
 										<ArrowRight size={16} />
 									</>
 								)}

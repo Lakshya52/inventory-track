@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
 	Boxes,
 	Check,
+	Minus,
 	MapPin,
 	Plus,
 	Printer,
@@ -533,29 +534,23 @@ export default function QCBatches() {
 												<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
 													Quantity
 												</label>
-												<div className="flex">
-                          <span className="inline-flex min-w-16 items-center justify-center rounded-l-xl bg-slate-100 px-2.5 text-xs font-bold text-slate-600">
-                            {product
-                              ? getUom(product)
-                              : "UOM"}
-                          </span>
-													<input
-														className="input rounded-l-none border-slate-200 bg-slate-50/50 font-bold text-slate-900 focus:bg-white"
-														type="number"
-														min="1"
-														max="1000"
-														step="1"
-														value={line.quantity}
-														required
-														onChange={(event) =>
-															updateLine(index, {
-																quantity:
-																	event.target
-																		.value,
-															})
-														}
-													/>
-												</div>
+								<div className="space-y-1.5">
+									<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Unit: <span className="normal-case tracking-normal text-slate-700">{product ? getUom(product) : "Select product"}</span></div>
+									<div className="flex items-center gap-1.5">
+										<button type="button" className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Decrease quantity for product ${index + 1}`} disabled={Number(line.quantity) <= 1} onClick={() => updateLine(index, { quantity: String(Math.max(1, Number(line.quantity || 1) - 1)) })}><Minus size={14} /></button>
+										<input
+											className="input h-10 min-w-0 flex-1 border-slate-200 bg-white text-center font-bold text-slate-900"
+											type="text"
+											inputMode="numeric"
+											pattern="[0-9]*"
+											value={line.quantity}
+											required
+											onChange={(event) => updateLine(index, { quantity: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })}
+											onBlur={() => updateLine(index, { quantity: String(Math.min(1000, Math.max(1, Number(line.quantity) || 1))) })}
+										/>
+										<button type="button" className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Increase quantity for product ${index + 1}`} disabled={Number(line.quantity) >= 1000} onClick={() => updateLine(index, { quantity: String(Math.min(1000, Number(line.quantity || 1) + 1)) })}><Plus size={14} /></button>
+									</div>
+								</div>
 											</div>
 											<div>
 												{useSharedLocation ? (

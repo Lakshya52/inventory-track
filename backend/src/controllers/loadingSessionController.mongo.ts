@@ -777,7 +777,10 @@ export async function finalise(req: Request, res: Response): Promise<void> {
           const lineBatch = await ctx.findOne('batches', { id: line.batch_id });
           if (!lineBatch) continue;
           const loadedForLine = loadedEvents.filter((event) => idKey(event.batch_id) === idKey(line.batch_id));
-          if (loadedForLine.length) await deductProductStock(ctx, lineBatch.product_id, loadedForLine.length);
+          if (loadedForLine.length) {
+            await deductProductStock(ctx, lineBatch.product_id, loadedForLine.length);
+            await ctx.updateOne('batches', { id: line.batch_id }, { $inc: { dispatched_quantity: loadedForLine.length } });
+          }
           const loadedQrValues = loadedForLine.map((event) => event.qr_value);
           await ctx.updateMany('qr_labels', {
             batch_id: line.batch_id,
@@ -791,7 +794,10 @@ export async function finalise(req: Request, res: Response): Promise<void> {
         // Older orders marked stock_reserved_at_order were already deducted
         // when created and must not be charged a second time.
         const quantity = numeric(session.scanned);
-        if (quantity > 0) await deductProductStock(ctx, batch.product_id, quantity);
+        if (quantity > 0) {
+          await deductProductStock(ctx, batch.product_id, quantity);
+          await ctx.updateOne('batches', { id: batch.id }, { $inc: { dispatched_quantity: quantity } });
+        }
         const loadedLabels = await ctx.find('loading_scan_events', { session_id: session.id, result: 'OK' }, { projection: { _id: 0, qr_value: 1 } });
         const loadedQrValues = loadedLabels.map((label) => label.qr_value);
         await ctx.updateMany('qr_labels', {
