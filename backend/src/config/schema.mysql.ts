@@ -86,6 +86,10 @@ export async function ensureAdminSchema(): Promise<void> {
     fulfilled_at TIMESTAMP NULL,
     INDEX idx_qr_reprint_tenant_status (tenant_id, status, requested_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await addColumnIfMissing('qr_reprint_requests', 'reviewed_by', 'VARCHAR(64) NULL');
+  await addColumnIfMissing('qr_reprint_requests', 'reviewed_by_name', 'VARCHAR(200) NULL');
+  await addColumnIfMissing('qr_reprint_requests', 'reviewed_at', 'TIMESTAMP NULL');
+  await addColumnIfMissing('qr_reprint_requests', 'review_note', 'VARCHAR(500) NULL');
   await execute(`CREATE TABLE IF NOT EXISTS tenants (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(200) NOT NULL,

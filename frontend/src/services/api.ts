@@ -234,7 +234,9 @@ export const api = {
         request<any>(`/qc/qr-jobs/${idPath(id)}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
     requestReprint: (id: EntityId, label_ids: EntityId[]) =>
       request<any>(`/qc/qr-jobs/${idPath(id)}/reprint-request`, { method: 'POST', body: JSON.stringify({ label_ids }) }),
-    reprintRequests: () => request<any[]>('/qc/qr-jobs/reprint-requests'),
+    reprintRequests: (status?: string) => request<any[]>(`/qc/qr-jobs/reprint-requests${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+    reviewReprintRequest: (id: EntityId, decision: 'APPROVED' | 'REJECTED', note?: string) =>
+      request<any>(`/qc/qr-jobs/reprint-requests/${idPath(id)}/review`, { method: 'POST', body: JSON.stringify({ decision, note }) }),
     completeReprintRequest: (id: EntityId) =>
       request<any>(`/qc/qr-jobs/reprint-requests/${idPath(id)}/complete`, { method: 'POST', body: '{}' }),
     },

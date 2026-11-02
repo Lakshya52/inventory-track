@@ -45,11 +45,36 @@ export async function completeQrReprintRequest(req: Request, res: Response): Pro
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid reprint request id.' }); return; }
   if (useMongo) {
     const ctx = await getContext();
-    const updated = await ctx.updateOne('qr_reprint_requests', { id, tenant_id: req.user!.tenantId, status: 'PENDING' }, { $set: { status: 'FULFILLED', fulfilled_by: req.user!.userId, fulfilled_by_name: req.user!.name, fulfilled_at: new Date() } });
-    if (!updated.matchedCount) { res.status(404).json({ error: 'Pending reprint request not found.' }); return; }
+    const updated = await ctx.updateOne('qr_reprint_requests', { id, tenant_id: req.user!.tenantId, status: 'APPROVED' }, { $set: { status: 'FULFILLED', fulfilled_by: req.user!.userId, fulfilled_by_name: req.user!.name, fulfilled_at: new Date() } });
+    if (!updated.matchedCount) { res.status(404).json({ error: 'Approved reprint request not found.' }); return; }
   } else {
-    const updated = await execute("UPDATE qr_reprint_requests SET status = 'FULFILLED', fulfilled_by = ?, fulfilled_by_name = ?, fulfilled_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? AND status = 'PENDING'", [String(req.user!.userId), req.user!.name, id, String(req.user!.tenantId)]);
-    if (!updated.affectedRows) { res.status(404).json({ error: 'Pending reprint request not found.' }); return; }
+    const updated = await execute("UPDATE qr_reprint_requests SET status = 'FULFILLED', fulfilled_by = ?, fulfilled_by_name = ?, fulfilled_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? AND status = 'APPROVED'", [String(req.user!.userId), req.user!.name, id, String(req.user!.tenantId)]);
+    if (!updated.affectedRows) { res.status(404).json({ error: 'Approved reprint request not found.' }); return; }
   }
   res.json({ id, status: 'FULFILLED' });
+}
+
+export async function reviewQrReprintRequest(req: Request, res: Response): Promise<void> {
+  const id = req.params.requestId;
+  const decision = String(req.body?.decision || '').toUpperCase();
+  const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 500) : '';
+  if (!isValidId(id) || !['APPROVED', 'REJECTED'].includes(decision)) {
+    res.status(400).json({ error: 'Choose approve or reject for a valid request.' }); return;
+  }
+  const reviewFields = {
+    status: decision,
+    reviewed_by: req.user!.userId,
+    reviewed_by_name: req.user!.name,
+    reviewed_at: new Date(),
+    review_note: note || null,
+  };
+  if (useMongo) {
+    const ctx = await getContext();
+    const updated = await ctx.updateOne('qr_reprint_requests', { id, tenant_id: req.user!.tenantId, status: 'PENDING' }, { $set: reviewFields });
+    if (!updated.matchedCount) { res.status(404).json({ error: 'Pending reprint request not found.' }); return; }
+  } else {
+    const updated = await execute('UPDATE qr_reprint_requests SET status = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_note = ? WHERE id = ? AND tenant_id = ? AND status = \'PENDING\'', [decision, String(req.user!.userId), req.user!.name, note || null, id, String(req.user!.tenantId)]);
+    if (!updated.affectedRows) { res.status(404).json({ error: 'Pending reprint request not found.' }); return; }
+  }
+  res.json({ id, status: decision });
 }

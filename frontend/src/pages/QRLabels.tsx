@@ -42,6 +42,7 @@ export default function QRLabels() {
   const [reprinting, setReprinting] = useState(false);
   const [reprintRequests, setReprintRequests] = useState<any[]>([]);
   const [fulfillingRequestId, setFulfillingRequestId] = useState<EntityId | null>(null);
+  const [reviewingRequestId, setReviewingRequestId] = useState<EntityId | null>(null);
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
 
@@ -52,7 +53,7 @@ export default function QRLabels() {
     try {
       const jobRows = await api.qc.qrJobs.list(debouncedSearch || undefined);
       if (requestId === listRequest.current) setJobs(jobRows.items || []);
-      if (user?.role === 'ADMIN' && requestId === listRequest.current) setReprintRequests(await api.qc.qrJobs.reprintRequests());
+      if (user?.role === 'ADMIN' && requestId === listRequest.current) setReprintRequests(await api.qc.qrJobs.reprintRequests('ALL'));
     } catch (err: any) {
       if (requestId === listRequest.current) setError(err.message || 'Could not load QR labels');
     } finally {
@@ -167,10 +168,23 @@ export default function QRLabels() {
   };
 
   const openRequestedLabels = (request: any) => {
+    if (request.status !== 'APPROVED') { setError('Approve this request before printing the replacement labels.'); return; }
     const job = jobs.find(row => String(row.id) === String(request.qr_job_id));
     if (!job) { setError(`QR job ${request.job_code || request.qr_job_id} is not available.`); return; }
     setFulfillingRequestId(request.id);
     void openReprint(job, request.label_ids || []);
+  };
+
+  const reviewRequest = async (request: any, decision: 'APPROVED' | 'REJECTED') => {
+    const verb = decision === 'APPROVED' ? 'approve' : 'reject';
+    if (decision === 'REJECTED' && !window.confirm(`Reject the reprint request for ${request.job_code || 'this print job'}?`)) return;
+    setReviewingRequestId(request.id); setError(''); setSuccess('');
+    try {
+      await api.qc.qrJobs.reviewReprintRequest(request.id, decision);
+      setSuccess(decision === 'APPROVED' ? 'Reprint request approved. It is ready to print.' : 'Reprint request rejected.');
+      await load();
+    } catch (err: any) { setError(err.message || `Could not ${verb} reprint request`); }
+    finally { setReviewingRequestId(null); }
   };
 
   const downloadJob = async (job: QrJobRow) => {
@@ -361,7 +375,24 @@ export default function QRLabels() {
         </div>
       </div>
 
-      {canReprint && <section className="card mt-6"><div className="card-header flex items-center justify-between"><div><h2 className="section-title">QC reprint requests</h2><p className="mt-1 text-sm text-surface-500">Open a request to print its selected labels. It will be completed after printing.</p></div><span className="badge badge-warning">{reprintRequests.length} pending</span></div><div className="table-wrap"><table><thead><tr><th>Job</th><th>Requested by</th><th>Labels</th><th>Requested</th><th /></tr></thead><tbody>{reprintRequests.map((request: any) => <tr key={request.id}><td className="font-mono text-xs">{request.job_code}</td><td>{request.requested_by_name || '-'}</td><td>{request.requested_count}</td><td className="text-xs text-surface-500">{formatDate(request.requested_at)}</td><td className="text-right"><button className="btn-primary btn-xs" onClick={() => openRequestedLabels(request)}>Open request</button></td></tr>)}{reprintRequests.length === 0 && <tr><td colSpan={5}><div className="empty-state"><div className="empty-title">No pending reprint requests</div></div></td></tr>}</tbody></table></div></section>}
+      {canReprint && <section className="card mt-6">
+        <div className="card-header flex flex-wrap items-center justify-between gap-3">
+          <div><h2 className="section-title">QC reprint approvals</h2><p className="mt-1 text-sm text-surface-500">Review requests before a replacement label is printed.</p></div>
+          <div className="flex items-center gap-2"><span className="badge badge-warning">{reprintRequests.filter(row => row.status === 'PENDING').length} awaiting review</span><button className="btn-secondary btn-sm" onClick={() => load(true)} disabled={refreshing}><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh</button></div>
+        </div>
+        <div className="table-wrap"><table><thead><tr><th>Print job</th><th>Requested by</th><th>Labels</th><th>Requested</th><th>Status</th><th className="text-right">Action</th></tr></thead><tbody>
+          {reprintRequests.map((request: any) => <tr key={request.id}>
+            <td><span className="font-mono text-xs">{request.job_code || request.qr_job_id}</span></td><td>{request.requested_by_name || 'QC user'}</td><td>{request.requested_count}</td><td className="text-xs text-surface-500">{formatDate(request.requested_at)}</td>
+            <td><span className={`badge ${request.status === 'PENDING' ? 'badge-warning' : request.status === 'APPROVED' ? 'badge-success' : request.status === 'REJECTED' ? 'badge-danger' : 'badge-neutral'}`}>{request.status}</span>{request.reviewed_by_name && <div className="mt-1 text-[11px] text-surface-400">Reviewed by {request.reviewed_by_name}{request.review_note ? ` · ${request.review_note}` : ''}</div>}</td>
+            <td className="text-right"><div className="inline-flex flex-wrap justify-end gap-1.5">
+              {request.status === 'PENDING' && <><button className="btn-primary btn-xs" disabled={reviewingRequestId !== null} onClick={() => void reviewRequest(request, 'APPROVED')}>{reviewingRequestId === request.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />} Approve</button><button className="btn-secondary btn-xs text-rose-600" disabled={reviewingRequestId !== null} onClick={() => void reviewRequest(request, 'REJECTED')}>Reject</button></>}
+              {request.status === 'APPROVED' && <button className="btn-primary btn-xs" onClick={() => openRequestedLabels(request)}><Printer size={12} /> Print approved labels</button>}
+              {request.status === 'FULFILLED' && <span className="text-xs text-surface-500">Printed {formatDate(request.fulfilled_at)}</span>}
+            </div></td>
+          </tr>)}
+          {reprintRequests.length === 0 && <tr><td colSpan={6}><div className="empty-state"><div className="empty-title">No reprint requests yet</div><div className="empty-desc">QC requests will appear here for review.</div></div></td></tr>}
+        </tbody></table></div>
+      </section>}
 
       {/* ── Reprint Modal ──────────────────────────────────────────────────── */}
       {(canReprint || isQc) && reprintJob && (

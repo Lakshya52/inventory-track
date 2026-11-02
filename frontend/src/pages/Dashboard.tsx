@@ -57,15 +57,17 @@ export default function Dashboard() {
     recentActivity: any[];
   } | null>(null);
   const [activeSessions, setActiveSessions] = useState<any[]>([]);
+  const [pendingQrReprints, setPendingQrReprints] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
     setError('');
     try {
-      const [dashRes, sessionsRes] = await Promise.allSettled([
+      const [dashRes, sessionsRes, reprintRes] = await Promise.allSettled([
         api.dashboard.admin(),
         api.loadingSessions.active(),
+        api.qc.qrJobs.reprintRequests('PENDING'),
       ]);
 
       if (dashRes.status === 'fulfilled') {
@@ -76,6 +78,9 @@ export default function Dashboard() {
 
       if (sessionsRes.status === 'fulfilled' && Array.isArray(sessionsRes.value)) {
         setActiveSessions(sessionsRes.value);
+      }
+      if (reprintRes.status === 'fulfilled' && Array.isArray(reprintRes.value)) {
+        setPendingQrReprints(reprintRes.value.length);
       }
     } catch (err: any) {
       setError(err.message || 'An error occurred');
@@ -167,6 +172,13 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
+          <Link
+            to="/qc/qr-codes"
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-colors shadow-sm ${pendingQrReprints > 0 ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+          >
+            <Package size={17} />
+            <span>QR approvals{pendingQrReprints > 0 ? ` · ${pendingQrReprints}` : ''}</span>
+          </Link>
           <Link
             to="/loading-monitor"
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-sm"
