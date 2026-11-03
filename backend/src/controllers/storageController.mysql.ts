@@ -223,7 +223,9 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
         const shelf = `S${row}`;
         const position = `P${column}`;
         const locationCode = locationCodeFor(warehouses[0].name, rackCode, row, column);
-        const [location] = await conn.execute<any>('INSERT INTO shelf_locations (tenant_id, location_code, description, warehouse, rack, shelf, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [req.user!.tenantId, locationCode, `${warehouses[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouses[0].name, rackCode, `${shelf}-${position}`]);
+        // mysql2's promise `execute` resolves through a mixin type that TS sees
+        // as untyped, so a generic argument is not allowed here.
+        const [location] = await (conn as any).execute('INSERT INTO shelf_locations (tenant_id, location_code, description, warehouse, rack, shelf, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [req.user!.tenantId, locationCode, `${warehouses[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouses[0].name, rackCode, `${shelf}-${position}`]);
         nextCells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: String(location.insertId), location_code: locationCode });
       }
     } else {

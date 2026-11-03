@@ -34,7 +34,8 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
       const [selectedStock] = selectedLocationIds.length ? await conn.execute<RowDataPacket[]>(`SELECT shelf_location_id, quantity, COALESCE(dispatched_quantity, 0) AS dispatched_quantity, COALESCE(recalled_quantity, 0) AS recalled_quantity FROM batches WHERE tenant_id = ? AND shelf_location_id IN (${selectedPlaceholders}) AND status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED') FOR UPDATE`, [req.user!.tenantId, ...selectedLocationIds]) : [[] as any, []] as any;
       const occupiedLocation = selectedStock.find((batch: any) => Number(batch.quantity || 0) > Number(batch.dispatched_quantity || 0) + Number(batch.recalled_quantity || 0));
       if (occupiedLocation) {
-        const location = products.get(items.find((item) => String(item.shelf_location_id) === String(occupiedLocation.shelf_location_id))?.product_id)?.location_code || occupiedLocation.shelf_location_id;
+        const occupiedItem = items.find((item) => String(item.shelf_location_id) === String(occupiedLocation.shelf_location_id));
+        const location = (occupiedItem ? products.get(occupiedItem.product_id)?.location_code : undefined) || occupiedLocation.shelf_location_id;
         throw Object.assign(new Error(`Rack position ${location} is already in use. Refresh storage and choose an empty position.`), { statusCode: 409 });
       }
       const requestedByLocation = new Map<string, number>();
