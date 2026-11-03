@@ -341,7 +341,7 @@ export function QrDetailsSheet({
                     </View>
                     <View className="rounded-full bg-[#F0F5FD] px-2.5 py-1">
                       <AppText className="text-[10px] font-manrope-bold text-[#4E5D76]">
-                        {batch.quantity ?? '—'} {batch.uom || 'units'}
+                        {batch.quantity ?? '—'} x {batch.uom || 'units'}
                       </AppText>
                     </View>
                     <View className="rounded-full bg-[#F0F5FD] px-2.5 py-1">

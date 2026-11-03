@@ -21,6 +21,11 @@ export interface QrJob {
   created_at?: string;
 }
 
+export interface QrLabelSize {
+  widthMm: number;
+  heightMm: number;
+}
+
 async function qrDataUrls(labels: QrLabel[]): Promise<string[]> {
   return Promise.all(
     labels.map((label) =>
@@ -101,51 +106,3 @@ export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function printQrLabels(labels: QrLabel[], job: QrJob): Promise<void> {
-  if (labels.length === 0) return;
-  const win = window.open('', '_blank');
-  if (!win) {
-    throw new Error('Allow pop-ups to print QR labels');
-  }
-  const images = await qrDataUrls(labels);
-  const cards = labels.map((label, index) => `
-    <div class="qr-card">
-      <div class="product">${escapeHtml(label.product_name || job.product_name)}</div>
-      <div class="batch">${escapeHtml(label.batch_number)} — Unit ${String(label.serial_no).padStart(4, '0')}</div>
-      <img src="${images[index]}" width="150" height="150" />
-      <div class="label">${escapeHtml(label.qr_value)}</div>
-    </div>
-  `).join('');
-
-  win.document.write(`
-    <html>
-      <head>
-        <title>QR Labels - ${escapeHtml(job.job_code)}</title>
-        <style>
-          @page { margin: 8mm; }
-          body { font-family: Arial, sans-serif; display: flex; flex-wrap: wrap; gap: 8mm; justify-content: flex-start; padding: 0; margin: 0; }
-          .qr-card { width: 60mm; min-height: 64mm; border: 1px dashed #cbd5e1; padding: 3mm; box-sizing: border-box; text-align: center; page-break-inside: avoid; }
-          .qr-card img { display: block; margin: 1mm auto; }
-          .product { font-size: 10px; font-weight: 700; color: #0f172a; }
-          .batch { font-size: 9px; color: #334155; margin: 1mm 0; }
-          .label { font-size: 7px; color: #64748b; word-break: break-all; }
-          @media print { .qr-card { border: none; } }
-        </style>
-      </head>
-      <body>
-        ${cards}
-        <script>window.onload = function() { window.print(); window.close(); };<\/script>
-      </body>
-    </html>
-  `);
-  win.document.close();
-}
-
-function escapeHtml(value: unknown): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}

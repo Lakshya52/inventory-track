@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { Printer, Package, Eye, AlertTriangle, Download, FileText, CheckCircle2, Truck, X } from 'lucide-react';
+import { Printer, Package, Eye, AlertTriangle, Download, FileText, CheckCircle2, Truck, X, MapPin } from 'lucide-react';
 import type { EntityId } from '../types';
 
 function itemLocation(item: any): string {
@@ -38,12 +38,14 @@ function escapeHtml(value: unknown): string {
 
 export default function PackingList() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [orders, setOrders] = useState<any[]>([]);
   const [packingData, setPackingData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [locationLinks, setLocationLinks] = useState<Record<string, string>>({});
 
   const handleViewPacking = useCallback(async (orderId: EntityId) => {
     setLoading(true);
@@ -73,6 +75,22 @@ export default function PackingList() {
     const loader = user?.role === 'DISPATCH' ? api.dispatchOrders.mine() : api.dispatchOrders.all();
     loader.then(setOrders).catch((err) => setError(err.message));
   }, [user?.role]);
+
+  useEffect(() => {
+    api.storage.list().then((warehouses: any[]) => {
+      const links: Record<string, string> = {};
+      for (const warehouse of warehouses) {
+        for (const rack of warehouse.racks || []) {
+          for (const cell of rack.cells || []) {
+            if (cell.location_code) {
+              links[cell.location_code] = `/storage/${encodeURIComponent(warehouse.id)}/racks/${encodeURIComponent(rack.id)}?location=${encodeURIComponent(cell.location_code)}`;
+            }
+          }
+        }
+      }
+      setLocationLinks(links);
+    }).catch(() => setLocationLinks({}));
+  }, []);
 
   useEffect(() => {
     const orderId = searchParams.get('order');
@@ -344,7 +362,13 @@ export default function PackingList() {
                     <td className="px-5 py-3 text-xs text-slate-500">{item.sku}</td>
                     <td className="px-5 py-3 font-mono text-xs font-bold text-slate-800">{item.batch_number}</td>
                     <td className="px-5 py-3 font-bold text-slate-900">{item.quantity} bags</td>
-                    <td className="px-5 py-3 text-xs text-slate-700">{itemLocation(item)}</td>
+                    <td className="px-5 py-3">
+                      {locationLinks[itemLocation(item)] ? <button
+                        onClick={() => navigate(locationLinks[itemLocation(item)])}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-extrabold text-blue-800 hover:border-blue-300 hover:bg-blue-100"
+                        title="Open this position in the warehouse rack"
+                      ><MapPin size={13} />{itemLocation(item)}</button> : <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700"><MapPin size={13} />{itemLocation(item)}</span>}
+                    </td>
                     <td className="px-5 py-3 font-mono text-xs text-slate-500">{itemBarcode(item, packingData)}</td>
                   </tr>
                 ))}

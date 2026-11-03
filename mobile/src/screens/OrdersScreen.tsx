@@ -180,7 +180,7 @@ export default function OrdersScreen() {
           <Card key={String(batch.id ?? batch._id)} style={styles.row}>
             <View style={styles.main}>
               <Text style={styles.title}>{batch.product_name || batch.product?.name}</Text>
-              <Text style={styles.meta}>{batch.batch_number} · {batch.quantity} {batch.uom || 'units'}</Text>
+              <Text style={styles.meta}>{batch.batch_number} · {batch.quantity} x {batch.uom || 'units'}</Text>
               <Text style={styles.meta}>{batch.location_code || batch.storage_location || 'Location not set'}</Text>
             </View>
             <Button title="Request" small onPress={() => openRaise(batch)} />
@@ -191,7 +191,7 @@ export default function OrdersScreen() {
           const id = order.id ?? order._id;
           return <Card key={String(id)} style={styles.order}>
             <View style={styles.orderHeader}>
-              <View style={styles.main}><Text style={styles.title}>{order.product_name || 'Dispatch request'}</Text><Text style={styles.meta}>{order.batch_number} · {order.quantity} {order.uom || 'units'}</Text></View>
+              <View style={styles.main}><Text style={styles.title}>{order.product_name || 'Dispatch request'}</Text><Text style={styles.meta}>{order.batch_number} · {order.quantity} x {order.uom || 'units'}</Text></View>
               <Badge status={order.status || 'PENDING'} />
             </View>
             <View style={styles.detailGrid}>
@@ -253,7 +253,7 @@ export default function OrdersScreen() {
                     <Text style={styles.title}>{item.product_name || 'Product'}</Text>
                     <Text style={styles.meta}>{item.batch_number || 'Batch not listed'}{item.sku ? ` · ${item.sku}` : ''}</Text>
                   </View>
-                  <Badge status="DISPATCHED" label={`${item.quantity ?? '—'} ${item.uom || ''}`.trim()} />
+                  <Badge status="DISPATCHED" label={`${item.quantity ?? '—'} x ${item.uom || ''}`.trim()} />
                 </View>
                 <KeyValue label="Barcode" value={item.barcode} />
                 <KeyValue label="Grade" value={item.grade} />

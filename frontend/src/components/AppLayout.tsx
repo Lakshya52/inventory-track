@@ -25,6 +25,7 @@ import {
   Activity,
   Layers,
   ShieldCheck,
+  Warehouse,
 } from "lucide-react";
 
 type SubNavItem = {
@@ -125,6 +126,18 @@ const navSections: { title: string; items: NavItem[] }[] = [
           },
           // { label: 'Settings', path: '/settings', icon: <UserCircle size={18} /> },
         ],
+      },
+      {
+        label: "Inventory",
+        path: "/inventory",
+        icon: <Package size={20} />,
+        roles: ["ADMIN", "QC", "DISPATCH"],
+      },
+      {
+        label: "Warehouse Management",
+        path: "/storage",
+        icon: <Warehouse size={20} />,
+        roles: ["ADMIN", "QC", "DISPATCH"],
       },
       {
         label: "Settings",

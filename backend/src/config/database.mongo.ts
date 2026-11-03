@@ -111,6 +111,8 @@ const REFERENCE_ID_FIELDS = new Set([
   'grade_id',
   'vendor_id',
   'shelf_location_id',
+  'warehouse_id',
+  'rack_id',
   'approved_by_id',
   'loader_id',
   'scanned_by',

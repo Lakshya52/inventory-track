@@ -17,10 +17,10 @@ router.get('/records', authorize('ADMIN'), records);
 router.post('/qr-jobs', authorize('ADMIN'), create);
 router.get('/qr-jobs', authorize('ADMIN', 'QC'), list);
 router.post('/qr-jobs/:id/reprint-request', authorize('QC'), createQrReprintRequest);
-router.get('/qr-jobs/reprint-requests', authorize('ADMIN'), listQrReprintRequests);
+router.get('/qr-jobs/reprint-requests', authorize('ADMIN', 'QC'), listQrReprintRequests);
 router.post('/qr-jobs/reprint-requests/:requestId/review', authorize('ADMIN'), reviewQrReprintRequest);
-router.post('/qr-jobs/reprint-requests/:requestId/complete', authorize('ADMIN'), completeQrReprintRequest);
+router.post('/qr-jobs/reprint-requests/:requestId/complete', authorize('ADMIN', 'QC'), completeQrReprintRequest);
 router.get('/qr-jobs/:id', authorize('ADMIN', 'QC'), getById);
-router.post('/qr-jobs/:id/reprint', authorize('ADMIN'), reprint);
+router.post('/qr-jobs/:id/reprint', authorize('ADMIN', 'QC'), reprint);
 
 export default router;

@@ -422,7 +422,7 @@ export default function DispatchOrders() {
                           </span>
                         </div>
                         <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-4">
-              <span>Quantity: <strong className="text-slate-800">{batch.quantity} {batch.uom || ''}</strong></span>
+              <span>Quantity: <strong className="text-slate-800">{batch.quantity} x {batch.uom || ''}</strong></span>
                           <span>Location: <strong className="text-slate-800">{batch.location_code || batch.storage_location || 'Not set'}</strong></span>
                         </div>
                       </div>

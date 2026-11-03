@@ -1129,7 +1129,7 @@ export function ScanTabScreen() {
                               </View>
                               <View className="rounded-full bg-[#F0F5FD] px-2 py-0.5">
                                 <AppText className="text-[9.5px] font-manrope-bold text-[#4E5D76]">
-                                  {order.quantity ?? '-'} {order.uom || 'units'}
+                                  {order.quantity ?? '-'} x {order.uom || 'units'}
                                 </AppText>
                               </View>
                               {order.grade_name ? (

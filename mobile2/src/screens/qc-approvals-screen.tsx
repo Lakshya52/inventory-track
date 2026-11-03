@@ -98,7 +98,7 @@ export function QcApprovalsScreen() {
                   </View>
                   <StatusBadge status={order.status} label="Pending" className="shrink-0" />
                 </View>
-                <AppText className="mt-2 text-[11px] leading-4 text-[#5B6980]" numberOfLines={2}>Client: {order.client_name || '—'} · Qty: {order.quantity ?? '—'} {order.uom || 'units'}</AppText>
+                <AppText className="mt-2 text-[11px] leading-4 text-[#5B6980]" numberOfLines={2}>Client: {order.client_name || '—'} · Qty: {order.quantity ?? '—'} x {order.uom || 'units'}</AppText>
                 <AppText className="mt-1 text-[10px] text-[#8793A5]">Raised by {order.raised_by_name || 'Dispatch'} · Tap to review</AppText>
               </Pressable>
             ))}
@@ -111,7 +111,7 @@ export function QcApprovalsScreen() {
           <View className="rounded-2xl bg-navy p-4">
             <AppText className="text-[10px] font-manrope-bold uppercase tracking-[1px] text-blue-200">Order #{selected.id}</AppText>
             <AppText className="mt-1 text-[17px] font-manrope-extrabold text-white">{selected.product_name || 'Product'}</AppText>
-            <AppText className="mt-1 text-[11px] text-blue-100">Batch {selected.batch_number || '—'} · {selected.quantity ?? '—'} {selected.uom || 'units'}</AppText>
+            <AppText className="mt-1 text-[11px] text-blue-100">Batch {selected.batch_number || '—'} · {selected.quantity ?? '—'} x {selected.uom || 'units'}</AppText>
           </View>
           <View className="mt-3 gap-2 rounded-xl bg-canvas p-3">
             <Detail label="Client" value={selected.client_name} />

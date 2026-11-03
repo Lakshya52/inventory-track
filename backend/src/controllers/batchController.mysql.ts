@@ -113,7 +113,8 @@ export async function create(req: Request, res: Response): Promise<void> {
       );
       const jobId = Number(jobInsert.insertId);
       const labelRows = Array.from({ length: bagCount }, (_, index) => ({
-        qr_value: `QR:${randomUUID()}`,
+        // Printed QR payload: job code + unit serial, e.g. QRJ-20261103-07BDD3-0001.
+        qr_value: `${jobCode}-${String(index + 1).padStart(4, '0')}`,
         serial_no: index + 1,
       }));
       const labelPlaceholders = labelRows.map(() => '(?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))').join(', ');
@@ -257,7 +258,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
       jobId = Number(jobInsert.insertId);
       firstBarcode = '';
       for (let serial = 1; serial <= Number(batch.quantity); serial += 1) {
-        const qrValue = `QR:${randomUUID()}`;
+        const qrValue = `${jobCode}-${String(serial).padStart(4, '0')}`;
         if (serial === 1) firstBarcode = qrValue;
         const [labelInsert] = await conn.execute<any>(
           `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)

@@ -5,6 +5,8 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
   const sparseUnique = { unique: true, partialFilterExpression: { client_operation_id: { $type: 'string' } } } as const;
 
   await Promise.all([
+    ctx.collection('warehouses').createIndex({ tenant_id: 1, name: 1 }, unique),
+    ctx.collection('storage_racks').createIndex({ tenant_id: 1, warehouse_id: 1, rack_code: 1 }, unique),
     ctx.collection('tenants').createIndex({ email_key: 1 }, unique),
     ctx.collection('tenants').createIndex({ slug: 1 }, unique),
     ctx.collection('qr_reprint_requests').createIndex({ tenant_id: 1, status: 1, requested_at: -1 }),

@@ -1,199 +1,466 @@
-import { useEffect, useState, FormEvent } from 'react';
-import { api } from '../services/api';
-import { EntityId, ShelfLocation } from '../types';
-import { MapPin, Plus, Pencil, Trash2, X, Power } from 'lucide-react';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useEffect, useState, FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
+import { api } from "../services/api";
+import { EntityId, ShelfLocation } from "../types";
+import { MapPin, Plus, Pencil, Trash2, X, Power } from "lucide-react";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { useAuth } from "../contexts/AuthContext";
 
-export default function ShelfLocations({ embedded = false }: { embedded?: boolean }) {
-  const [locations, setLocations] = useState<ShelfLocation[]>([]);
-  const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState<EntityId | null>(null);
-  const [code, setCode] = useState('');
-  const [desc, setDesc] = useState('');
-  const [warehouse, setWarehouse] = useState('');
-  const [rack, setRack] = useState('');
-  const [shelf, setShelf] = useState('');
-  const [error, setError] = useState('');
-  const [search, setSearch] = useState('');
-  const debouncedSearch = useDebouncedValue(search, 250);
+export default function ShelfLocations({
+	embedded = false,
+}: {
+	embedded?: boolean;
+}) {
+	const navigate = useNavigate();
+	const { user } = useAuth();
+	const canManage = user?.role === "ADMIN" || user?.role === "QC";
+	const [locations, setLocations] = useState<ShelfLocation[]>([]);
+	const [rackPositions, setRackPositions] = useState<Record<string, { warehouseId: string; rackId: string; locationCode: string }>>({});
+	const [showForm, setShowForm] = useState(false);
+	const [editId, setEditId] = useState<EntityId | null>(null);
+	const [code, setCode] = useState("");
+	const [desc, setDesc] = useState("");
+	const [warehouse, setWarehouse] = useState("");
+	const [rack, setRack] = useState("");
+	const [shelf, setShelf] = useState("");
+	const [error, setError] = useState("");
+	const [search, setSearch] = useState("");
+	const debouncedSearch = useDebouncedValue(search, 250);
 
-  const loadLocations = async () => {
-    try {
-      setLocations(await api.shelfLocations.list());
-    } catch (err: any) {
-      setError(err.message || 'Could not load shelf locations');
-    }
-  };
+	const loadLocations = async () => {
+		try {
+			const [shelfRows, warehouses] = await Promise.all([
+				api.shelfLocations.list(),
+				api.storage.list(),
+			]);
+			setLocations(shelfRows);
+			const linked: Record<string, { warehouseId: string; rackId: string; locationCode: string }> = {};
+			for (const building of warehouses) {
+				for (const storageRack of building.racks || []) {
+					for (const cell of storageRack.cells || []) {
+						linked[String(cell.shelf_location_id)] = {
+							warehouseId: String(building.id),
+							rackId: String(storageRack.id),
+							locationCode: String(cell.location_code || ""),
+						};
+					}
+				}
+			}
+			setRackPositions(linked);
+		} catch (err: any) {
+			setError(err.message || "Could not load shelf locations");
+		}
+	};
 
-  useEffect(() => { void loadLocations(); }, []);
+	useEffect(() => {
+		void loadLocations();
+	}, []);
 
-  const resetForm = () => { setCode(''); setDesc(''); setWarehouse(''); setRack(''); setShelf(''); setError(''); setEditId(null); };
+	const resetForm = () => {
+		setCode("");
+		setDesc("");
+		setWarehouse("");
+		setRack("");
+		setShelf("");
+		setError("");
+		setEditId(null);
+	};
 
-  const handleEdit = (loc: ShelfLocation) => {
-    setEditId(loc.id); setCode(loc.location_code); setDesc(loc.description || '');
-    setWarehouse(loc.warehouse || ''); setRack(loc.rack || ''); setShelf(loc.shelf || ''); setShowForm(true);
-  };
+	const handleEdit = (loc: ShelfLocation) => {
+		setEditId(loc.id);
+		setCode(loc.location_code);
+		setDesc(loc.description || "");
+		setWarehouse(loc.warehouse || "");
+		setRack(loc.rack || "");
+		setShelf(loc.shelf || "");
+		setShowForm(true);
+	};
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault(); setError('');
-    try {
-      if (editId) {
-        await api.shelfLocations.update(editId, { location_code: code, description: desc, warehouse, rack, shelf });
-      } else {
-        await api.shelfLocations.create({ location_code: code, description: desc, warehouse, rack, shelf });
-      }
-      setShowForm(false); resetForm();
-      await loadLocations();
-    } catch (err: any) { setError(err.message); }
-  };
+	const handleSubmit = async (e: FormEvent) => {
+		e.preventDefault();
+		setError("");
+		try {
+			if (editId) {
+				await api.shelfLocations.update(editId, {
+					location_code: code,
+					description: desc,
+					warehouse,
+					rack,
+					shelf,
+				});
+			} else {
+				await api.shelfLocations.create({
+					location_code: code,
+					description: desc,
+					warehouse,
+					rack,
+					shelf,
+				});
+			}
+			setShowForm(false);
+			resetForm();
+			await loadLocations();
+		} catch (err: any) {
+			setError(err.message);
+		}
+	};
 
-  const handleDelete = async (id: EntityId) => {
-    if (!window.confirm('Delete this location?')) return;
-    try {
-      await api.shelfLocations.delete(id);
-      await loadLocations();
-    } catch (err: any) { setError(err.message); }
-  };
+	const handleDelete = async (id: EntityId) => {
+		if (!window.confirm("Delete this location?")) return;
+		try {
+			await api.shelfLocations.delete(id);
+			await loadLocations();
+		} catch (err: any) {
+			setError(err.message);
+		}
+	};
 
-  const handleToggle = async (loc: ShelfLocation) => {
-    const next = loc.is_active !== 1;
-    if (!window.confirm(`${next ? 'Activate' : 'Deactivate'} location "${loc.location_code}"?`)) return;
-    try {
-      await api.shelfLocations.update(loc.id, {
-        location_code: loc.location_code,
-        description: loc.description || '',
-        warehouse: loc.warehouse || '',
-        rack: loc.rack || '',
-        shelf: loc.shelf || '',
-        is_active: next ? 1 : 0,
-      });
-      await loadLocations();
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
+	const handleToggle = async (loc: ShelfLocation) => {
+		const next = loc.is_active !== 1;
+		if (
+			!window.confirm(
+				`${next ? "Activate" : "Deactivate"} location "${loc.location_code}"?`,
+			)
+		)
+			return;
+		try {
+			await api.shelfLocations.update(loc.id, {
+				location_code: loc.location_code,
+				description: loc.description || "",
+				warehouse: loc.warehouse || "",
+				rack: loc.rack || "",
+				shelf: loc.shelf || "",
+				is_active: next ? 1 : 0,
+			});
+			await loadLocations();
+		} catch (err: any) {
+			setError(err.message);
+		}
+	};
 
-  const filteredLocations = locations.filter(l =>
-    !debouncedSearch ||
-    l.location_code.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-    (l.description || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-    (l.warehouse || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-    (l.rack || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-    (l.shelf || '').toLowerCase().includes(debouncedSearch.toLowerCase())
-  );
+	const filteredLocations = locations.filter(
+		(l) =>
+			!debouncedSearch ||
+			l.location_code
+				.toLowerCase()
+				.includes(debouncedSearch.toLowerCase()) ||
+			(l.description || "")
+				.toLowerCase()
+				.includes(debouncedSearch.toLowerCase()) ||
+			(l.warehouse || "")
+				.toLowerCase()
+				.includes(debouncedSearch.toLowerCase()) ||
+			(l.rack || "")
+				.toLowerCase()
+				.includes(debouncedSearch.toLowerCase()) ||
+			(l.shelf || "")
+				.toLowerCase()
+				.includes(debouncedSearch.toLowerCase()),
+	);
 
-  return (
-    <div className={embedded ? 'space-y-4' : 'page-container'}>
-      {!embedded ? (
-        <div className="page-header">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200/60 flex items-center justify-center shrink-0">
-              <MapPin size={20} />
-            </div>
-            <div>
-              <h1 className="page-title">Shelf Locations</h1>
-              <p className="page-subtitle">Define and manage warehouse storage locations</p>
-            </div>
-          </div>
-          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
-            <Plus size={16} /> Add Location
-          </button>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-          <div>
-            <h2 className="section-title">Shelf Locations Master</h2>
-            <p className="text-xs text-surface-500 mt-0.5">Define warehouse storage locations, racks, and shelves ({locations.length} total)</p>
-          </div>
-          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
-            <Plus size={16} /> Add Location
-          </button>
-        </div>
-      )}
+	return (
+		<div className={embedded ? "space-y-4" : "page-container"}>
+			{!embedded ? (
+				<div className="page-header">
+					<div className="flex items-center gap-3">
+						<div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200/60 flex items-center justify-center shrink-0">
+							<MapPin size={20} />
+						</div>
+						<div>
+							<h1 className="page-title">Shelf Locations</h1>
+							<p className="page-subtitle">
+								Define and manage warehouse storage locations
+							</p>
+						</div>
+					</div>
+					{canManage && <button
+						onClick={() => {
+							setShowForm(!showForm);
+							resetForm();
+						}}
+						className="btn-primary"
+					>
+						<Plus size={16} /> Add Location
+					</button>}
+				</div>
+			) : (
+				<div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+					<div>
+						<h2 className="section-title">
+							Shelf Locations Master
+						</h2>
+						<p className="text-xs text-surface-500 mt-0.5">
+							Define warehouse storage locations, racks, and
+							shelves ({locations.length} total)
+						</p>
+					</div>
+					{canManage && <button
+						onClick={() => {
+							setShowForm(!showForm);
+							resetForm();
+						}}
+						className="btn-primary"
+					>
+						<Plus size={16} /> Add Location
+					</button>}
+				</div>
+			)}
 
-      {error && !showForm && (
-        <div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">
-          <span>{error}</span>
-          <button onClick={() => setError('')} className="text-rose-500 hover:text-rose-700"><X size={15} /></button>
-        </div>
-      )}
+			{error && !showForm && (
+				<div className="mb-4 p-3 rounded-xl text-sm flex items-center justify-between bg-rose-50 text-rose-700 border border-rose-200">
+					<span>{error}</span>
+					<button
+						onClick={() => setError("")}
+						className="text-rose-500 hover:text-rose-700"
+					>
+						<X size={15} />
+					</button>
+				</div>
+			)}
 
-      <div className="flex items-center gap-3 mb-4">
-        <div className="relative flex-1 max-w-full sm:max-w-xs">
-          <input
-            className="input"
-            placeholder="Search locations..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-        {search && <button onClick={() => setSearch('')} className="btn-ghost btn-sm shrink-0"><X size={14} /> Clear</button>}
-      </div>
+			<div className="flex items-center gap-3 mb-4">
+				<div className="relative flex-1 max-w-full sm:max-w-xs">
+					<input
+						className="input"
+						placeholder="Search locations..."
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+					/>
+				</div>
+				{search && (
+					<button
+						onClick={() => setSearch("")}
+						className="btn-ghost btn-sm shrink-0"
+					>
+						<X size={14} /> Clear
+					</button>
+				)}
+			</div>
+			<div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm text-blue-900">
+				Rack positions are generated from the warehouse layout. Manage their names and structure from <button className="font-bold underline underline-offset-2" onClick={() => navigate("/storage")}>Storage</button>; standalone locations remain editable here.
+			</div>
 
-      {showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
-          <div className="modal-content max-w-lg" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="text-base font-semibold text-surface-900">{editId ? 'Edit' : 'Add'} Location</h2>
-              <button onClick={() => setShowForm(false)} className="btn-ghost btn-sm"><X size={16} /></button>
-            </div>
-            <form onSubmit={handleSubmit}>
-              <div className="modal-body space-y-4">
-                <div className="form-grid">
-                  <div className="space-y-1.5"><label className="input-label">Location Code *</label><input className="input" value={code} onChange={e => setCode(e.target.value.toUpperCase())} required placeholder="e.g., WH-A-R3-S2" /></div>
-                  <div className="space-y-1.5"><label className="input-label">Description</label><input className="input" value={desc} onChange={e => setDesc(e.target.value)} placeholder="e.g., Aisle 3, Left Side" /></div>
-                  <div className="space-y-1.5"><label className="input-label">Warehouse</label><input className="input" value={warehouse} onChange={e => setWarehouse(e.target.value)} placeholder="e.g., Main Warehouse" /></div>
-                  <div className="space-y-1.5"><label className="input-label">Rack</label><input className="input" value={rack} onChange={e => setRack(e.target.value)} placeholder="e.g., R-03" /></div>
-                  <div className="space-y-1.5"><label className="input-label">Shelf</label><input className="input" value={shelf} onChange={e => setShelf(e.target.value)} placeholder="e.g., S-02" /></div>
-                </div>
-                {error && <div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">{error}</div>}
-              </div>
-              <div className="modal-footer">
-                <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">Cancel</button>
-                <button type="submit" className="btn-primary">{editId ? 'Update' : 'Create'}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+			{showForm && (
+				<div
+					className="modal-overlay"
+					onClick={() => setShowForm(false)}
+				>
+					<div
+						className="modal-content max-w-lg"
+						onClick={(e) => e.stopPropagation()}
+					>
+						<div className="modal-header">
+							<h2 className="text-base font-semibold text-surface-900">
+								{editId ? "Edit" : "Add"} Location
+							</h2>
+							<button
+								onClick={() => setShowForm(false)}
+								className="btn-ghost btn-sm"
+							>
+								<X size={16} />
+							</button>
+						</div>
+						<form onSubmit={handleSubmit}>
+							<div className="modal-body space-y-4">
+								<div className="form-grid">
+									<div className="space-y-1.5">
+										<label className="input-label">
+											Location Code *
+										</label>
+										<input
+											className="input"
+											value={code}
+											onChange={(e) =>
+												setCode(
+													e.target.value.toUpperCase(),
+												)
+											}
+											required
+											placeholder="e.g., WH-A-R3-S2"
+										/>
+									</div>
+									<div className="space-y-1.5">
+										<label className="input-label">
+											Description
+										</label>
+										<input
+											className="input"
+											value={desc}
+											onChange={(e) =>
+												setDesc(e.target.value)
+											}
+											placeholder="e.g., Aisle 3, Left Side"
+										/>
+									</div>
+									<div className="space-y-1.5">
+										<label className="input-label">
+											Warehouse
+										</label>
+										<input
+											className="input"
+											value={warehouse}
+											onChange={(e) =>
+												setWarehouse(e.target.value)
+											}
+											placeholder="e.g., Main Warehouse"
+										/>
+									</div>
+									<div className="space-y-1.5">
+										<label className="input-label">
+											Rack
+										</label>
+										<input
+											className="input"
+											value={rack}
+											onChange={(e) =>
+												setRack(e.target.value)
+											}
+											placeholder="e.g., R-03"
+										/>
+									</div>
+									<div className="space-y-1.5">
+										<label className="input-label">
+											Shelf
+										</label>
+										<input
+											className="input"
+											value={shelf}
+											onChange={(e) =>
+												setShelf(e.target.value)
+											}
+											placeholder="e.g., S-02"
+										/>
+									</div>
+								</div>
+								{error && (
+									<div className="text-sm text-rose-600 bg-rose-50 p-3 rounded-xl">
+										{error}
+									</div>
+								)}
+							</div>
+							<div className="modal-footer">
+								<button
+									type="button"
+									onClick={() => setShowForm(false)}
+									className="btn-secondary"
+								>
+									Cancel
+								</button>
+								<button type="submit" className="btn-primary">
+									{editId ? "Update" : "Create"}
+								</button>
+							</div>
+						</form>
+					</div>
+				</div>
+			)}
 
-      <div className="card">
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Code</th><th>Description</th><th>Warehouse</th><th>Rack</th><th>Shelf</th><th>Status</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-              {filteredLocations.map(l => (
-                <tr key={l.id}>
-                  <td><span className="font-mono text-sm font-semibold text-surface-800">{l.location_code}</span></td>
-                  <td className="text-sm">{l.description || '-'}</td>
-                  <td>{l.warehouse || '-'}</td>
-                  <td>{l.rack || '-'}</td>
-                  <td>{l.shelf || '-'}</td>
-                  <td>{l.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-danger">Inactive</span>}</td>
-                  <td>
-                    <div className="flex gap-1">
-                      <button onClick={() => handleEdit(l)} className="btn-ghost btn-sm" title="Edit location"><Pencil size={14} /></button>
-                      <button
-                        onClick={() => handleToggle(l)}
-                        className={`btn-ghost btn-sm ${l.is_active ? 'text-amber-600' : 'text-emerald-600'}`}
-                        title={l.is_active ? 'Deactivate location' : 'Activate location'}
-                      >
-                        <Power size={14} />
-                      </button>
-                      <button onClick={() => handleDelete(l.id)} className="btn-ghost btn-sm text-rose-500" title="Delete location"><Trash2 size={14} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filteredLocations.length === 0 && (
-                <tr><td colSpan={7}><div className="empty-state"><div className="empty-icon"><MapPin size={24} className="text-surface-400" /></div><div className="empty-title">{search ? 'No matching locations found' : 'No locations defined'}</div><div className="empty-desc">{search ? 'Try a different search term' : 'Add your first storage location'}</div></div></td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
+			<div className="card">
+				<div className="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Code</th>
+								<th>Description</th>
+								<th>Warehouse</th>
+								<th>Rack</th>
+								<th>Shelf</th>
+								<th>Status</th>
+								<th>Actions</th>
+							</tr>
+						</thead>
+						<tbody>
+							{filteredLocations.map((l) => (
+								<tr key={l.id}>
+									<td>
+										<span className="font-mono text-sm font-semibold text-surface-800">
+											{l.location_code}
+										</span>
+									</td>
+									<td className="text-sm">
+										{l.description || "-"}
+									</td>
+									<td>{l.warehouse || "-"}</td>
+									<td>{l.rack || "-"}</td>
+									<td>{l.shelf || "-"}</td>
+									<td>
+										{l.is_active ? (
+											<span className="badge badge-success">
+												Active
+											</span>
+										) : (
+											<span className="badge badge-danger">
+												Inactive
+											</span>
+										)}
+									</td>
+									<td>
+										<div className="flex gap-1">
+											{rackPositions[String(l.id)] ? <button
+								onClick={() => navigate(`/storage/${encodeURIComponent(rackPositions[String(l.id)].warehouseId)}/racks/${encodeURIComponent(rackPositions[String(l.id)].rackId)}?location=${encodeURIComponent(rackPositions[String(l.id)].locationCode)}`)}
+												className="btn-ghost btn-sm text-blue-700"
+												title="View rack position"
+											>Rack managed</button> : canManage && <>
+											<button
+												onClick={() => handleEdit(l)}
+												className="btn-ghost btn-sm"
+												title="Edit location"
+											>
+												<Pencil size={14} />
+											</button>
+											<button
+												onClick={() => handleToggle(l)}
+												className={`btn-ghost btn-sm ${l.is_active ? "text-amber-600" : "text-emerald-600"}`}
+												title={
+													l.is_active
+														? "Deactivate location"
+														: "Activate location"
+												}
+											>
+												<Power size={14} />
+											</button>
+											<button
+												onClick={() =>
+													handleDelete(l.id)
+												}
+												className="btn-ghost btn-sm text-rose-500"
+												title="Delete location"
+											>
+												<Trash2 size={14} />
+											</button>
+											</>}
+										</div>
+									</td>
+								</tr>
+							))}
+							{filteredLocations.length === 0 && (
+								<tr>
+									<td colSpan={7}>
+										<div className="empty-state">
+											<div className="empty-icon">
+												<MapPin
+													size={24}
+													className="text-surface-400"
+												/>
+											</div>
+											<div className="empty-title">
+												{search
+													? "No matching locations found"
+													: "No locations defined"}
+											</div>
+											<div className="empty-desc">
+												{search
+													? "Try a different search term"
+													: "Add your first storage location"}
+											</div>
+										</div>
+									</td>
+								</tr>
+							)}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+	);
 }

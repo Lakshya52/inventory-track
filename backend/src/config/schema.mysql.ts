@@ -70,6 +70,32 @@ async function addUniqueIndexIfMissing(
  * without a destructive seed. Every statement must be safe to run repeatedly.
  */
 export async function ensureAdminSchema(): Promise<void> {
+  await execute(`CREATE TABLE IF NOT EXISTS warehouses (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    capacity BIGINT UNSIGNED NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_warehouse_tenant_name (tenant_id, name),
+    INDEX idx_warehouse_tenant (tenant_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await execute(`CREATE TABLE IF NOT EXISTS storage_racks (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    warehouse_id BIGINT UNSIGNED NOT NULL,
+    rack_code VARCHAR(120) NOT NULL,
+    rows_count SMALLINT UNSIGNED NOT NULL,
+    columns_count SMALLINT UNSIGNED NOT NULL,
+    cells JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_storage_rack_name (tenant_id, warehouse_id, rack_code),
+    INDEX idx_storage_rack_warehouse (tenant_id, warehouse_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await addColumnIfMissing('batches', 'dispatched_quantity', 'INT UNSIGNED NOT NULL DEFAULT 0');
+  await addColumnIfMissing('batches', 'recalled_quantity', 'INT UNSIGNED NOT NULL DEFAULT 0');
   await execute(`CREATE TABLE IF NOT EXISTS qr_reprint_requests (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL,
@@ -107,6 +133,8 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing('tenants', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
   await addColumnIfMissing('tenants', 'logo_data', 'LONGTEXT NULL');
   await addColumnIfMissing('tenants', 'logo_mime_type', 'VARCHAR(100) NULL');
+  await addColumnIfMissing('tenants', 'printer_label_width_mm', 'SMALLINT UNSIGNED NOT NULL DEFAULT 60');
+  await addColumnIfMissing('tenants', 'printer_label_height_mm', 'SMALLINT UNSIGNED NOT NULL DEFAULT 64');
   await addColumnIfMissing('admins', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addColumnIfMissing('qc_users', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addColumnIfMissing('dispatch_users', 'tenant_id', 'BIGINT UNSIGNED NULL');

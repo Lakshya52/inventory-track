@@ -25,6 +25,10 @@ const PackingList = lazy(() => import('./pages/PackingList'));
 const QRLabels = lazy(() => import('./pages/QRLabels'));
 const Vendors = lazy(() => import('./pages/Vendors'));
 const Masters = lazy(() => import('./pages/Masters'));
+const Storage = lazy(() => import('./pages/Storage'));
+const StorageLocation = lazy(() => import('./pages/StorageLocation'));
+const StorageRack = lazy(() => import('./pages/StorageRack'));
+const Inventory = lazy(() => import('./pages/Inventory'));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -63,7 +67,7 @@ export default function App() {
 
         {/* Admin management */}
         <Route path="/users" element={<ProtectedRoute roles={['ADMIN']}><Users /></ProtectedRoute>} />
-        <Route path="/shelf-locations" element={<Navigate to="/masters?tab=shelf-locations" replace />} />
+        <Route path="/shelf-locations" element={<ProtectedRoute roles={['ADMIN', 'QC']}><ShelfLocations /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute roles={['ADMIN']}><Reports /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><Settings /></ProtectedRoute>} />
 
@@ -84,6 +88,12 @@ export default function App() {
         <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
         <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}>{user?.role === 'DISPATCH' ? <DispatchWorkspaceOrders /> : <DispatchOrders />}</ProtectedRoute>} />
         <Route path="/packing-list" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><PackingList /></ProtectedRoute>} />
+
+        {/* Storage locations, warehouse details, and rack details */}
+        <Route path="/storage" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><Storage /></ProtectedRoute>} />
+        <Route path="/storage/:warehouseId" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><StorageLocation /></ProtectedRoute>} />
+        <Route path="/storage/:warehouseId/racks/:rackId" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><StorageRack /></ProtectedRoute>} />
+        <Route path="/inventory" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><Inventory /></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to={redirectHome()} replace />} />
       </Route>

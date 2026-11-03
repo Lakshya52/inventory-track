@@ -129,7 +129,8 @@ export async function create(req: Request, res: Response): Promise<void> {
       const labelDocuments = Array.from({ length: bagCount }, (_, index) => ({
         print_job_id: jobId,
         batch_id: batchId,
-        qr_value: `QR:${randomUUID()}`,
+        // Printed QR payload: job code + unit serial, e.g. QRJ-20261103-07BDD3-0001.
+        qr_value: `${jobCode}-${String(index + 1).padStart(4, '0')}`,
         serial_no: index + 1,
         print_count: 1,
         last_printed_at: now(),
@@ -260,7 +261,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
       });
       firstBarcode = '';
       const labelDocuments = Array.from({ length: Number(batch.quantity) }, (_, index) => {
-        const qrValue = `QR:${randomUUID()}`;
+        const qrValue = `${jobCode}-${String(index + 1).padStart(4, '0')}`;
         if (index === 0) firstBarcode = qrValue;
         return {
           print_job_id: jobId,

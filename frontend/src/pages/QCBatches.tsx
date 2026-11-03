@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
 	Boxes,
-	Check,
 	Minus,
-	MapPin,
 	Plus,
 	Printer,
 	Trash2,
@@ -13,24 +11,144 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
-import { printQrLabels } from "../utils/qrPdf";
+import {
+	prepareDirectQrPrinter,
+	printQrLabelsDirect,
+} from "../utils/directQrPrinter";
 
 type Line = { productId: string; quantity: string; shelfLocationId: string };
-const newLine = (shared: boolean, locationId = ""): Line => ({
+type Warehouse = { id: string; name: string; racks?: Rack[] };
+type Rack = { id: string; rack_code: string; cells?: ShelfCell[] };
+type ShelfCell = {
+	row: number;
+	column: number;
+	cell_code: string;
+	location_code: string;
+	shelf_location_id: string;
+	occupied?: boolean;
+};
+const newLine = (): Line => ({
 	productId: "",
 	quantity: "1",
-	shelfLocationId: shared ? locationId : "",
+	shelfLocationId: "",
 });
+
+function LocationCascade({
+	warehouses,
+	value,
+	reservedLocationIds,
+	onChange,
+}: {
+	warehouses: Warehouse[];
+	value: string;
+	reservedLocationIds: string[];
+	onChange: (locationId: string) => void;
+}) {
+	const selectedCell = warehouses
+		.flatMap((warehouse) =>
+			(warehouse.racks || []).flatMap((rack) =>
+				(rack.cells || []).map((cell) => ({ warehouse, rack, cell })),
+			),
+		)
+		.find(({ cell }) => String(cell.shelf_location_id) === value);
+	const [warehouseId, setWarehouseId] = useState(
+		selectedCell?.warehouse.id || "",
+	);
+	const [rackId, setRackId] = useState(selectedCell?.rack.id || "");
+	const racks =
+		warehouses.find((warehouse) => String(warehouse.id) === warehouseId)
+			?.racks || [];
+	const cells = racks.find((rack) => String(rack.id) === rackId)?.cells || [];
+
+	useEffect(() => {
+		if (!selectedCell) return;
+		setWarehouseId(selectedCell.warehouse.id);
+		setRackId(selectedCell.rack.id);
+	}, [selectedCell?.warehouse.id, selectedCell?.rack.id]);
+
+	return (
+		<div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+			<select
+				className="input min-w-0 border-slate-200 bg-white text-sm"
+				aria-label="Warehouse"
+				value={warehouseId}
+				onChange={(event) => {
+					setWarehouseId(event.target.value);
+					setRackId("");
+					onChange("");
+				}}
+			>
+				<option value="">Warehouse</option>
+				{warehouses.map((warehouse) => (
+					<option key={warehouse.id} value={warehouse.id}>
+						{warehouse.name}
+					</option>
+				))}
+			</select>
+			<select
+				className="input min-w-0 border-slate-200 bg-white text-sm disabled:bg-slate-50 disabled:text-slate-400"
+				aria-label="Rack"
+				value={rackId}
+				disabled={!warehouseId}
+				onChange={(event) => {
+					setRackId(event.target.value);
+					onChange("");
+				}}
+			>
+				<option value="">
+					{warehouseId ? "Rack" : "Choose warehouse first"}
+				</option>
+				{racks.map((rack) => (
+					<option key={rack.id} value={rack.id}>
+						{rack.rack_code}
+					</option>
+				))}
+			</select>
+			<select
+				className="input min-w-0 border-slate-200 bg-white text-sm disabled:bg-slate-50 disabled:text-slate-400"
+				aria-label="Shelf position"
+				value={value}
+				disabled={!rackId}
+				required
+				onChange={(event) => onChange(event.target.value)}
+			>
+				<option value="">
+					{rackId ? "Shelf position" : "Choose rack first"}
+				</option>
+				{cells.map((cell) => (
+					<option
+						key={cell.shelf_location_id}
+						value={cell.shelf_location_id}
+						disabled={
+							Boolean(cell.occupied) ||
+							(reservedLocationIds.includes(
+								String(cell.shelf_location_id),
+							) &&
+								String(cell.shelf_location_id) !== value)
+						}
+					>
+						{cell.cell_code} ·{" "}
+						{cell.occupied
+							? "In use"
+							: reservedLocationIds.includes(
+										String(cell.shelf_location_id),
+								  ) && String(cell.shelf_location_id) !== value
+								? "Assigned to another product"
+								: "Empty"}
+					</option>
+				))}
+			</select>
+		</div>
+	);
+}
 
 export default function QCBatches() {
 	const [products, setProducts] = useState<any[]>([]);
 	const [uoms, setUoms] = useState<any[]>([]);
 	const [bagQuantities, setBagQuantities] = useState<any[]>([]);
-	const [locations, setLocations] = useState<any[]>([]);
+	const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
 	const [batches, setBatches] = useState<any[]>([]);
-	const [lines, setLines] = useState<Line[]>([newLine(false)]);
-	const [useSharedLocation, setUseSharedLocation] = useState(false);
-	const [sharedLocationId, setSharedLocationId] = useState("");
+	const [lines, setLines] = useState<Line[]>([newLine()]);
 	const [showCreateForm, setShowCreateForm] = useState(false);
 	const [search, setSearch] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 250);
@@ -40,19 +158,19 @@ export default function QCBatches() {
 	const [loaded, setLoaded] = useState(false);
 
 	const reload = async () => {
-		const [productRows, uomRows, bagRows, locationRows, batchRows] =
+		const [productRows, uomRows, bagRows, warehouseRows, batchRows] =
 			await Promise.all([
 				api.products.list(),
 				api.masters.list("uoms"),
 				api.masters.list("bag-quantities"),
-				api.shelfLocations.list(),
+				api.storage.list(),
 				api.batches.list(),
 			]);
 		setProducts(productRows);
 		setUoms(uomRows);
 		setBagQuantities(bagRows);
-		setLocations(
-			locationRows.filter(
+		setWarehouses(
+			(warehouseRows || []).filter(
 				(row: any) =>
 					row.is_active == null ||
 					row.is_active === true ||
@@ -87,18 +205,22 @@ export default function QCBatches() {
 				i === index ? { ...line, ...patch } : line,
 			),
 		);
-	const selectSharedLocation = (id: string) => {
-		setSharedLocationId(id);
-		setLines((current) =>
-			current.map((line) => ({ ...line, shelfLocationId: id })),
-		);
-	};
+	const availableLocationCount = warehouses.reduce(
+		(total, warehouse) =>
+			total +
+			(warehouse.racks || []).reduce(
+				(rackTotal, rack) => rackTotal + (rack.cells || []).length,
+				0,
+			),
+		0,
+	);
 
 	const canCreate = useMemo(
 		() =>
 			lines.length > 0 &&
-			locations.length > 0 &&
-			new Set(lines.map((line) => line.productId).filter(Boolean)).size === lines.filter((line) => line.productId).length &&
+			availableLocationCount > 0 &&
+			new Set(lines.map((line) => line.productId).filter(Boolean))
+				.size === lines.filter((line) => line.productId).length &&
 			lines.every((line) => {
 				const product = products.find(
 					(row) => String(row.id) === line.productId,
@@ -107,53 +229,97 @@ export default function QCBatches() {
 					line.productId &&
 					getUom(product) !== "UOM not set" &&
 					line.shelfLocationId &&
+					!warehouses
+						.flatMap((warehouse) => warehouse.racks || [])
+						.flatMap((rack) => rack.cells || [])
+						.find(
+							(cell) =>
+								String(cell.shelf_location_id) ===
+								line.shelfLocationId,
+						)?.occupied &&
 					Number.isInteger(Number(line.quantity)) &&
 					Number(line.quantity) > 0 &&
 					Number(line.quantity) <= 1000
 				);
-			}),
-		[lines, products, uoms, bagQuantities, locations],
+			}) &&
+			new Set(lines.map((line) => line.shelfLocationId).filter(Boolean))
+				.size === lines.length,
+		[
+			lines,
+			products,
+			uoms,
+			bagQuantities,
+			availableLocationCount,
+			warehouses,
+		],
 	);
 
 	const create = async (event: React.FormEvent) => {
 		event.preventDefault();
 		if (busy || !canCreate) return;
-		setBusy(true);
 		setError("");
 		setMessage("");
+		setBusy(true);
+		let printerName: string;
+		let labelSize = { widthMm: 60, heightMm: 64 };
+		try {
+			try {
+				labelSize = await api.auth.printerLabelSize();
+			} catch {
+				// Use the application default label size when tenant dimensions are unavailable.
+			}
+			printerName = await prepareDirectQrPrinter();
+		} catch (printerError: any) {
+			setError(
+				printerError.message ||
+					"Direct printer unavailable. No batch was created.",
+			);
+			setBusy(false);
+			return;
+		}
 		try {
 			const result = await api.batches.createGroup({
 				items: lines.map((line) => {
-				const product = products.find(
-					(row) => String(row.id) === line.productId,
-				);
-				return {
-					product_id: line.productId,
-					quantity: Number(line.quantity),
-					uom: getUom(product),
-					shelf_location_id: line.shelfLocationId,
-					unit_price: Number(product?.price || 0),
-				};
+					const product = products.find(
+						(row) => String(row.id) === line.productId,
+					);
+					return {
+						product_id: line.productId,
+						quantity: Number(line.quantity),
+						uom: getUom(product),
+						shelf_location_id: line.shelfLocationId,
+						unit_price: Number(product?.price || 0),
+					};
 				}),
 			});
 			const allLabels = result.labels;
 			try {
-				await printQrLabels(allLabels, {
-					id: result.id,
-					job_code: result.batch_number,
-					product_name: `Batch ${result.batch_number}`,
-					product_sku: "MULTI",
-					quantity: allLabels.length,
-				});
+				await printQrLabelsDirect(
+					allLabels,
+					{
+						id: result.id,
+						job_code: result.batch_number,
+						product_name: `Batch ${result.batch_number}`,
+						product_sku: "MULTI",
+						quantity: allLabels.length,
+					},
+					labelSize,
+					printerName,
+					(sent, total, status) =>
+						setMessage(
+							status ||
+								`Sending QR labels to ${printerName}: ${sent} / ${total} queued…`,
+						),
+				);
 				setMessage(
-					`Created 1 batch with ${result.product_count} product${result.product_count === 1 ? "" : "s"} and sent ${allLabels.length} QR labels to print.`,
+					`Created 1 batch with ${result.product_count} product${result.product_count === 1 ? "" : "s"}. Sent ${allLabels.length} fixed-size QR image labels to the ${printerName} print queue.`,
 				);
 			} catch (printError: any) {
 				setMessage(
-					`Created 1 batch with ${result.product_count} product${result.product_count === 1 ? "" : "s"}. The print window could not open: ${printError.message || "allow pop-ups and request a reprint from an administrator if needed."}`,
+					`Created 1 batch with ${result.product_count} product${result.product_count === 1 ? "" : "s"}, but the direct print could not be sent. Request a reprint from an administrator. (${printError.message || "Printer unavailable"})`,
 				);
 			}
-			setLines([newLine(useSharedLocation, sharedLocationId)]);
+			setLines([newLine()]);
 			setShowCreateForm(false);
 			await reload();
 		} catch (err: any) {
@@ -179,7 +345,9 @@ export default function QCBatches() {
 	const groupedBatches = useMemo(() => {
 		const groups = new Map<string, any>();
 		for (const batch of batches) {
-			const key = String(batch.parent_batch_number ? batch.batch_group_id : batch.id);
+			const key = String(
+				batch.parent_batch_number ? batch.batch_group_id : batch.id,
+			);
 			const group = groups.get(key) || {
 				...batch,
 				id: key,
@@ -188,7 +356,10 @@ export default function QCBatches() {
 				quantity_total: 0,
 				qr_count_total: 0,
 			};
-			group.product_lines.push({ ...batch, product_name: batch.product_name || "Product" });
+			group.product_lines.push({
+				...batch,
+				product_name: batch.product_name || "Product",
+			});
 			group.quantity_total += Number(batch.quantity || 0);
 			group.qr_count_total += Number(batch.qr_count || 0);
 			groups.set(key, group);
@@ -205,7 +376,15 @@ export default function QCBatches() {
 			String(batch.product_name || "")
 				.toLowerCase()
 				.includes(query) ||
-			batch.product_lines.some((line: any) => String(line.product_name || "").toLowerCase().includes(query) || String(line.product_sku || "").toLowerCase().includes(query))
+			batch.product_lines.some(
+				(line: any) =>
+					String(line.product_name || "")
+						.toLowerCase()
+						.includes(query) ||
+					String(line.product_sku || "")
+						.toLowerCase()
+						.includes(query),
+			)
 		);
 	});
 
@@ -221,7 +400,8 @@ export default function QCBatches() {
 							Stock Batches
 						</h1>
 						<p className="mt-1 text-sm text-slate-500 sm:text-base">
-							Create one stock batch with multiple products and print its QR labels.
+							Create one stock batch with multiple products and
+							print its QR labels.
 						</p>
 					</div>
 				</div>
@@ -300,15 +480,39 @@ export default function QCBatches() {
 							{filteredBatches.map((batch) => (
 								<tr key={batch.id}>
 									<td className="font-mono text-xs font-bold">
-												{batch.batch_number}
+										{batch.batch_number}
 									</td>
 									<td className="font-semibold text-slate-800">
 										<div className="space-y-1.5">
-											{batch.product_lines.map((line: any) => <div key={line.id} className="flex flex-wrap items-center gap-x-2 text-sm"><span>{line.product_name}</span><span className="font-mono text-xs text-slate-400">{line.product_sku}</span><span className="font-semibold text-slate-600">{line.uom} × {line.quantity}</span><span className="text-xs text-slate-400">{line.location_code || line.storage_location || "No location"}</span></div>)}
+											{batch.product_lines.map(
+												(line: any) => (
+													<div
+														key={line.id}
+														className="flex flex-wrap items-center gap-x-2 text-sm"
+													>
+														<span>
+															{line.product_name}
+														</span>
+														<span className="font-mono text-xs text-slate-400">
+															{line.product_sku}
+														</span>
+														<span className="font-semibold text-slate-600">
+															{line.uom} ×{" "}
+															{line.quantity}
+														</span>
+														<span className="text-xs text-slate-400">
+															{line.location_code ||
+																line.storage_location ||
+																"No location"}
+														</span>
+													</div>
+												),
+											)}
 										</div>
 									</td>
 									<td className="font-semibold">
-										{batch.quantity_total.toLocaleString()} units
+										{batch.quantity_total.toLocaleString()}{" "}
+										units
 									</td>
 									<td>
 										<span className="badge badge-success">
@@ -376,7 +580,15 @@ export default function QCBatches() {
 												Create a batch
 											</h2>
 											<p className="mt-1.5 max-w-xl text-sm text-slate-500 sm:text-base">
-												Build your batch by adding products, setting quantities, and choosing storage locations.
+												Build your batch by adding
+												products, setting quantities,
+												and choosing storage locations.
+											</p>
+											<p className="mt-1 text-xs font-semibold text-slate-500">
+												Initial QR labels print once.
+												For missing or damaged labels,
+												request an admin-approved
+												reprint.
 											</p>
 										</div>
 									</div>
@@ -390,96 +602,13 @@ export default function QCBatches() {
 										<X size={20} />
 									</button>
 								</div>
-								<div className="flex w-full items-center justify-between gap-5 self-end rounded-2xl bg-slate-50 px-4 py-3 sm:w-auto sm:min-w-80 lg:mr-8">
-									<div>
-										<p className="text-sm font-bold text-slate-800">
-											Same location for all products
-										</p>
-										<p className="mt-0.5 text-xs font-medium text-slate-500">
-											Use one shelf across this batch.
-										</p>
-									</div>
-									<button
-										type="button"
-										role="switch"
-										aria-checked={useSharedLocation}
-										aria-label="Use one location for all products"
-										onClick={() => {
-											const next = !useSharedLocation;
-											setUseSharedLocation(next);
-											if (next && sharedLocationId)
-												setLines((current) =>
-													current.map((line) => ({
-														...line,
-														shelfLocationId:
-															sharedLocationId,
-													})),
-												);
-										}}
-										className={`relative h-6 w-11 shrink-0 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${useSharedLocation ? "bg-primary-600" : "bg-surface-300"}`}
-									>
-										<span
-											className={`block h-5 w-5 rounded-full bg-white shadow transition-transform ${useSharedLocation ? "translate-x-5" : "translate-x-0.5"}`}
-										/>
-									</button>
-								</div>
 							</div>
-
-							{useSharedLocation && (
-							<div className="bg-emerald-50/70 px-5 py-4 sm:px-8">
-								<div className="grid gap-3 sm:grid-cols-[190px_1fr] sm:items-center">
-										<div className="flex flex-wrap items-center gap-2 text-sm font-bold text-emerald-800">
-											<MapPin size={17} /> Shared shelf
-											<span className="basis-full pl-6 text-xs font-normal text-emerald-700">Applied to all products</span>
-										</div>
-										<div>
-											<label
-												className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600"
-												htmlFor="shared-shelf"
-											>
-												Location applied to every
-												product
-											</label>
-											<select
-												id="shared-shelf"
-												className="input border-transparent bg-white shadow-sm focus:border-emerald-300"
-												value={sharedLocationId}
-												required
-												onChange={(event) =>
-													selectSharedLocation(
-														event.target.value,
-													)
-												}
-											>
-												<option value="">
-													Choose a location
-												</option>
-												{locations.map((row) => (
-													<option
-														key={row.id}
-														value={row.id}
-													>
-														{row.location_code}
-														{row.description
-															? ` · ${row.description}`
-															: ""}
-													</option>
-												))}
-											</select>
-										</div>
-									</div>
-								</div>
-							)}
 
 							<div className="space-y-1 px-5 py-4 sm:px-8 sm:py-5">
 								<div className="mb-1 hidden grid-cols-[minmax(0,1fr)_150px_1fr_40px] gap-5 px-1 pb-1 text-[11px] font-extrabold uppercase tracking-[0.14em] text-slate-400 sm:grid">
 									<span>Product</span>
 									<span>UOM x Quantity</span>
-									<span>
-										{useSharedLocation
-											? "Shared location"
-											: "Shelf location"}
-									</span>
+									<span>Storage location</span>
 									<span />
 								</div>
 								{lines.map((line, index) => {
@@ -534,101 +663,155 @@ export default function QCBatches() {
 												<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
 													Quantity
 												</label>
-								<div className="space-y-1.5">
-									<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Unit: <span className="normal-case tracking-normal text-slate-700">{product ? getUom(product) : "Select product"}</span></div>
-									<div className="flex items-center gap-1.5">
-										<button type="button" className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Decrease quantity for product ${index + 1}`} disabled={Number(line.quantity) <= 1} onClick={() => updateLine(index, { quantity: String(Math.max(1, Number(line.quantity || 1) - 1)) })}><Minus size={14} /></button>
-										<input
-											className="input h-10 min-w-0 flex-1 border-slate-200 bg-white text-center font-bold text-slate-900"
-											type="text"
-											inputMode="numeric"
-											pattern="[0-9]*"
-											value={line.quantity}
-											required
-											onChange={(event) => updateLine(index, { quantity: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })}
-											onBlur={() => updateLine(index, { quantity: String(Math.min(1000, Math.max(1, Number(line.quantity) || 1))) })}
-										/>
-										<button type="button" className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Increase quantity for product ${index + 1}`} disabled={Number(line.quantity) >= 1000} onClick={() => updateLine(index, { quantity: String(Math.min(1000, Number(line.quantity || 1) + 1)) })}><Plus size={14} /></button>
-									</div>
-								</div>
-											</div>
-											<div>
-												{useSharedLocation ? (
-													<div>
-														<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
-															Shelf location
-														</label>
-															<div className="flex h-10 items-center gap-2 rounded-xl bg-emerald-50 px-3 text-sm font-bold text-emerald-800">
-															<MapPin size={15} />
-															<span className="truncate">
-																{locations.find(
-																	(row) =>
-																		String(
-																			row.id,
-																		) ===
-																		line.shelfLocationId,
-																)
-																	?.location_code ||
-																	"Choose shared shelf above"}
-															</span>
-															<Check
-																size={15}
-																className="ml-auto shrink-0"
-															/>
-														</div>
+												<div className="space-y-1.5">
+													<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+														Unit:{" "}
+														<span className="normal-case tracking-normal text-slate-700">
+															{product
+																? getUom(
+																		product,
+																	)
+																: "Select product"}
+														</span>
 													</div>
-												) : (
-													<>
-														<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
-															Shelf location
-														</label>
-														<select
-															className="input border-slate-200 bg-slate-50/50 font-semibold text-slate-800 focus:bg-white"
+													<div className="flex items-center gap-1.5">
+														<button
+															type="button"
+															className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
+															aria-label={`Decrease quantity for product ${index + 1}`}
+															disabled={
+																Number(
+																	line.quantity,
+																) <= 1
+															}
+															onClick={() =>
+																updateLine(
+																	index,
+																	{
+																		quantity:
+																			String(
+																				Math.max(
+																					1,
+																					Number(
+																						line.quantity ||
+																							1,
+																					) -
+																						1,
+																				),
+																			),
+																	},
+																)
+															}
+														>
+															<Minus size={14} />
+														</button>
+														<input
+															className="input h-10 min-w-0 flex-1 border-slate-200 bg-white text-center font-bold text-slate-900"
+															type="text"
+															inputMode="numeric"
+															pattern="[0-9]*"
 															value={
-																line.shelfLocationId
+																line.quantity
 															}
 															required
 															onChange={(event) =>
 																updateLine(
 																	index,
 																	{
-																		shelfLocationId:
-																			event
-																				.target
-																				.value,
+																		quantity:
+																			event.target.value
+																				.replace(
+																					/[^0-9]/g,
+																					"",
+																				)
+																				.slice(
+																					0,
+																					4,
+																				),
+																	},
+																)
+															}
+															onBlur={() =>
+																updateLine(
+																	index,
+																	{
+																		quantity:
+																			String(
+																				Math.min(
+																					1000,
+																					Math.max(
+																						1,
+																						Number(
+																							line.quantity,
+																						) ||
+																							1,
+																					),
+																				),
+																			),
+																	},
+																)
+															}
+														/>
+														<button
+															type="button"
+															className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
+															aria-label={`Increase quantity for product ${index + 1}`}
+															disabled={
+																Number(
+																	line.quantity,
+																) >= 1000
+															}
+															onClick={() =>
+																updateLine(
+																	index,
+																	{
+																		quantity:
+																			String(
+																				Math.min(
+																					1000,
+																					Number(
+																						line.quantity ||
+																							1,
+																					) +
+																						1,
+																				),
+																			),
 																	},
 																)
 															}
 														>
-															<option value="">
-																Select shelf
-																location
-															</option>
-															{locations.map(
-																(row) => (
-																	<option
-																		key={
-																			row.id
-																		}
-																		value={
-																			row.id
-																		}
-																	>
-																		{
-																			row.location_code
-																		}
-																		{row.description
-																			? ` · ${row.description}`
-																			: ""}
-																	</option>
-																),
-															)}
-														</select>
-													</>
-												)}
+															<Plus size={14} />
+														</button>
+													</div>
+												</div>
+											</div>
+											<div>
+												<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
+													Storage location
+												</label>
+												<LocationCascade
+													warehouses={warehouses}
+													value={line.shelfLocationId}
+													reservedLocationIds={lines
+														.filter(
+															(_, rowIndex) =>
+																rowIndex !==
+																index,
+														)
+														.map(
+															(row) =>
+																row.shelfLocationId,
+														)}
+													onChange={(value) =>
+														updateLine(index, {
+															shelfLocationId:
+																value,
+														})
+													}
+												/>
 											</div>
 											<button
-														className="btn-ghost rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+												className="btn-ghost rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
 												type="button"
 												aria-label={`Remove product row ${index + 1}`}
 												disabled={lines.length === 1}
@@ -646,10 +829,11 @@ export default function QCBatches() {
 										</div>
 									);
 								})}
-								{locations.length === 0 && loaded && (
+								{availableLocationCount === 0 && loaded && (
 									<p className="text-sm text-rose-600">
-										Add an active shelf location in Masters
-										before creating stock batches.
+										Add a warehouse, rack, and shelf
+										position under Warehouse Management
+										before creating a batch.
 									</p>
 								)}
 								<div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
@@ -659,10 +843,7 @@ export default function QCBatches() {
 										onClick={() =>
 											setLines((current) => [
 												...current,
-												newLine(
-													useSharedLocation,
-													sharedLocationId,
-												),
+												newLine(),
 											])
 										}
 									>

@@ -431,7 +431,7 @@ export function DispatchOrdersScreen() {
                             Product / Quantity
                           </AppText>
                           <AppText variant="bodyDark" className="font-manrope-bold text-[12px]">
-                            {order.product_name || 'Product'} · {order.quantity ?? '-'} {order.uom || 'units'}
+                            {order.product_name || 'Product'} · {order.quantity ?? '-'} x {order.uom || 'units'}
                           </AppText>
                         </View>
                       </View>
@@ -529,7 +529,7 @@ export function DispatchOrdersScreen() {
             <SheetInfoRow
               icon={Package}
               title="Product & Batch"
-              subtitle={`${selected.product_name || 'Product'} · Batch ${selected.batch_number || 'N/A'} (${selected.quantity ?? '-'} ${selected.uom || 'units'})`}
+              subtitle={`${selected.product_name || 'Product'} · Batch ${selected.batch_number || 'N/A'} (${selected.quantity ?? '-'} x ${selected.uom || 'units'})`}
             />
             <SheetInfoRow
               icon={Truck}
@@ -675,7 +675,7 @@ export function DispatchOrdersScreen() {
                             {b.product_name}
                           </AppText>
                           <AppText variant="tiny" className="mt-1 text-[9.5px] text-[#71829B]">
-                            Qty: {b.quantity} {b.uom || 'units'}
+                            Qty: {b.quantity} x {b.uom || 'units'}
                           </AppText>
                         </Pressable>
                       );
@@ -817,7 +817,7 @@ export function DispatchOrdersScreen() {
                       {item.product_name || 'Product'}
                     </AppText>
                     <AppText className="text-[12px] font-manrope-bold text-navy">
-                      {item.quantity ?? '-'} {item.uom || 'units'}
+                      {item.quantity ?? '-'} x {item.uom || 'units'}
                     </AppText>
                   </View>
                   <AppText variant="caption" className="mt-0.5 text-[11px]">

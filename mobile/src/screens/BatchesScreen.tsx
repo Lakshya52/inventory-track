@@ -1442,7 +1442,7 @@ function BatchCard({
           <Text style={styles.batchNumber} numberOfLines={2}>{batch.batch_number}</Text>
         </View>
         <View style={styles.quantityPill}>
-          <Text style={styles.quantityValue}>{batch.quantity} {batch.uom || 'units'}</Text>
+          <Text style={styles.quantityValue}>{batch.quantity} x {batch.uom || 'units'}</Text>
           <Text style={styles.quantityLabel}>Quantity</Text>
         </View>
       </View>

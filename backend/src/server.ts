@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './config/env';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
@@ -15,6 +15,7 @@ import activityRoutes from './routes/activity';
 import userRoutes, { profileRoutes } from './routes/users';
 import importRoutes from './routes/import';
 import shelfLocationRoutes from './routes/shelfLocations';
+import storageRoutes from './routes/storage';
 import clientRoutes from './routes/clients';
 import vendorRoutes from './routes/vendors';
 import masterRoutes from './routes/masters';
@@ -22,10 +23,12 @@ import reportRoutes from './routes/reports';
 import syncRoutes from './routes/sync';
 import productionRoutes from './routes/production';
 import loadingSessionRoutes from './routes/loadingSessions';
+import printerRoutes from './routes/printer';
 import { errorHandler } from './middleware/errorHandler';
 import { rateLimit } from './middleware/rateLimit';
 import { ensureAdminSchema } from './config/schema';
 import { checkDatabase, closePool } from './config/database';
+import { qzSigningStatus } from './controllers/printerController';
 import { getUpload } from './controllers/uploadController';
 import { uploadTenantLogo } from './controllers/tenantUploadController';
 import { getCurrentTenantLogo } from './controllers/tenantController';
@@ -98,6 +101,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/products/import', importRoutes);
 app.use('/api/shelf-locations', shelfLocationRoutes);
+app.use('/api/storage', storageRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/masters', masterRoutes);
@@ -105,6 +109,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/production', productionRoutes);
 app.use('/api/loading-sessions', loadingSessionRoutes);
+app.use('/api/printer', printerRoutes);
 
 app.get('/api/health', async (_req, res) => {
   const db = await checkDatabase();
@@ -122,6 +127,7 @@ let server: ReturnType<typeof app.listen> | null = null;
 
 async function start(): Promise<void> {
   await ensureAdminSchema();
+  console.log(qzSigningStatus());
   server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Backend running on http://0.0.0.0:${PORT}`);
   });

@@ -47,6 +47,35 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  printer: {
+    certificate: async (): Promise<string> => {
+      const headers: Record<string, string> = {};
+      const authToken = token();
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const response = await fetch(`${BASE_URL}/printer/certificate`, { headers, cache: 'no-store' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || 'Direct printer signing is unavailable.');
+      }
+      return response.text();
+    },
+    sign: async (request: string): Promise<string> => {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const authToken = token();
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const response = await fetch(`${BASE_URL}/printer/sign`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ request }),
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || 'Could not authorize the direct printer job.');
+      }
+      return response.text();
+    },
+  },
   auth: {
     register: (data: { name: string; companyName: string; mobile: string; email: string; password: string }) =>
       request<{ token: string; user: any; tenant: any }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
@@ -73,6 +102,9 @@ export const api = {
     tenant: () => request<Tenant>('/auth/tenant'),
     updateTenant: (data: Pick<Tenant, 'name' | 'email' | 'phone' | 'logoUrl'>) =>
       request<Tenant>('/auth/tenant', { method: 'PUT', body: JSON.stringify(data) }),
+    printerLabelSize: () => request<{ widthMm: number; heightMm: number }>('/auth/tenant/printer-label-size'),
+    updatePrinterLabelSize: (data: { widthMm: number; heightMm: number }) =>
+      request<{ widthMm: number; heightMm: number }>('/auth/tenant/printer-label-size', { method: 'PUT', body: JSON.stringify(data) }),
     refresh: (refreshToken: string) =>
       request<any>('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
     logout: (refreshToken?: string) =>
@@ -230,7 +262,7 @@ export const api = {
       create: (data: { product_id: EntityId; quantity: number }) =>
         request<any>('/qc/qr-jobs', { method: 'POST', body: JSON.stringify(data) }),
       get: (id: EntityId) => request<any>(`/qc/qr-jobs/${idPath(id)}`),
-      reprint: (id: EntityId, data: { quantity?: number; label_ids?: EntityId[] }) =>
+        reprint: (id: EntityId, data: { quantity?: number; label_ids?: EntityId[]; approved_request_id?: EntityId }) =>
         request<any>(`/qc/qr-jobs/${idPath(id)}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
     requestReprint: (id: EntityId, label_ids: EntityId[]) =>
       request<any>(`/qc/qr-jobs/${idPath(id)}/reprint-request`, { method: 'POST', body: JSON.stringify({ label_ids }) }),
@@ -386,6 +418,16 @@ export const api = {
       request<any>('/shelf-locations', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: EntityId, data: any) => request<any>(`/shelf-locations/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: EntityId) => request<any>(`/shelf-locations/${idPath(id)}`, { method: 'DELETE' }),
+  },
+  storage: {
+    list: () => request<any[]>('/storage'),
+    inventory: () => request<any[]>('/storage/inventory'),
+    get: (id: EntityId) => request<any>(`/storage/${idPath(id)}`),
+    create: (data: { name: string; capacity: number }) => request<any>('/storage', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: EntityId, data: { name: string; capacity: number }) => request<any>(`/storage/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    createRack: (id: EntityId, data: { name: string; rows: number; columns: number }) => request<any>(`/storage/${idPath(id)}/racks`, { method: 'POST', body: JSON.stringify(data) }),
+    updateRack: (id: EntityId, rackId: EntityId, data: { name: string; rows: number; columns: number }) => request<any>(`/storage/${idPath(id)}/racks/${idPath(rackId)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    removeRack: (id: EntityId, rackId: EntityId) => request<any>(`/storage/${idPath(id)}/racks/${idPath(rackId)}`, { method: 'DELETE' }),
   },
   clients: {
     list: () => request<any[]>('/clients'),

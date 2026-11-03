@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { randomBytes, randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
 import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { contains, EntityId, mapByIds } from '../services/queryService';
 
@@ -136,7 +136,8 @@ export async function create(req: Request, res: Response): Promise<void> {
     const labelDocuments = Array.from({ length: quantity }, (_, index) => ({
       print_job_id: jobId,
       batch_id: batchId,
-      qr_value: `QR:${randomUUID()}`,
+      // Printed QR payload: job code + unit serial, e.g. QRJ-20261103-07BDD3-0001.
+      qr_value: `${jobCode}-${String(index + 1).padStart(4, '0')}`,
       serial_no: index + 1,
       print_count: 1,
       last_printed_at: now(),
@@ -184,12 +185,21 @@ export async function list(req: Request, res: Response): Promise<void> {
 
   const filter: Record<string, any> = {};
   if (q) {
-    const products = await ctx.find('products', {
-      $or: [{ name: contains(q) }, { sku: contains(q) }],
-    }, { projection: { id: 1 } });
+    // Only job codes and label QR values are searchable. Product names are
+    // intentionally excluded: one product can own thousands of QR labels, so a
+    // name match floods the list instead of finding the scanned label.
+    const qrLabels = q.length >= 8
+      ? await ctx.find('qr_labels', { qr_value: contains(q) }, {
+          limit: 50,
+          projection: { print_job_id: 1 },
+        })
+      : [];
+    const qrJobIds = qrLabels
+      .map((label) => label.print_job_id)
+      .filter((id) => id !== null && id !== undefined);
     filter.$or = [
-      { product_id: { $in: products.map((product) => idKey(product.id)) } },
       { job_code: contains(q) },
+      ...(qrJobIds.length > 0 ? [{ id: { $in: qrJobIds.map(idKey) } }] : []),
     ];
   }
 
@@ -212,6 +222,10 @@ export async function getById(req: Request, res: Response): Promise<void> {
     res.status(404).json({ error: 'QR label job not found' });
     return;
   }
+  if (req.user?.role === 'QC') {
+    res.json({ ...detail, labels: detail.labels.map(({ qr_value, ...label }) => label) });
+    return;
+  }
   res.json(detail);
 }
 
@@ -225,13 +239,36 @@ export async function reprint(req: Request, res: Response): Promise<void> {
   const requestedIds: EntityId[] = Array.isArray(req.body.label_ids)
     ? req.body.label_ids.filter((value: any) => isValidId(value))
     : [];
+  const approvedRequestId = req.body.approved_request_id ? String(req.body.approved_request_id) : '';
+  if (req.user?.role === 'QC' && !approvedRequestId) {
+    res.status(403).json({ error: 'An administrator-approved reprint request is required.' });
+    return;
+  }
 
   const result = await withTransaction(async (ctx: DbContext) => {
+    let approvedRequest: Record<string, any> | null = null;
+    if (approvedRequestId) {
+      approvedRequest = await ctx.findOne('qr_reprint_requests', {
+        id: approvedRequestId,
+        tenant_id: req.user!.tenantId,
+        qr_job_id: id,
+        status: 'APPROVED',
+        ...(req.user?.role === 'QC' ? { requested_by: req.user.userId } : {}),
+      });
+      if (!approvedRequest) return { forbidden: true as const };
+    }
     const job = await ctx.findOne('qr_print_jobs', { id }, { projection: { _id: 0 } });
     if (!job) return null;
 
     let labels: Record<string, any>[];
-    if (requestedIds.length > 0) {
+    if (approvedRequest) {
+      const approvedIds = Array.isArray(approvedRequest.label_ids) ? approvedRequest.label_ids : [];
+      labels = approvedIds.length ? await ctx.find('qr_labels', {
+        print_job_id: id,
+        id: { $in: approvedIds },
+      }, { sort: { serial_no: 1 }, projection: { _id: 0 } }) : [];
+      if (labels.length !== approvedIds.length) return { empty: true as const };
+    } else if (requestedIds.length > 0) {
       labels = await ctx.find('qr_labels', {
         print_job_id: id,
         id: { $in: requestedIds },
@@ -252,7 +289,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
 
     if (labels.length === 0) return { empty: true as const };
 
-    for (const label of labels) {
+    if (!approvedRequest) for (const label of labels) {
       await ctx.updateOne('qr_labels', { id: label.id }, {
         $inc: { print_count: 1 },
         $set: { last_printed_at: now() },
@@ -273,13 +310,18 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     res.status(404).json({ error: 'QR label job not found' });
     return;
   }
+  if ('forbidden' in result) {
+    res.status(403).json({ error: 'This approved reprint request is unavailable to your account.' });
+    return;
+  }
   if ('empty' in result) {
     res.status(400).json({ error: 'No labels were selected for reprint' });
     return;
   }
   const detail = await jobDetail(result.jobId);
+  const selectedIdSet = new Set(result.selectedIds.map(idKey));
   res.json({
-    ...(detail || {}),
+    ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(idKey(label.id))) } : {}),
     selected_ids: result.selectedIds,
     selected_count: result.selectedIds.length,
   });

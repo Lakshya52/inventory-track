@@ -12,6 +12,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   if (items.some((item) => !Number.isInteger(item.product_id) || item.product_id < 1 || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000 || !item.uom || !Number.isInteger(item.shelf_location_id) || item.shelf_location_id < 1)) { res.status(400).json({ error: 'Each product needs a valid quantity, UOM, and active shelf location' }); return; }
   if (items.reduce((sum, item) => sum + item.quantity, 0) > 10_000) { res.status(400).json({ error: 'A single batch can contain no more than 10,000 QR-labelled units' }); return; }
   if (new Set(items.map((item) => item.product_id)).size !== items.length) { res.status(400).json({ error: 'Each product can appear only once in a batch' }); return; }
+  if (new Set(items.map((item) => item.shelf_location_id)).size !== items.length) { res.status(400).json({ error: 'Each product in a batch must use a different rack position' }); return; }
 
   const products = new Map<number, any>();
   for (const item of items) {
@@ -27,6 +28,36 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   const batchNumber = `BATCH-${dateStamp}-${randomBytes(3).toString('hex').toUpperCase()}`;
   try {
     const created = await withTransaction(async (conn) => {
+      const [rackRows] = await conn.execute<RowDataPacket[]>('SELECT warehouse_id, cells FROM storage_racks WHERE tenant_id = ? FOR UPDATE', [req.user!.tenantId]);
+      const selectedLocationIds = items.map((item) => String(item.shelf_location_id));
+      const selectedPlaceholders = selectedLocationIds.map(() => '?').join(',');
+      const [selectedStock] = selectedLocationIds.length ? await conn.execute<RowDataPacket[]>(`SELECT shelf_location_id, quantity, COALESCE(dispatched_quantity, 0) AS dispatched_quantity, COALESCE(recalled_quantity, 0) AS recalled_quantity FROM batches WHERE tenant_id = ? AND shelf_location_id IN (${selectedPlaceholders}) AND status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED') FOR UPDATE`, [req.user!.tenantId, ...selectedLocationIds]) : [[] as any, []] as any;
+      const occupiedLocation = selectedStock.find((batch: any) => Number(batch.quantity || 0) > Number(batch.dispatched_quantity || 0) + Number(batch.recalled_quantity || 0));
+      if (occupiedLocation) {
+        const location = products.get(items.find((item) => String(item.shelf_location_id) === String(occupiedLocation.shelf_location_id))?.product_id)?.location_code || occupiedLocation.shelf_location_id;
+        throw Object.assign(new Error(`Rack position ${location} is already in use. Refresh storage and choose an empty position.`), { statusCode: 409 });
+      }
+      const requestedByLocation = new Map<string, number>();
+      for (const item of items) requestedByLocation.set(String(item.shelf_location_id), (requestedByLocation.get(String(item.shelf_location_id)) || 0) + item.quantity);
+      const requestedByWarehouse = new Map<string, number>();
+      for (const rack of rackRows) {
+        let cells: any[] = [];
+        try { cells = Array.isArray(rack.cells) ? rack.cells : JSON.parse(String(rack.cells || '[]')); } catch { cells = []; }
+        const requested = cells.reduce((sum: number, cell: any) => sum + (requestedByLocation.get(String(cell.shelf_location_id)) || 0), 0);
+        if (requested > 0) requestedByWarehouse.set(String(rack.warehouse_id), (requestedByWarehouse.get(String(rack.warehouse_id)) || 0) + requested);
+      }
+      for (const [warehouseId, requested] of requestedByWarehouse) {
+        const [warehouseRows] = await conn.execute<RowDataPacket[]>('SELECT id, name, capacity FROM warehouses WHERE id = ? AND tenant_id = ? FOR UPDATE', [warehouseId, req.user!.tenantId]);
+        const warehouse = warehouseRows[0];
+        if (!warehouse) continue;
+        const locationIds = rackRows.filter(row => String(row.warehouse_id) === warehouseId).flatMap(row => {
+          try { return (Array.isArray(row.cells) ? row.cells : JSON.parse(String(row.cells || '[]'))).map((cell: any) => String(cell.shelf_location_id)); } catch { return []; }
+        });
+        const placeholders = locationIds.map(() => '?').join(',');
+        const [stockRows] = locationIds.length ? await conn.execute<RowDataPacket[]>(`SELECT COALESCE(SUM(GREATEST(quantity - COALESCE(dispatched_quantity, 0) - COALESCE(recalled_quantity, 0), 0)), 0) AS occupied FROM batches WHERE tenant_id = ? AND shelf_location_id IN (${placeholders}) AND status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED')`, [req.user!.tenantId, ...locationIds]) : [[{ occupied: 0 }], []] as any;
+        const current = Number(stockRows[0]?.occupied || 0);
+        if (current + requested > Number(warehouse.capacity)) throw Object.assign(new Error(`${warehouse.name} has only ${Math.max(0, Number(warehouse.capacity) - current)} units of capacity remaining.`), { statusCode: 409 });
+      }
       await conn.execute('INSERT INTO batch_groups (group_key, batch_number, tenant_id, created_by, product_count, total_quantity, status) VALUES (?, ?, ?, ?, ?, ?, \'QC_PASSED\')', [groupId, batchNumber, req.user!.tenantId, req.user!.userId, items.length, items.reduce((sum, item) => sum + item.quantity, 0)]);
       const lines: any[] = [];
       const allLabels: any[] = [];
@@ -39,7 +70,11 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         const jobCode = `QRJ-${dateStamp}-${randomBytes(3).toString('hex').toUpperCase()}`;
         const [jobInsert] = await conn.execute<any>('INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role) VALUES (?, ?, ?, ?, ?)', [jobCode, item.product_id, item.quantity, req.user!.userId, req.user!.role]);
         const jobId = Number(jobInsert.insertId);
-        const labels = Array.from({ length: item.quantity }, (_, serial) => ({ qr_value: `QR:${randomUUID()}`, serial_no: serial + 1 }));
+        const labels = Array.from({ length: item.quantity }, (_, serial) => ({
+          // Printed QR payload: job code + unit serial, e.g. QRJ-20261103-07BDD3-0001.
+          qr_value: `${jobCode}-${String(serial + 1).padStart(4, '0')}`,
+          serial_no: serial + 1,
+        }));
         const values = labels.map(() => '(?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))').join(', ');
         await conn.execute(`INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at) VALUES ${values}`, labels.flatMap((label) => [jobId, batchId, label.qr_value, label.serial_no]));
         const [stored] = await conn.execute<RowDataPacket[]>('SELECT id, qr_value, serial_no FROM qr_labels WHERE print_job_id = ? ORDER BY serial_no', [jobId]);
@@ -55,6 +90,6 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     res.status(201).json({ id: groupId, batch_group_id: groupId, batch_number: batchNumber, product_count: items.length, total_quantity: created.allLabels.length, batches: created.lines, labels: created.allLabels, message: `Batch ${batchNumber} created with ${items.length} products.` });
   } catch (error: any) {
     console.error('Could not create product batch group', error);
-    res.status(500).json({ error: error?.message || 'Could not create the batch' });
+    res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not create the batch' });
   }
 }

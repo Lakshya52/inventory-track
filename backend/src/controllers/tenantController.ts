@@ -10,7 +10,7 @@ function tenantError(status: number, message: string): Error & { status: number 
 
 async function tenantForUser(tenantId: string | number): Promise<Record<string, any> | null> {
   if (useMongo) return (await getContext()).findOne('tenants', { id: tenantId });
-  const rows = await query<any[]>('SELECT id, name, email, phone, logo_url, logo_data, logo_mime_type, slug, updated_at FROM tenants WHERE id = ?', [tenantId]);
+  const rows = await query<any[]>('SELECT id, name, email, phone, logo_url, logo_data, logo_mime_type, printer_label_width_mm, printer_label_height_mm, slug, updated_at FROM tenants WHERE id = ?', [tenantId]);
   return rows[0] || null;
 }
 
@@ -19,6 +19,43 @@ export async function getCurrentTenant(req: Request, res: Response): Promise<voi
   const tenant = await tenantForUser(req.user.tenantId);
   if (!tenant) { res.status(404).json({ error: 'Organization not found' }); return; }
   res.json({ id: tenant.id, name: tenant.name, email: tenant.email, phone: tenant.phone, logoUrl: tenant.logo_url || null, slug: tenant.slug, updatedAt: tenant.updated_at || null });
+}
+
+const DEFAULT_PRINTER_LABEL_SIZE = { widthMm: 60, heightMm: 64 };
+
+export async function getPrinterLabelSize(req: Request, res: Response): Promise<void> {
+  if (!req.user) { res.status(401).json({ error: 'Authentication required' }); return; }
+  const tenant = await tenantForUser(req.user.tenantId);
+  if (!tenant) { res.status(404).json({ error: 'Organization not found' }); return; }
+  res.json({
+    widthMm: Number(tenant.printer_label_width_mm) || DEFAULT_PRINTER_LABEL_SIZE.widthMm,
+    heightMm: Number(tenant.printer_label_height_mm) || DEFAULT_PRINTER_LABEL_SIZE.heightMm,
+  });
+}
+
+export async function updatePrinterLabelSize(req: Request, res: Response): Promise<void> {
+  if (!req.user) { res.status(401).json({ error: 'Authentication required' }); return; }
+  if (req.user.role !== 'ADMIN') { res.status(403).json({ error: 'Only admins can change printer label size.' }); return; }
+  const widthMm = Number(req.body?.widthMm);
+  const heightMm = Number(req.body?.heightMm);
+  if (!Number.isInteger(widthMm) || widthMm < 30 || widthMm > 200 || !Number.isInteger(heightMm) || heightMm < 30 || heightMm > 250) {
+    res.status(400).json({ error: 'Label width must be 30–200 mm and height must be 30–250 mm.' });
+    return;
+  }
+  if (!(await tenantForUser(req.user.tenantId))) { res.status(404).json({ error: 'Organization not found' }); return; }
+  if (useMongo) {
+    await (await getContext()).updateOne(
+      'tenants',
+      { id: req.user.tenantId },
+      { $set: { printer_label_width_mm: widthMm, printer_label_height_mm: heightMm } },
+    );
+  } else {
+    await execute(
+      'UPDATE tenants SET printer_label_width_mm = ?, printer_label_height_mm = ? WHERE id = ?',
+      [widthMm, heightMm, req.user.tenantId],
+    );
+  }
+  res.json({ widthMm, heightMm });
 }
 
 export async function getCurrentTenantLogo(req: Request, res: Response): Promise<void> {

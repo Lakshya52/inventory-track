@@ -28,15 +28,18 @@ export async function createQrReprintRequest(req: Request, res: Response): Promi
 }
 
 export async function listQrReprintRequests(req: Request, res: Response): Promise<void> {
-  const status = String(req.query.status || 'PENDING').toUpperCase();
+  const status = String(req.query.status || (req.user?.role === 'QC' ? 'ALL' : 'PENDING')).toUpperCase();
+  const ownerFilter = req.user?.role === 'QC' ? { requested_by: req.user.userId } : {};
   if (useMongo) {
     const ctx = await getContext();
-    res.json(await ctx.find('qr_reprint_requests', { tenant_id: req.user!.tenantId, ...(status === 'ALL' ? {} : { status }) }, { sort: { requested_at: -1 }, limit: 100, projection: { _id: 0 } }));
+    res.json(await ctx.find('qr_reprint_requests', { tenant_id: req.user!.tenantId, ...ownerFilter, ...(status === 'ALL' ? {} : { status }) }, { sort: { requested_at: -1 }, limit: 100, projection: { _id: 0 } }));
     return;
   }
-  const rows = status === 'ALL'
-    ? await query<any[]>('SELECT * FROM qr_reprint_requests WHERE tenant_id = ? ORDER BY requested_at DESC LIMIT 100', [String(req.user!.tenantId)])
-    : await query<any[]>('SELECT * FROM qr_reprint_requests WHERE tenant_id = ? AND status = ? ORDER BY requested_at DESC LIMIT 100', [String(req.user!.tenantId), status]);
+  const where = [`tenant_id = ?`];
+  const params: any[] = [String(req.user!.tenantId)];
+  if (req.user?.role === 'QC') { where.push('requested_by = ?'); params.push(String(req.user.userId)); }
+  if (status !== 'ALL') { where.push('status = ?'); params.push(status); }
+  const rows = await query<any[]>(`SELECT * FROM qr_reprint_requests WHERE ${where.join(' AND ')} ORDER BY requested_at DESC LIMIT 100`, params);
   res.json(rows.map((row) => ({ ...row, label_ids: JSON.parse(row.label_ids || '[]') })));
 }
 
@@ -45,10 +48,24 @@ export async function completeQrReprintRequest(req: Request, res: Response): Pro
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid reprint request id.' }); return; }
   if (useMongo) {
     const ctx = await getContext();
-    const updated = await ctx.updateOne('qr_reprint_requests', { id, tenant_id: req.user!.tenantId, status: 'APPROVED' }, { $set: { status: 'FULFILLED', fulfilled_by: req.user!.userId, fulfilled_by_name: req.user!.name, fulfilled_at: new Date() } });
+    const request = await ctx.findOne('qr_reprint_requests', { id, tenant_id: req.user!.tenantId, status: 'APPROVED', ...(req.user?.role === 'QC' ? { requested_by: req.user.userId } : {}) });
+    if (!request) { res.status(404).json({ error: 'Approved reprint request not found.' }); return; }
+    const labelIds = Array.isArray(request.label_ids) ? request.label_ids : [];
+    for (const labelId of labelIds) await ctx.updateOne('qr_labels', { id: labelId, print_job_id: request.qr_job_id }, { $inc: { print_count: 1 }, $set: { last_printed_at: new Date() } });
+    const updated = await ctx.updateOne('qr_reprint_requests', { id, tenant_id: req.user!.tenantId, status: 'APPROVED', ...(req.user?.role === 'QC' ? { requested_by: req.user.userId } : {}) }, { $set: { status: 'FULFILLED', fulfilled_by: req.user!.userId, fulfilled_by_name: req.user!.name, fulfilled_at: new Date() } });
     if (!updated.matchedCount) { res.status(404).json({ error: 'Approved reprint request not found.' }); return; }
   } else {
-    const updated = await execute("UPDATE qr_reprint_requests SET status = 'FULFILLED', fulfilled_by = ?, fulfilled_by_name = ?, fulfilled_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? AND status = 'APPROVED'", [String(req.user!.userId), req.user!.name, id, String(req.user!.tenantId)]);
+    const ownerClause = req.user?.role === 'QC' ? ' AND requested_by = ?' : '';
+    const requestRows = await query<any[]>(`SELECT * FROM qr_reprint_requests WHERE id = ? AND tenant_id = ? AND status = 'APPROVED'${ownerClause} LIMIT 1`, [id, String(req.user!.tenantId), ...(req.user?.role === 'QC' ? [String(req.user.userId)] : [])]);
+    if (!requestRows.length) { res.status(404).json({ error: 'Approved reprint request not found.' }); return; }
+    const request = requestRows[0];
+    let labelIds: any[] = [];
+    try { labelIds = JSON.parse(request.label_ids || '[]'); } catch { labelIds = []; }
+    if (labelIds.length) {
+      const placeholders = labelIds.map(() => '?').join(',');
+      await execute(`UPDATE qr_labels SET print_count = print_count + 1, last_printed_at = CURRENT_TIMESTAMP(3) WHERE print_job_id = ? AND id IN (${placeholders})`, [request.qr_job_id, ...labelIds]);
+    }
+    const updated = await execute(`UPDATE qr_reprint_requests SET status = 'FULFILLED', fulfilled_by = ?, fulfilled_by_name = ?, fulfilled_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? AND status = 'APPROVED'${ownerClause}`, [String(req.user!.userId), req.user!.name, id, String(req.user!.tenantId), ...(req.user?.role === 'QC' ? [String(req.user.userId)] : [])]);
     if (!updated.affectedRows) { res.status(404).json({ error: 'Approved reprint request not found.' }); return; }
   }
   res.json({ id, status: 'FULFILLED' });

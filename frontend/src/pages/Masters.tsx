@@ -5,11 +5,9 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import type { EntityId } from '../types';
 import Clients from './Clients';
 import Vendors from './Vendors';
-import ShelfLocations from './ShelfLocations';
 import {
   Building2,
   Factory,
-  Warehouse,
   FlaskConical,
   PackageCheck,
   SlidersHorizontal,
@@ -22,9 +20,10 @@ import {
   X,
   Pencil,
   Scale,
+  Printer,
 } from 'lucide-react';
 
-type MasterTab = 'clients' | 'vendors' | 'shelf-locations' | 'grades' | 'uoms';
+type MasterTab = 'clients' | 'vendors' | 'grades' | 'uoms' | 'printer-label';
 type SimpleMasterKind = 'grades' | 'uoms';
 type StatusFilter = 'all' | 'active' | 'inactive';
 
@@ -41,10 +40,92 @@ function isActive(item: MasterItem): boolean {
 const TABS: { id: MasterTab; label: string; icon: any }[] = [
   { id: 'clients', label: 'Clients', icon: Building2 },
   { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
-  { id: 'shelf-locations', label: 'Shelf Locations', icon: Warehouse },
   { id: 'grades', label: 'Product Grades', icon: FlaskConical },
   { id: 'uoms', label: 'Units of Measure (UOM)', icon: Scale },
+  { id: 'printer-label', label: 'Printer Label Size', icon: Printer },
 ];
+
+function PrinterLabelSettings() {
+  const [widthMm, setWidthMm] = useState('60');
+  const [heightMm, setHeightMm] = useState('64');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    api.auth.printerLabelSize()
+      .then((size) => {
+        setWidthMm(String(size.widthMm));
+        setHeightMm(String(size.heightMm));
+      })
+      .catch((err: any) => setError(err.message || 'Could not load printer settings.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      const size = await api.auth.updatePrinterLabelSize({ widthMm: Number(widthMm), heightMm: Number(heightMm) });
+      setWidthMm(String(size.widthMm));
+      setHeightMm(String(size.heightMm));
+      setNotice('Printer label size saved for this organization.');
+    } catch (err: any) {
+      setError(err.message || 'Could not save printer label size.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewScale = Math.min(2.5, 220 / Number(widthMm || 60), 150 / Number(heightMm || 64));
+  return (
+    <section className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs">
+      <div className="border-b border-slate-100 px-5 py-4 sm:px-6">
+        <h2 className="text-xl font-bold text-slate-900">QR printer label size</h2>
+        <p className="mt-1 text-sm text-slate-500">Set the physical width and height used when QC prints labels after creating a batch.</p>
+      </div>
+      <form onSubmit={save} className="grid gap-6 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block text-sm font-semibold text-slate-700">
+              Label width
+              <span className="mt-1.5 flex items-center gap-2">
+                <input className="input" type="number" min="30" max="200" step="1" value={widthMm} onChange={(event) => setWidthMm(event.target.value)} required disabled={loading || saving} />
+                <span className="text-sm font-bold text-slate-500">mm</span>
+              </span>
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              Label height
+              <span className="mt-1.5 flex items-center gap-2">
+                <input className="input" type="number" min="30" max="250" step="1" value={heightMm} onChange={(event) => setHeightMm(event.target.value)} required disabled={loading || saving} />
+                <span className="text-sm font-bold text-slate-500">mm</span>
+              </span>
+            </label>
+          </div>
+          <p className="text-xs text-slate-500">Each QR label prints as one page at this size. Width: 30–200 mm; height: 30–250 mm.</p>
+          {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</p>}
+          {notice && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{notice}</p>}
+          <button type="submit" className="btn-primary" disabled={loading || saving}>
+            <Save size={16} /> {loading ? 'Loading…' : saving ? 'Saving…' : 'Save label size'}
+          </button>
+        </div>
+        <div className="flex min-h-48 flex-col items-center justify-center rounded-2xl bg-slate-50 p-4">
+          <span className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Print preview</span>
+          <div className="flex flex-col items-center justify-center overflow-hidden rounded-md border border-dashed border-slate-400 bg-white p-2 text-center shadow-sm" style={{ width: `${Number(widthMm || 60) * previewScale}px`, height: `${Number(heightMm || 64) * previewScale}px`, maxWidth: '100%' }}>
+            <div className="mb-1 text-[9px] font-bold text-slate-800">Product name</div>
+            <div className="mb-1 text-[7px] text-slate-500">Batch · unit number</div>
+            <div className="flex aspect-square w-1/2 items-center justify-center bg-slate-900 text-[9px] font-black text-white">QR</div>
+            <div className="mt-1 text-[6px] text-slate-400">QR label code</div>
+          </div>
+          <span className="mt-2 text-xs font-semibold text-slate-600">{widthMm || '—'} × {heightMm || '—'} mm</span>
+        </div>
+      </form>
+    </section>
+  );
+}
 
 export default function Masters() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -232,7 +313,7 @@ export default function Masters() {
               Masters Management
             </h1>
             <p className="text-sm sm:text-base text-slate-500 mt-0.5">
-              Centralized master registries for Clients, Vendors, Shelf Locations, Product Grades, and Units of Measure.
+              Manage clients, vendors, product grades, units of measure, and printer labels.
             </p>
           </div>
         </div>
@@ -266,8 +347,7 @@ export default function Masters() {
       {/* 3. TAB CONTENTS */}
       {activeTab === 'clients' && <Clients embedded />}
       {activeTab === 'vendors' && <Vendors embedded />}
-      {activeTab === 'shelf-locations' && <ShelfLocations embedded />}
-
+      {activeTab === 'printer-label' && <PrinterLabelSettings />}
       {/* Grades & UOMs Tab Content */}
       {isSimpleMaster && (
         <div className="space-y-6">

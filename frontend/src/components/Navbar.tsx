@@ -48,6 +48,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
     title: 'Account',
     items: [
       { label: 'My Profile', path: '/settings', icon: '👤', roles: ['ADMIN', 'QC', 'DISPATCH'] },
+      { label: 'Storage', path: '/storage', icon: '📦', roles: ['ADMIN', 'QC', 'DISPATCH'] },
     ],
   },
 ];
@@ -88,7 +89,7 @@ export function Navbar() {
     <>
       <aside className={`fixed top-0 left-0 h-full z-30 bg-navy-900 transition-all duration-300 flex flex-col ${collapsed ? 'w-16' : 'w-60'}`}>
         <div className="flex items-center gap-3 px-4 h-16 border-b border-white/5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-linear-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
             A
           </div>
           {!collapsed && <span className="text-white font-semibold text-sm tracking-wide">Aceone</span>}

@@ -179,6 +179,7 @@ export default function DispatchWorkspaceOrders() {
 
 	const createOrder = async (event: FormEvent) => {
 		event.preventDefault();
+		let newOrderId: string | null = null;
 		if (saving) return;
 		if (!selectedIds.length || !clientId) {
 			setError("Select at least one batch and a client.");
@@ -195,6 +196,7 @@ export default function DispatchWorkspaceOrders() {
 			});
 			const orderId = result?.id ?? result?.entityId;
 			if (!orderId) throw new Error("The order was not created. Refresh and try again.");
+			newOrderId = String(orderId);
 			setSelectedIds([]);
 			setClientId("");
 			setQuantities({});
@@ -210,6 +212,7 @@ export default function DispatchWorkspaceOrders() {
 			return;
 		}
 		await load();
+		if (newOrderId) navigate(`/packing-list?order=${encodeURIComponent(newOrderId)}`);
 	};
 
 	return (
@@ -665,7 +668,7 @@ export default function DispatchWorkspaceOrders() {
 									</td>
 									<td>{order.client_name || "-"}</td>
 									<td>
-										{order.quantity} {order.uom || ""}
+										{order.quantity} x {order.uom || ""}
 									</td>
 									<td>
 										<span className="badge badge-info">

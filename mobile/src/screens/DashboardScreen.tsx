@@ -332,7 +332,7 @@ export default function DashboardScreen() {
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.activityTitle} numberOfLines={1}>{batch.product_name}</Text>
                       <Text style={styles.activityMeta} numberOfLines={1}>
-                        {batch.batch_number} · {batch.quantity} {batch.uom || 'units'}
+                        {batch.batch_number} · {batch.quantity} x {batch.uom || 'units'}
                       </Text>
                       <Text style={styles.activityMeta} numberOfLines={1}>
                         {batch.location_code || batch.storage_location || 'Location not set'} · waiting {formatAge(batch.age_minutes)}

@@ -35,8 +35,20 @@ export async function create(req: Request, res: Response): Promise<void> {
 
 export async function list(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
-  const where = q ? 'WHERE p.name LIKE ? OR p.sku LIKE ? OR j.job_code LIKE ?' : '';
-  const params = q ? [`%${q}%`, `%${q}%`, `%${q}%`] : [];
+  // Only job codes and label QR values are searchable. Product names are
+  // intentionally excluded: one product can own thousands of QR labels, so a
+  // name match floods the list instead of finding the scanned label.
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (q) {
+    conditions.push('j.job_code LIKE ?');
+    params.push(`%${q}%`);
+    if (q.length >= 8) {
+      conditions.push('j.id IN (SELECT l.print_job_id FROM qr_labels l WHERE l.qr_value LIKE ?)');
+      params.push(`%${q}%`);
+    }
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' OR ')}` : '';
   const items = await query<RowDataPacket[]>(
     `SELECT j.*, p.name AS product_name, p.sku AS product_sku,
             COALESCE(qc.name, a.name, 'QC User') AS created_by_name,
@@ -61,6 +73,10 @@ export async function getById(req: Request, res: Response): Promise<void> {
     res.status(404).json({ error: 'QR label job not found' });
     return;
   }
+  if (req.user?.role === 'QC') {
+    res.json({ ...detail, labels: detail.labels.map(({ qr_value, ...label }) => label) });
+    return;
+  }
   res.json(detail);
 }
 
@@ -70,8 +86,23 @@ export async function reprint(req: Request, res: Response): Promise<void> {
   const requestedIds = Array.isArray(req.body.label_ids)
     ? req.body.label_ids.map((value: any) => Number(value)).filter((value: number) => Number.isInteger(value) && value > 0)
     : [];
+  const approvedRequestId = req.body.approved_request_id ? String(req.body.approved_request_id) : '';
+  if (req.user?.role === 'QC' && !approvedRequestId) {
+    res.status(403).json({ error: 'An administrator-approved reprint request is required.' });
+    return;
+  }
 
   const result = await withTransaction(async (conn) => {
+    let approvedIds: number[] | null = null;
+    if (approvedRequestId) {
+      const ownerClause = req.user?.role === 'QC' ? ' AND requested_by = ?' : '';
+      const [requestRows] = await conn.execute<RowDataPacket[]>(`SELECT * FROM qr_reprint_requests WHERE id = ? AND tenant_id = ? AND qr_job_id = ? AND status = 'APPROVED'${ownerClause} FOR UPDATE`, [approvedRequestId, String(req.user!.tenantId), String(id), ...(req.user?.role === 'QC' ? [String(req.user.userId)] : [])]);
+      if (!requestRows.length) return { forbidden: true as const };
+      try {
+        const ids = JSON.parse(requestRows[0].label_ids || '[]');
+        approvedIds = Array.isArray(ids) ? ids.map(Number).filter((value: number) => Number.isInteger(value) && value > 0) : [];
+      } catch { approvedIds = []; }
+    }
     const [jobs] = await conn.execute<RowDataPacket[]>(
       'SELECT * FROM qr_print_jobs WHERE id = ? FOR UPDATE',
       [id]
@@ -80,7 +111,12 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     const job = jobs[0];
 
     let labels: RowDataPacket[] = [];
-    if (requestedIds.length > 0) {
+    if (approvedIds !== null) {
+      const placeholders = approvedIds.map(() => '?').join(',');
+      const [rows] = approvedIds.length ? await conn.query<RowDataPacket[]>(`SELECT * FROM qr_labels WHERE print_job_id = ? AND id IN (${placeholders}) ORDER BY serial_no ASC FOR UPDATE`, [id, ...approvedIds]) : [[] as any, []] as any;
+      labels = rows;
+      if (labels.length !== approvedIds.length) return { empty: true as const };
+    } else if (requestedIds.length > 0) {
       const placeholders = requestedIds.map(() => '?').join(',');
       const [rows] = await conn.query<RowDataPacket[]>(
         `SELECT * FROM qr_labels
@@ -104,7 +140,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
 
     if (labels.length === 0) return { empty: true as const };
 
-    for (const label of labels) {
+    if (approvedIds === null) for (const label of labels) {
       await conn.execute(
         `UPDATE qr_labels
          SET print_count = print_count + 1, last_printed_at = CURRENT_TIMESTAMP(3)
@@ -130,13 +166,18 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     res.status(404).json({ error: 'QR label job not found' });
     return;
   }
+  if ('forbidden' in result) {
+    res.status(403).json({ error: 'This approved reprint request is unavailable to your account.' });
+    return;
+  }
   if ('empty' in result) {
     res.status(400).json({ error: 'No labels were selected for reprint' });
     return;
   }
   const detail = await jobDetail(result.jobId);
+  const selectedIdSet = new Set(result.selectedIds.map(Number));
   res.json({
-    ...(detail || {}),
+    ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(Number(label.id))) } : {}),
     selected_ids: result.selectedIds,
     selected_count: result.selectedIds.length,
   });

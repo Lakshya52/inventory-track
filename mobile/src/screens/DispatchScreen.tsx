@@ -570,7 +570,7 @@ export default function DispatchScreen() {
                   <View style={{ minWidth: 0 }}>
                     <Text style={styles.pendingTitle} numberOfLines={1}>{batch.product_name}</Text>
                     <Text style={styles.pendingMeta} numberOfLines={1}>
-                      {batch.batch_number} · {batch.quantity} {batch.uom || ''}
+                      {batch.batch_number} · {batch.quantity} x {batch.uom || ''}
                     </Text>
                   </View>
                   <Button
