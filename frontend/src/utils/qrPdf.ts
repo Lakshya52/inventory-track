@@ -8,6 +8,13 @@ export interface QrLabel {
   serial_no: number;
   batch_number: string;
   product_name?: string;
+  product_sku?: string;
+  quantity?: number;
+  package_quantity?: number;
+  uom?: string;
+  warehouse_name?: string;
+  storage_location_id?: string;
+  storage_location?: string;
   print_count?: number;
   last_printed_at?: string | null;
 }
@@ -72,27 +79,48 @@ export async function createQrPdfBlob(labels: QrLabel[], job: QrJob): Promise<Bl
     const qrY = y + 4;
     doc.addImage(images[index], 'PNG', qrX, qrY, qrSize, qrSize);
 
+    const payload = parseQrPayload(label.qr_value);
+    const productName = label.product_name || payload?.product_name || job.product_name || '';
+    const packageQuantity = label.package_quantity ?? payload?.package_quantity;
+    const packageUnit = label.uom || payload?.uom || '';
+    const bagCount = label.quantity ?? payload?.bag_count;
+    const godown = label.warehouse_name || payload?.godown;
+    const storageLocation = label.storage_location || payload?.storage_location;
     const textX = x + 3;
     const maxWidth = cellWidth - 6;
     doc.setTextColor(15, 23, 42);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.text(String(job.product_name || '').slice(0, 70), textX, qrY + qrSize + 5, {
+    doc.setFontSize(7);
+    doc.text(String(productName).slice(0, 70), textX, qrY + qrSize + 4, {
       maxWidth,
     });
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(51, 65, 85);
-    doc.text(`Batch: ${label.batch_number}`, textX, qrY + qrSize + 10, { maxWidth });
-
     doc.setFontSize(6);
+    doc.setTextColor(51, 65, 85);
+    doc.text(`Batch: ${label.batch_number}`, textX, qrY + qrSize + 8, { maxWidth });
+    if (packageQuantity != null) {
+      doc.text(`Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`, textX, qrY + qrSize + 12, { maxWidth });
+    }
+    if (godown) {
+      doc.text(`Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, textX, qrY + qrSize + 16, { maxWidth });
+    }
+    doc.setFontSize(5);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Unit ${String(label.serial_no).padStart(4, '0')}`, textX, qrY + qrSize + 14, { maxWidth });
-    doc.text(label.qr_value, textX, qrY + qrSize + 18, { maxWidth });
+    doc.text(`Bag ${String(payload?.bag_serial ?? label.serial_no).padStart(4, '0')}`, textX, qrY + qrSize + 20, { maxWidth });
+    doc.text(`QR ID: ${payload?.id || label.qr_value}`, textX, qrY + qrSize + 23, { maxWidth });
   });
 
   return doc.output('blob');
+}
+
+function parseQrPayload(value: string): Record<string, any> | null {
+  try {
+    const payload = JSON.parse(value);
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void> {
@@ -105,4 +133,3 @@ export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-

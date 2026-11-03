@@ -123,7 +123,7 @@ export async function printQrLabelsDirect(
   // QZ's embedded HTML renderer and gives the printer driver a fixed-size page.
   const pageWidth = Math.round(widthMm * 8);
   const pageHeight = Math.round(heightMm * 8);
-  const qrSide = Math.max(96, Math.min(pageWidth - 48, Math.round(pageHeight * 0.56)));
+  const qrSide = Math.max(96, Math.min(pageWidth - 48, Math.round(pageHeight * 0.54)));
   const queueJobs: ReturnType<typeof watchQueueJob>[] = [];
   try {
   for (let start = 0; start < labels.length; start += 6) {
@@ -152,6 +152,15 @@ export async function printQrLabelsDirect(
         const qrDataUrl = await QRCode.toDataURL(label.qr_value, {
           width: Math.max(320, qrSide), margin: 1, errorCorrectionLevel: 'M',
         });
+        const payload = parseQrPayload(label.qr_value);
+        const productName = label.product_name || payload?.product_name || job.product_name;
+        const batchNumber = label.batch_number || payload?.batch_number || '';
+        const bagSerial = payload?.bag_serial ?? label.serial_no;
+        const packageQuantity = label.package_quantity ?? payload?.package_quantity;
+        const packageUnit = label.uom || payload?.uom || '';
+        const bagCount = label.quantity ?? payload?.bag_count;
+        const godown = label.warehouse_name || payload?.godown;
+        const storageLocation = label.storage_location || payload?.storage_location;
         const qrImage = await loadImage(qrDataUrl);
         const canvas = document.createElement('canvas');
         canvas.width = pageWidth;
@@ -160,19 +169,48 @@ export async function printQrLabelsDirect(
         if (!context) throw new Error('Could not prepare the QR label image.');
         context.fillStyle = '#fff';
         context.fillRect(0, 0, pageWidth, pageHeight);
-        context.textAlign = 'center';
-        context.fillStyle = '#111827';
-        context.font = `bold ${Math.max(15, Math.round(pageWidth * 0.045))}px Arial`;
-        context.fillText(fitText(context, label.product_name || job.product_name, pageWidth - 24), pageWidth / 2, Math.round(pageHeight * 0.09));
-        context.fillStyle = '#334155';
-        context.font = `${Math.max(12, Math.round(pageWidth * 0.034))}px Arial`;
-        context.fillText(fitText(context, `${label.batch_number} · Unit ${String(label.serial_no).padStart(4, '0')}`, pageWidth - 20), pageWidth / 2, Math.round(pageHeight * 0.15));
-        const drawnQrSide = Math.min(qrSide, pageWidth - 48, Math.round(pageHeight * 0.59));
+        context.strokeStyle = '#cbd5e1';
+        context.lineWidth = Math.max(1, Math.round(pageWidth * 0.003));
+        context.beginPath();
+        context.roundRect(
+          context.lineWidth,
+          context.lineWidth,
+          pageWidth - context.lineWidth * 2,
+          pageHeight - context.lineWidth * 2,
+          Math.round(pageWidth * 0.025),
+        );
+        context.stroke();
+        const drawnQrSide = Math.min(qrSide, pageWidth - 48);
         context.imageSmoothingEnabled = false;
-        context.drawImage(qrImage, (pageWidth - drawnQrSide) / 2, Math.round(pageHeight * 0.19), drawnQrSide, drawnQrSide);
+        const qrTop = Math.round(pageHeight * 0.06);
+        context.drawImage(qrImage, (pageWidth - drawnQrSide) / 2, qrTop, drawnQrSide, drawnQrSide);
+        const inset = Math.round(pageWidth * 0.045);
+        const maxTextWidth = pageWidth - inset * 2;
+        const textX = inset;
+        const detailY = qrTop + drawnQrSide + Math.round(pageHeight * 0.065);
+        context.textAlign = 'left';
+        context.fillStyle = '#0f172a';
+        context.font = `bold ${Math.max(20, Math.round(pageWidth * 0.042))}px Arial`;
+        context.fillText(fitText(context, productName, maxTextWidth), textX, detailY);
+        context.fillStyle = '#334155';
+        context.font = `${Math.max(17, Math.round(pageWidth * 0.035))}px Arial`;
+        context.fillText(fitText(context, `Batch: ${batchNumber}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.062));
+        context.fillStyle = '#334155';
+        context.font = `${Math.max(17, Math.round(pageWidth * 0.035))}px Arial`;
+        const packageLabel = packageQuantity == null
+          ? ''
+          : `Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`;
+        if (packageLabel) {
+          context.fillText(fitText(context, packageLabel, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.124));
+        }
+        if (godown) {
+          context.fillText(fitText(context, `Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.186));
+        }
         context.fillStyle = '#64748b';
-        context.font = `${Math.max(9, Math.round(pageWidth * 0.021))}px Arial`;
-        context.fillText(fitText(context, label.qr_value, pageWidth - 20), pageWidth / 2, Math.min(pageHeight - 10, Math.round(pageHeight * 0.94)));
+        context.font = `${Math.max(14, Math.round(pageWidth * 0.029))}px Arial`;
+        context.fillText(fitText(context, `Bag ${String(bagSerial).padStart(4, '0')}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.248));
+        context.font = `${Math.max(14, Math.round(pageWidth * 0.029))}px Arial`;
+        context.fillText(fitText(context, `QR ID: ${displayQrId(label.qr_value)}`, maxTextWidth), textX, Math.min(pageHeight - 10, detailY + Math.round(pageHeight * 0.294)));
         return {
           type: 'pixel' as const,
           format: 'image' as const,
@@ -208,4 +246,17 @@ function fitText(context: CanvasRenderingContext2D, value: unknown, maxWidth: nu
   let shortened = text;
   while (shortened.length > 1 && context.measureText(`${shortened}…`).width > maxWidth) shortened = shortened.slice(0, -1);
   return `${shortened}…`;
+}
+
+function displayQrId(value: string): string {
+  return parseQrPayload(value)?.id || value;
+}
+
+function parseQrPayload(value: string): Record<string, any> | null {
+  try {
+    const payload = JSON.parse(value);
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch {
+    return null;
+  }
 }

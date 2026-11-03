@@ -93,14 +93,19 @@ export interface Batch {
   product_id: EntityId;
   batch_number: string;
   batch_group_id?: string | null;
+  parent_batch_number?: string | null;
   quantity: number;
   uom: string | null;
+  /** Internal-only approximate average quantity. Never rendered in the UI. */
+  avg_standard_quantity?: number | null;
+  package_quantity?: number | null;
   unit_price: number;
   manufacturing_date: string | null;
   expiry_date: string | null;
   storage_location: string | null;
   shelf_location_id?: EntityId | null;
   location_code?: string | null;
+  warehouse_name?: string | null;
   qr_count?: number;
   qr_job_id?: EntityId | null;
   notes: string | null;

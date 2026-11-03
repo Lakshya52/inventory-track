@@ -38,7 +38,7 @@ function isActive(item: MasterItem): boolean {
 }
 
 const TABS: { id: MasterTab; label: string; icon: any }[] = [
-  { id: 'clients', label: 'Clients', icon: Building2 },
+  { id: 'clients', label: 'Customer', icon: Building2 },
   { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
   { id: 'grades', label: 'Product Grades', icon: FlaskConical },
   { id: 'uoms', label: 'Units of Measure (UOM)', icon: Scale },

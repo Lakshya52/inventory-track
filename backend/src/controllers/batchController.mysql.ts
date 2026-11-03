@@ -307,7 +307,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
 export async function list(req: Request, res: Response): Promise<void> {
   const batches = await query<RowDataPacket[]>(
     `SELECT b.*, p.name as product_name, p.sku as product_sku, p.grade AS product_grade,
-            s.location_code, v.name AS vendor_name, g.name AS grade_name,
+            s.location_code, s.warehouse AS warehouse_name, v.name AS vendor_name, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id,
@@ -321,6 +321,8 @@ export async function list(req: Request, res: Response): Promise<void> {
      LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      ORDER BY b.created_at DESC`
   );
+  // The average standard quantity is an internal-only reference; never return it.
+  for (const batch of batches) { delete (batch as any).avg_standard_quantity; }
   res.json(batches);
 }
 

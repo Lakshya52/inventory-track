@@ -16,7 +16,14 @@ import {
 	printQrLabelsDirect,
 } from "../utils/directQrPrinter";
 
-type Line = { productId: string; quantity: string; shelfLocationId: string };
+type Line = {
+	productId: string;
+	quantity: string;
+	packageQuantity: string;
+	avgStandardQuantity: string;
+	warehouseId: string;
+	shelfLocationId: string;
+};
 type Warehouse = { id: string; name: string; racks?: Rack[] };
 type Rack = { id: string; rack_code: string; cells?: ShelfCell[] };
 type ShelfCell = {
@@ -30,114 +37,92 @@ type ShelfCell = {
 const newLine = (): Line => ({
 	productId: "",
 	quantity: "1",
+	packageQuantity: "",
+	avgStandardQuantity: "",
+	warehouseId: "",
 	shelfLocationId: "",
 });
 
-function LocationCascade({
+/** Keep decimals but allow only one separator, and cap the typing length. */
+const sanitizeDecimalInput = (value: string) => {
+	const sanitized = value
+		.replace(/[^0-9.]/g, "")
+		.replace(/(\..*)\./g, "$1")
+		.slice(0, 12);
+	const [whole, fraction] = sanitized.split(".");
+	return fraction === undefined ? whole : `${whole}.${fraction.slice(0, 4)}`;
+};
+
+function GodownSelector({
 	warehouses,
+	warehouseId,
 	value,
-	reservedLocationIds,
+	requiredQuantity,
 	onChange,
 }: {
 	warehouses: Warehouse[];
+	warehouseId: string;
 	value: string;
-	reservedLocationIds: string[];
-	onChange: (locationId: string) => void;
+	requiredQuantity: number;
+	onChange: (warehouseId: string, locationId: string) => void;
 }) {
-	const selectedCell = warehouses
-		.flatMap((warehouse) =>
-			(warehouse.racks || []).flatMap((rack) =>
-				(rack.cells || []).map((cell) => ({ warehouse, rack, cell })),
-			),
-		)
-		.find(({ cell }) => String(cell.shelf_location_id) === value);
-	const [warehouseId, setWarehouseId] = useState(
-		selectedCell?.warehouse.id || "",
+	const selectedWarehouse = warehouses.find(
+		(warehouse) => String(warehouse.id) === warehouseId,
 	);
-	const [rackId, setRackId] = useState(selectedCell?.rack.id || "");
-	const racks =
-		warehouses.find((warehouse) => String(warehouse.id) === warehouseId)
-			?.racks || [];
-	const cells = racks.find((rack) => String(rack.id) === rackId)?.cells || [];
-
-	useEffect(() => {
-		if (!selectedCell) return;
-		setWarehouseId(selectedCell.warehouse.id);
-		setRackId(selectedCell.rack.id);
-	}, [selectedCell?.warehouse.id, selectedCell?.rack.id]);
-
+	const availableCells = (selectedWarehouse?.racks || [])
+		.flatMap((rack) => rack.cells || [])
+		.filter((cell) => !cell.occupied);
+	const getAvailableCount = (warehouse: Warehouse) =>
+		(warehouse.racks || [])
+			.flatMap((rack) => rack.cells || [])
+			.filter((cell) => !cell.occupied).length;
 	return (
-		<div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+		<div className="grid grid-cols-1 gap-1">
 			<select
 				className="input min-w-0 border-slate-200 bg-white text-sm"
-				aria-label="Warehouse"
+				aria-label="Godown"
 				value={warehouseId}
 				onChange={(event) => {
-					setWarehouseId(event.target.value);
-					setRackId("");
-					onChange("");
+					const nextWarehouseId = event.target.value;
+					const nextWarehouse = warehouses.find(
+						(warehouse) => String(warehouse.id) === nextWarehouseId,
+					);
+					const nextCell = (nextWarehouse?.racks || [])
+						.flatMap((rack) => rack.cells || [])
+						.find((cell) => !cell.occupied);
+					onChange(
+						nextWarehouseId,
+						nextCell?.shelf_location_id || "",
+					);
 				}}
 			>
-				<option value="">Warehouse</option>
-				{warehouses.map((warehouse) => (
-					<option key={warehouse.id} value={warehouse.id}>
-						{warehouse.name}
-					</option>
-				))}
+				<option value="">Select Location</option>
+				{warehouses.map((warehouse) => {
+					const freeCount = getAvailableCount(warehouse);
+					return (
+						<option
+							key={warehouse.id}
+							value={warehouse.id}
+							disabled={
+								freeCount === 0 &&
+								String(warehouse.id) !== warehouseId
+							}
+						>
+							{warehouse.name} · {freeCount} free
+						</option>
+					);
+				})}
 			</select>
-			<select
-				className="input min-w-0 border-slate-200 bg-white text-sm disabled:bg-slate-50 disabled:text-slate-400"
-				aria-label="Rack"
-				value={rackId}
-				disabled={!warehouseId}
-				onChange={(event) => {
-					setRackId(event.target.value);
-					onChange("");
-				}}
-			>
-				<option value="">
-					{warehouseId ? "Rack" : "Choose warehouse first"}
-				</option>
-				{racks.map((rack) => (
-					<option key={rack.id} value={rack.id}>
-						{rack.rack_code}
-					</option>
-				))}
-			</select>
-			<select
-				className="input min-w-0 border-slate-200 bg-white text-sm disabled:bg-slate-50 disabled:text-slate-400"
-				aria-label="Shelf position"
-				value={value}
-				disabled={!rackId}
-				required
-				onChange={(event) => onChange(event.target.value)}
-			>
-				<option value="">
-					{rackId ? "Shelf position" : "Choose rack first"}
-				</option>
-				{cells.map((cell) => (
-					<option
-						key={cell.shelf_location_id}
-						value={cell.shelf_location_id}
-						disabled={
-							Boolean(cell.occupied) ||
-							(reservedLocationIds.includes(
-								String(cell.shelf_location_id),
-							) &&
-								String(cell.shelf_location_id) !== value)
-						}
-					>
-						{cell.cell_code} ·{" "}
-						{cell.occupied
-							? "In use"
-							: reservedLocationIds.includes(
-										String(cell.shelf_location_id),
-								  ) && String(cell.shelf_location_id) !== value
-								? "Assigned to another product"
-								: "Empty"}
-					</option>
-				))}
-			</select>
+			{warehouseId && availableCells.length < requiredQuantity && (
+				<span
+					role="alert"
+					className="text-[11px] font-semibold text-rose-600"
+				>
+					Not enough empty positions: {availableCells.length} available
+					for {requiredQuantity} bags. Add rack positions or reduce the
+					bag count.
+				</span>
+			)}
 		</div>
 	);
 }
@@ -150,6 +135,7 @@ export default function QCBatches() {
 	const [batches, setBatches] = useState<any[]>([]);
 	const [lines, setLines] = useState<Line[]>([newLine()]);
 	const [showCreateForm, setShowCreateForm] = useState(false);
+	const [useSameLocation, setUseSameLocation] = useState(false);
 	const [search, setSearch] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 250);
 	const [busy, setBusy] = useState(false);
@@ -187,17 +173,24 @@ export default function QCBatches() {
 		});
 	}, []);
 
+	const getPackageMaster = (product: any) =>
+		bagQuantities.find(
+			(row) => String(row.id) === String(product?.bag_quantity_id),
+		) ||
+		uoms.find((row) => String(row.id) === String(product?.bag_quantity_id));
 	const getUom = (product: any) => {
-		const id = product?.bag_quantity_id;
-		const value = [...uoms, ...bagQuantities].find(
-			(row) => String(row.id) === String(id),
-		);
+		const value = getPackageMaster(product);
 		return (
+			value?.unit ||
 			value?.name ||
-			(value?.quantity && value?.unit
-				? `${value.quantity} ${value.unit}`
-				: "UOM not set")
+			(value?.quantity ? `${value.quantity}` : "UOM not set")
 		);
+	};
+	const getPackageDefault = (product: any) => {
+		const quantity = getPackageMaster(product)?.quantity;
+		return Number.isFinite(Number(quantity)) && Number(quantity) > 0
+			? String(quantity)
+			: "";
 	};
 	const updateLine = (index: number, patch: Partial<Line>) =>
 		setLines((current) =>
@@ -205,52 +198,137 @@ export default function QCBatches() {
 				i === index ? { ...line, ...patch } : line,
 			),
 		);
+	const hasValidPackageQuantity = (value: string) =>
+		Number.isFinite(Number(value)) &&
+		Number(value) > 0 &&
+		Number(value) <= 1_000_000;
+	const hasValidAvgQuantity = (value: string) =>
+		value.trim() === "" ||
+		(Number.isFinite(Number(value)) &&
+			Number(value) >= 0 &&
+			Number(value) <= 1_000_000);
+	const setLineLocation = (
+		index: number,
+		warehouseId: string,
+		locationId: string,
+	) => {
+		setLines((current) =>
+			current.map((line, i) =>
+				useSameLocation || i === index
+					? { ...line, warehouseId, shelfLocationId: locationId }
+					: line,
+			),
+		);
+	};
+	const toggleSameLocation = () => {
+		const next = !useSameLocation;
+		setUseSameLocation(next);
+		if (!next) return;
+		setLines((currentLines) => {
+			const sharedLine = currentLines.find(
+				(line) => line.warehouseId && line.shelfLocationId,
+			);
+			if (!sharedLine) return currentLines;
+			return currentLines.map((line) => ({
+				...line,
+				warehouseId: sharedLine.warehouseId,
+				shelfLocationId: sharedLine.shelfLocationId,
+			}));
+		});
+	};
+	const addLine = () => {
+		setLines((current) => {
+			const sharedLine = useSameLocation
+				? current.find((line) => line.warehouseId && line.shelfLocationId)
+				: undefined;
+			return [
+				...current,
+				{
+					...newLine(),
+					warehouseId: sharedLine?.warehouseId || "",
+					shelfLocationId: sharedLine?.shelfLocationId || "",
+				},
+			];
+		});
+	};
 	const availableLocationCount = warehouses.reduce(
 		(total, warehouse) =>
 			total +
 			(warehouse.racks || []).reduce(
-				(rackTotal, rack) => rackTotal + (rack.cells || []).length,
+				(rackTotal, rack) =>
+					rackTotal +
+					(rack.cells || []).filter((cell) => !cell.occupied).length,
 				0,
 			),
 		0,
 	);
+	const hasEnoughLocations = useMemo(() => {
+		const requestedByWarehouse = new Map<string, number>();
+		for (const line of lines) {
+			if (!line.warehouseId) continue;
+			const quantity = Number(line.quantity);
+			if (Number.isInteger(quantity) && quantity > 0) {
+				requestedByWarehouse.set(
+					line.warehouseId,
+					(requestedByWarehouse.get(line.warehouseId) || 0) + quantity,
+				);
+			}
+		}
+		return [...requestedByWarehouse.entries()].every(([warehouseId, requested]) => {
+			const warehouse = warehouses.find(
+				(row) => String(row.id) === warehouseId,
+			);
+			const freeLocations = (warehouse?.racks || [])
+				.flatMap((rack) => rack.cells || [])
+				.filter((cell) => !cell.occupied).length;
+			return requested <= freeLocations;
+		});
+	}, [lines, warehouses]);
 
 	const canCreate = useMemo(
 		() =>
 			lines.length > 0 &&
 			availableLocationCount > 0 &&
+			hasEnoughLocations &&
 			new Set(lines.map((line) => line.productId).filter(Boolean))
 				.size === lines.filter((line) => line.productId).length &&
 			lines.every((line) => {
 				const product = products.find(
 					(row) => String(row.id) === line.productId,
 				);
+				const warehouse = warehouses.find(
+					(row) => String(row.id) === line.warehouseId,
+				);
+				const location = (warehouse?.racks || [])
+					.flatMap((rack) => rack.cells || [])
+					.find(
+						(cell) =>
+							String(cell.shelf_location_id) ===
+							line.shelfLocationId,
+					);
 				return (
 					line.productId &&
 					getUom(product) !== "UOM not set" &&
+					hasValidPackageQuantity(line.packageQuantity) &&
+					hasValidAvgQuantity(line.avgStandardQuantity) &&
+					line.warehouseId &&
 					line.shelfLocationId &&
-					!warehouses
-						.flatMap((warehouse) => warehouse.racks || [])
-						.flatMap((rack) => rack.cells || [])
-						.find(
-							(cell) =>
-								String(cell.shelf_location_id) ===
-								line.shelfLocationId,
-						)?.occupied &&
+					location &&
+					!location.occupied &&
 					Number.isInteger(Number(line.quantity)) &&
 					Number(line.quantity) > 0 &&
 					Number(line.quantity) <= 1000
 				);
-			}) &&
-			new Set(lines.map((line) => line.shelfLocationId).filter(Boolean))
-				.size === lines.length,
+			}),
 		[
 			lines,
 			products,
 			uoms,
 			bagQuantities,
 			availableLocationCount,
+			hasEnoughLocations,
 			warehouses,
+			useSameLocation,
 		],
 	);
 
@@ -286,8 +364,14 @@ export default function QCBatches() {
 					return {
 						product_id: line.productId,
 						quantity: Number(line.quantity),
+						package_quantity: Number(line.packageQuantity),
+						avg_standard_quantity:
+							line.avgStandardQuantity.trim() === ""
+								? null
+								: Number(line.avgStandardQuantity),
 						uom: getUom(product),
 						shelf_location_id: line.shelfLocationId,
+						warehouse_id: line.warehouseId,
 						unit_price: Number(product?.price || 0),
 					};
 				}),
@@ -329,10 +413,6 @@ export default function QCBatches() {
 		}
 	};
 
-	const totalQuantity = lines.reduce(
-		(total, line) => total + (Number(line.quantity) || 0),
-		0,
-	);
 	const qrLabelCount = lines.reduce((total, line) => {
 		const quantity = Number(line.quantity);
 		return (
@@ -352,19 +432,37 @@ export default function QCBatches() {
 				...batch,
 				id: key,
 				batch_number: batch.parent_batch_number || batch.batch_number,
-				product_lines: [],
+				product_lines: new Map<string, any>(),
 				quantity_total: 0,
 				qr_count_total: 0,
 			};
-			group.product_lines.push({
+			const productKey = String(batch.product_id);
+			const productLine = group.product_lines.get(productKey) || {
 				...batch,
 				product_name: batch.product_name || "Product",
-			});
+				quantity: 0,
+				locations: new Set<string>(),
+			};
+			productLine.quantity += Number(batch.quantity || 0);
+			if (batch.location_code || batch.storage_location) {
+				productLine.locations.add(
+					String(batch.location_code || batch.storage_location),
+				);
+			}
+			group.product_lines.set(productKey, productLine);
 			group.quantity_total += Number(batch.quantity || 0);
 			group.qr_count_total += Number(batch.qr_count || 0);
 			groups.set(key, group);
 		}
-		return [...groups.values()];
+		return [...groups.values()].map((group) => ({
+			...group,
+			product_lines: [...group.product_lines.values()].map(
+				(line: any) => ({
+					...line,
+					locations: [...line.locations],
+				}),
+			),
+		}));
 	}, [batches]);
 	const filteredBatches = groupedBatches.filter((batch) => {
 		const query = debouncedSearch.trim().toLowerCase();
@@ -471,7 +569,7 @@ export default function QCBatches() {
 							<tr>
 								<th>Batch</th>
 								<th>Products in batch</th>
-								<th>Total units</th>
+								<th>Total bags</th>
 								<th>Status</th>
 								<th>Created</th>
 							</tr>
@@ -497,13 +595,17 @@ export default function QCBatches() {
 															{line.product_sku}
 														</span>
 														<span className="font-semibold text-slate-600">
-															{line.uom} ×{" "}
+															{line.package_quantity
+																? `${line.package_quantity} ${line.uom} × `
+																: `${line.uom} × `}
 															{line.quantity}
 														</span>
 														<span className="text-xs text-slate-400">
-															{line.location_code ||
-																line.storage_location ||
-																"No location"}
+															{line.warehouse_name ||
+																"No godown"}
+															{line.locations?.length
+																? ` · ${line.locations.length} positions`
+																: ""}
 														</span>
 													</div>
 												),
@@ -512,7 +614,7 @@ export default function QCBatches() {
 									</td>
 									<td className="font-semibold">
 										{batch.quantity_total.toLocaleString()}{" "}
-										units
+										bags
 									</td>
 									<td>
 										<span className="badge badge-success">
@@ -580,16 +682,16 @@ export default function QCBatches() {
 												Create a batch
 											</h2>
 											<p className="mt-1.5 max-w-xl text-sm text-slate-500 sm:text-base">
-												Build your batch by adding
-												products, setting quantities,
-												and choosing storage locations.
+												Add products, set the package
+												size and bag count, then choose
+												a godown for each product.
 											</p>
-											<p className="mt-1 text-xs font-semibold text-slate-500">
+											{/* <p className="mt-1 text-xs font-semibold text-slate-500">
 												Initial QR labels print once.
 												For missing or damaged labels,
 												request an admin-approved
 												reprint.
-											</p>
+											</p> */}
 										</div>
 									</div>
 									<button
@@ -603,249 +705,533 @@ export default function QCBatches() {
 									</button>
 								</div>
 							</div>
+							{/* toggle button for same locations selection */}
+							{/* when turned on , in the table , it should show only one dropdown for selecting the locations, and table will show that column as merged without any horizontal line breaks,  */}
+							<div className="flex w-fit items-center gap-2.5 px-5 py-2 sm:ml-auto sm:mr-4">
+								<span className="text-sm font-semibold text-slate-700">
+									Same location for all products
+								</span>
+								<button
+									type="button"
+									role="switch"
+									aria-checked={useSameLocation}
+									aria-label="Use the same godown location for all products"
+									onClick={toggleSameLocation}
+									className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full border-0 p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
+										useSameLocation
+											? "bg-indigo-600"
+											: "bg-slate-300"
+									}`}
+								>
+									<span
+										className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+											useSameLocation
+												? "translate-x-5"
+												: "translate-x-0"
+										}`}
+									/>
+								</button>
+							</div>
 
 							<div className="space-y-1 px-5 py-4 sm:px-8 sm:py-5">
-								<div className="mb-1 hidden grid-cols-[minmax(0,1fr)_150px_1fr_40px] gap-5 px-1 pb-1 text-[11px] font-extrabold uppercase tracking-[0.14em] text-slate-400 sm:grid">
-									<span>Product</span>
-									<span>UOM x Quantity</span>
-									<span>Storage location</span>
-									<span />
-								</div>
-								{lines.map((line, index) => {
-									const product = products.find(
-										(row) =>
-											String(row.id) === line.productId,
-									);
-									return (
-										<div
-											key={index}
-											className="grid gap-3 border-b border-slate-100 py-3.5 last:border-0 sm:grid-cols-[minmax(0,1fr)_150px_1fr_40px] sm:items-end sm:gap-5"
-										>
-											<div>
-												<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
-													Product
-												</label>
-												<select
-													className="input border-slate-200 bg-slate-50/50 font-semibold text-slate-800 focus:bg-white"
-													value={line.productId}
-													required
-													onChange={(event) =>
-														updateLine(index, {
-															productId:
-																event.target
-																	.value,
-														})
-													}
+								<table className="block w-full text-left text-xs sm:table sm:table-fixed sm:text-sm">
+									<colgroup className="hidden sm:table-column-group">
+										<col className="w-[30%]" />
+										<col className="w-[15%]" />
+										<col className="w-[15%]" />
+										<col className="w-[20%]" />
+										<col className="w-[20%]" />
+									</colgroup>
+									<thead className="hidden bg-slate-50 sm:table-header-group">
+										<tr className="border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-[0.14em] text-slate-600">
+											<th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
+												Product
+											</th>
+											<th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
+												QTY Per Unit
+											</th>
+											<th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
+												Avg. qty
+											</th>
+											{/* <th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
+												UOM
+												</th> */}
+											<th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
+												Number of Units
+											</th>
+											<th className="break-words border-b border-slate-200 px-1.5 py-3 sm:px-2">
+												Storage Location
+											</th>
+										</tr>
+									</thead>
+									<tbody className="block sm:table-row-group">
+										{lines.map((line, index) => {
+											const product = products.find(
+												(row) =>
+													String(row.id) ===
+													line.productId,
+											);
+											const lineLabels =
+												Number(line.quantity) || 0;
+											const positionsNeeded = lines
+												.filter(
+													(row) =>
+														row.warehouseId ===
+														line.warehouseId,
+												)
+												.reduce(
+													(total, row) =>
+														total +
+														(Number(row.quantity) || 0),
+													0,
+												);
+											const uom = product
+												? getUom(product)
+												: "UOM not set";
+											const uomReady =
+												uom !== "UOM not set";
+											const rowBorderClass =
+												index === lines.length - 1
+													? "sm:border-b-0"
+													: "sm:border-b sm:border-slate-200";
+											return (
+												<tr
+													key={index}
+													className="mb-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-100 p-3 last:mb-0 sm:mb-0 sm:table-row sm:rounded-none sm:border-0 sm:p-0"
 												>
-													<option value="">
-														Select product
-													</option>
-													{products.map((row) => (
-														<option
-															key={row.id}
-															value={row.id}
-														>
-															{row.name} ·{" "}
-															{row.sku}
-														</option>
-													))}
-												</select>
-												{product &&
-													getUom(product) ===
-														"UOM not set" && (
-														<p className="mt-1 text-xs font-semibold text-rose-600">
-															Set a UOM on the
-															product first.
-														</p>
-													)}
-											</div>
-											<div>
-												<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
-													Quantity
-												</label>
-												<div className="space-y-1.5">
-													<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-														Unit:{" "}
-														<span className="normal-case tracking-normal text-slate-700">
-															{product
-																? getUom(
-																		product,
-																	)
-																: "Select product"}
+													<td className={`col-span-2 block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:border-r sm:border-slate-200 sm:px-2 sm:py-3 ${rowBorderClass}`}>
+														<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+															Product
 														</span>
-													</div>
-													<div className="flex items-center gap-1.5">
-														<button
-															type="button"
-															className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
-															aria-label={`Decrease quantity for product ${index + 1}`}
-															disabled={
-																Number(
-																	line.quantity,
-																) <= 1
-															}
-															onClick={() =>
-																updateLine(
-																	index,
-																	{
-																		quantity:
-																			String(
-																				Math.max(
-																					1,
-																					Number(
-																						line.quantity ||
-																							1,
-																					) -
-																						1,
+														<div className="flex min-w-0 items-center gap-1">
+															<select
+																className="input h-10 w-auto min-w-0 flex-1 border-slate-200 bg-slate-50/50 pr-9 font-semibold text-slate-800 focus:bg-white"
+																value={
+																	line.productId
+																}
+																required
+																onChange={(
+																	event,
+																) =>
+																	updateLine(
+																		index,
+																		{
+																			productId:
+																				event
+																					.target
+																					.value,
+																			packageQuantity:
+																				getPackageDefault(
+																					products.find(
+																						(
+																							row,
+																						) =>
+																							String(
+																								row.id,
+																							) ===
+																							event
+																								.target
+																								.value,
+																					),
 																				),
+																		},
+																	)
+																}
+															>
+																<option value="">
+																	Select
+																	product
+																</option>
+																{products.map(
+																	(row) => (
+																		<option
+																			key={
+																				row.id
+																			}
+																			value={
+																				row.id
+																			}
+																		>
+																			{
+																				row.name
+																			}{" "}
+																			·{" "}
+																			{
+																				row.sku
+																			}
+																		</option>
+																	),
+																)}
+															</select>
+															<button
+																className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
+																type="button"
+																aria-label={`Remove product row ${index + 1}`}
+																disabled={
+																	lines.length ===
+																	1
+																}
+																onClick={() =>
+																	setLines(
+																		(
+																			current,
+																		) =>
+																			current.filter(
+																				(
+																					_,
+																					i,
+																				) =>
+																					i !==
+																					index,
 																			),
-																	},
-																)
+																	)
+																}
+															>
+																<Trash2
+																	size={16}
+																/>
+															</button>
+														</div>
+														{product &&
+															getUom(product) ===
+																"UOM not set" && (
+																<p className="mt-1 text-xs font-semibold text-rose-600">
+																	Set a UOM on
+																	the product
+																	first.
+																</p>
+															)}
+													</td>
+
+													{/* package qty */}
+													<td className={`block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:border-r sm:border-slate-200 sm:px-2 sm:py-3 ${rowBorderClass}`}>
+														<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+															Package quantity
+														</span>
+														<div className="flex min-w-0 items-center gap-1">
+															<input
+																id={`package-quantity-${index}`}
+																className="input h-10 min-w-0 flex-1 border-slate-200 bg-white px-1 text-center font-bold text-slate-900 sm:px-2"
+																type="text"
+																inputMode="decimal"
+																placeholder="e.g. 50"
+																value={
+																	line.packageQuantity
+																}
+																required
+																onChange={(
+																	event,
+																) =>
+																	updateLine(
+																		index,
+																		{
+																			packageQuantity:
+																				sanitizeDecimalInput(
+																					event
+																						.target
+																						.value,
+																				),
+																		},
+																	)
+																}
+																aria-label={`Package quantity per bag for product ${index + 1}`}
+															/>
+															<span className="shrink-0 text-xs font-bold text-slate-500">
+																{uomReady
+																	? uom
+																	: ""}
+															</span>
+														</div>
+														{hasValidPackageQuantity(
+															line.packageQuantity,
+														) && (
+															<p className="mt-1 text-[11px] font-medium text-slate-500">
+																{line.quantity}{" "}
+																bags ×{" "}
+																{
+																	line.packageQuantity
+																}{" "}
+																{uom} ={" "}
+																{(
+																	Number(
+																		line.quantity,
+																	) *
+																	Number(
+																		line.packageQuantity,
+																	)
+																).toLocaleString()}{" "}
+																{uom}
+															</p>
+														)}
+													</td>
+													{/* avg qty */}
+													<td className={`block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:border-r sm:border-slate-200 sm:px-2 sm:py-3 ${rowBorderClass}`}>
+														<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+															Avg. quantity
+														</span>
+														<div className="flex min-w-0 items-center gap-1">
+															<input
+																id={`avg-quantity-${index}`}
+																className="input h-10 min-w-0 flex-1 border-slate-200 bg-white px-1 text-center font-bold text-slate-900 sm:px-2"
+																type="text"
+																inputMode="decimal"
+																placeholder="Optional"
+																value={
+																	line.avgStandardQuantity
+																}
+																onChange={(
+																	event,
+																) =>
+																	updateLine(
+																		index,
+																		{
+																			avgStandardQuantity:
+																				sanitizeDecimalInput(
+																					event
+																						.target
+																						.value,
+																				),
+																		},
+																	)
+																}
+																aria-label={`Average standard quantity for product ${index + 1}`}
+															/>
+															<span className="shrink-0 text-xs font-bold text-slate-500">
+																{uomReady
+																	? uom
+																	: ""}
+															</span>
+														</div>
+													</td>
+													{/* UOM already displayed with avg qty and pkg qty */}
+													{/* <td className="block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:border-r sm:border-slate-200 sm:px-2 sm:py-3">
+														<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+															UOM
+														</span>
+														<span
+															className={`flex max-w-[7.5rem] shrink-0 items-center justify-center truncate border-l px-2.5 text-[11px] font-extrabold tracking-wide ${
+																uomReady
+																	? "border-emerald-200 bg-emerald-50 text-emerald-800"
+																	: "border-slate-200 bg-slate-100 text-slate-400"
+															}`}
+															title={
+																uomReady
+																	? uom
+																	: "UOM not set"
 															}
 														>
-															<Minus size={14} />
-														</button>
-														<input
-															className="input h-10 min-w-0 flex-1 border-slate-200 bg-white text-center font-bold text-slate-900"
-															type="text"
-															inputMode="numeric"
-															pattern="[0-9]*"
-															value={
-																line.quantity
-															}
-															required
-															onChange={(event) =>
-																updateLine(
-																	index,
-																	{
-																		quantity:
-																			event.target.value
-																				.replace(
-																					/[^0-9]/g,
-																					"",
-																				)
-																				.slice(
-																					0,
-																					4,
-																				),
-																	},
-																)
-															}
-															onBlur={() =>
-																updateLine(
-																	index,
-																	{
-																		quantity:
-																			String(
-																				Math.min(
-																					1000,
+															{uomReady
+																? uom
+																: "UOM"}
+														</span>
+													</td> */}
+													{/* bags */}
+													<td className={`col-span-2 block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:border-r sm:border-slate-200 sm:px-2 sm:py-3 ${rowBorderClass}`}>
+														<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+															Bags to create
+														</span>
+														<div className="flex items-center gap-1.5">
+															<button
+																type="button"
+																className="flex h-10 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40 sm:w-9"
+																aria-label={`Decrease quantity for product ${index + 1}`}
+																disabled={
+																	Number(
+																		line.quantity,
+																	) <= 1
+																}
+																onClick={() =>
+																	updateLine(
+																		index,
+																		{
+																			quantity:
+																				String(
 																					Math.max(
 																						1,
 																						Number(
-																							line.quantity,
-																						) ||
+																							line.quantity ||
+																								1,
+																						) -
 																							1,
 																					),
 																				),
-																			),
-																	},
-																)
-															}
-														/>
-														<button
-															type="button"
-															className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
-															aria-label={`Increase quantity for product ${index + 1}`}
-															disabled={
-																Number(
-																	line.quantity,
-																) >= 1000
-															}
-															onClick={() =>
-																updateLine(
-																	index,
-																	{
-																		quantity:
-																			String(
-																				Math.min(
-																					1000,
-																					Number(
-																						line.quantity ||
+																		},
+																	)
+																}
+															>
+																<Minus
+																	size={14}
+																/>
+															</button>
+															<input
+																className="input h-10 min-w-0 flex-1 border-slate-200 bg-white px-1 text-center font-bold text-slate-900"
+																type="text"
+																inputMode="numeric"
+																pattern="[0-9]*"
+																value={
+																	line.quantity
+																}
+																required
+																onChange={(
+																	event,
+																) =>
+																	updateLine(
+																		index,
+																		{
+																			quantity:
+																				event.target.value
+																					.replace(
+																						/[^0-9]/g,
+																						"",
+																					)
+																					.slice(
+																						0,
+																						4,
+																					),
+																		},
+																	)
+																}
+																onBlur={() =>
+																	updateLine(
+																		index,
+																		{
+																			quantity:
+																				String(
+																					Math.min(
+																						1000,
+																						Math.max(
 																							1,
-																					) +
-																						1,
+																							Number(
+																								line.quantity,
+																							) ||
+																								1,
+																						),
+																					),
 																				),
-																			),
-																	},
-																)
+																		},
+																	)
+																}
+															/>
+															<button
+																type="button"
+																className="flex h-10 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40 sm:w-9"
+																aria-label={`Increase quantity for product ${index + 1}`}
+																disabled={
+																	Number(
+																		line.quantity,
+																	) >= 1000
+																}
+																onClick={() =>
+																	updateLine(
+																		index,
+																		{
+																			quantity:
+																				String(
+																					Math.min(
+																						1000,
+																						Number(
+																							line.quantity ||
+																								1,
+																						) +
+																							1,
+																					),
+																				),
+																		},
+																	)
+																}
+															>
+																<Plus
+																	size={14}
+																/>
+															</button>
+														</div>
+														<span className="text-[11px] font-medium text-slate-500">
+															{lineLabels.toLocaleString()}{" "}
+															QR{" "}
+															{lineLabels === 1
+																? "label"
+																: "labels"}{" "}
+															will print for this
+															line.
+														</span>
+													</td>
+													{(!useSameLocation ||
+														index === 0) && (
+														<td
+															rowSpan={
+																useSameLocation
+																	? lines.length
+																	: undefined
 															}
+															className={`col-span-2 block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:px-2 sm:py-3 ${
+																useSameLocation
+																	? "sm:border-b-0"
+																	: `sm:border-b sm:border-slate-200 ${
+																			index ===
+																			lines.length -
+																				1
+																				? "sm:border-b-0"
+																				: ""
+																		}`
+															}`}
 														>
-															<Plus size={14} />
-														</button>
-													</div>
-												</div>
-											</div>
-											<div>
-												<label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600 sm:sr-only">
-													Storage location
-												</label>
-												<LocationCascade
-													warehouses={warehouses}
-													value={line.shelfLocationId}
-													reservedLocationIds={lines
-														.filter(
-															(_, rowIndex) =>
-																rowIndex !==
-																index,
-														)
-														.map(
-															(row) =>
-																row.shelfLocationId,
-														)}
-													onChange={(value) =>
-														updateLine(index, {
-															shelfLocationId:
-																value,
-														})
-													}
-												/>
-											</div>
-											<button
-												className="btn-ghost rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-												type="button"
-												aria-label={`Remove product row ${index + 1}`}
-												disabled={lines.length === 1}
-												onClick={() =>
-													setLines((current) =>
-														current.filter(
-															(_, i) =>
-																i !== index,
-														),
-													)
-												}
-											>
-												<Trash2 size={16} />
-											</button>
-										</div>
-									);
-								})}
+															<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+																{useSameLocation
+																	? "Shared godown"
+																	: "Godown"}
+															</span>
+															<GodownSelector
+																warehouses={
+																	warehouses
+																}
+																warehouseId={
+																	line.warehouseId
+																}
+																value={
+																	line.shelfLocationId
+																}
+																requiredQuantity={
+																	positionsNeeded
+																}
+																onChange={(
+																	warehouseId,
+																	value,
+																) =>
+																	setLineLocation(
+																		index,
+																		warehouseId,
+																		value,
+																	)
+																}
+															/>
+														</td>
+													)}
+												</tr>
+											);
+										})}
+									</tbody>
+								</table>
 								{availableLocationCount === 0 && loaded && (
 									<p className="text-sm text-rose-600">
-										Add a warehouse, rack, and shelf
-										position under Warehouse Management
-										before creating a batch.
+										Add an active godown with available
+										storage positions before creating a
+										batch.
 									</p>
 								)}
+								{availableLocationCount > 0 &&
+									!hasEnoughLocations &&
+									lines.some((line) => line.warehouseId) && (
+										<p className="text-sm text-rose-600">
+											The selected godown does not have
+											enough empty positions for all bags.
+											Each bag needs its own position.
+										</p>
+									)}
 								<div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
 									<button
 										type="button"
 										className="btn-secondary"
-										onClick={() =>
-											setLines((current) => [
-												...current,
-												newLine(),
-											])
-										}
+										onClick={addLine}
 									>
 										<Plus size={16} /> Add product
 									</button>
@@ -871,7 +1257,7 @@ export default function QCBatches() {
 											}
 										>
 											{busy ? (
-												"Creating batches…"
+												"Creating batch…"
 											) : (
 												<>
 													<Printer size={16} /> Create

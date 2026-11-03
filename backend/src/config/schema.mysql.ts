@@ -236,6 +236,18 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing("batches", "vendor_id", "INT NULL");
   await addColumnIfMissing("batches", "grade_id", "INT NULL");
   await addColumnIfMissing("batches", "bag_quantity_id", "INT NULL");
+  // Optional approximate average quantity captured at QC batch creation.
+  // Internal reference only: never rendered in lists, labels, or reports.
+  await addColumnIfMissing(
+    "batches",
+    "avg_standard_quantity",
+    "DECIMAL(14,4) NULL",
+  );
+  await addColumnIfMissing(
+    "batches",
+    "package_quantity",
+    "DECIMAL(14,4) NULL",
+  );
   await addColumnIfMissing(
     "batches",
     "fg_details_completed_at",
@@ -517,18 +529,40 @@ export async function ensureAdminSchema(): Promise<void> {
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     print_job_id INT NOT NULL,
     batch_id INT NOT NULL,
-    qr_value VARCHAR(255) NOT NULL,
+    qr_value VARCHAR(1000) NOT NULL,
     serial_no INT NOT NULL,
     print_count INT NOT NULL DEFAULT 1,
     last_printed_at DATETIME(3) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_qr_label_value (qr_value),
+    UNIQUE KEY uq_qr_label_value (qr_value(191)),
     UNIQUE KEY uq_qr_label_serial (print_job_id, serial_no),
     KEY idx_qr_labels_batch (batch_id),
     KEY idx_qr_labels_job (print_job_id),
     FOREIGN KEY (print_job_id) REFERENCES qr_print_jobs(id) ON DELETE CASCADE,
     FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  const qrValueIndex = await query<RowDataPacket[]>(
+    `SELECT SUB_PART FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'qr_labels'
+       AND INDEX_NAME = 'uq_qr_label_value' LIMIT 1`,
+  );
+  if (qrValueIndex.length && Number(qrValueIndex[0].SUB_PART) !== 191) {
+    await execute("ALTER TABLE qr_labels DROP INDEX uq_qr_label_value");
+  }
+  const qrValueColumn = await query<RowDataPacket[]>(
+    `SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'qr_labels'
+       AND COLUMN_NAME = 'qr_value' LIMIT 1`,
+  );
+  if (Number(qrValueColumn[0]?.CHARACTER_MAXIMUM_LENGTH) !== 1000) {
+    await execute("ALTER TABLE qr_labels MODIFY COLUMN qr_value VARCHAR(1000) NOT NULL");
+  }
+  await addUniqueIndexIfMissing(
+    "qr_labels",
+    "uq_qr_label_value",
+    "qr_value(191)",
+  );
 
   await execute(`CREATE TABLE IF NOT EXISTS uoms (
     id INT AUTO_INCREMENT PRIMARY KEY,

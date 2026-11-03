@@ -320,13 +320,13 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
 
 export async function list(_req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
-  const batches = await ctx.find('batches', {}, { sort: { created_at: -1 }, projection: { _id: 0 } });
+  const batches = await ctx.find('batches', {}, { sort: { created_at: -1 }, projection: { _id: 0, avg_standard_quantity: 0 } });
   const products = await mapByIds<{ id: EntityId; name: string; sku: string; grade?: string | null }>(
     ctx,
     'products',
     batches.map((batch) => batch.product_id)
   );
-  const locations = await mapByIds<{ id: EntityId; location_code: string }>(
+  const locations = await mapByIds<{ id: EntityId; location_code: string; warehouse?: string | null }>(
     ctx,
     'shelf_locations',
     batches.map((batch) => batch.shelf_location_id)
@@ -358,6 +358,7 @@ export async function list(_req: Request, res: Response): Promise<void> {
       bag_quantity_unit: bagQuantities.get(idKey(batch.bag_quantity_id))?.unit ?? null,
       product_grade: product?.grade ?? null,
       location_code: location?.location_code ?? null,
+      warehouse_name: location?.warehouse ?? null,
       qr_count: stats?.count ?? 0,
       qr_job_id: stats?.jobId ?? null,
       reserved_quantity: reservedByBatch.get(idKey(batch.id)) || 0,
@@ -502,7 +503,7 @@ export async function getById(req: Request, res: Response): Promise<void> {
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const ctx = await getContext();
-  const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0 } });
+  const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0, avg_standard_quantity: 0 } });
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
   const product = await ctx.findOne('products', { id: batch.product_id }, {
     projection: { _id: 0, name: 1, sku: 1 },

@@ -35,6 +35,9 @@ export interface Batch {
   batch_number: string;
   quantity: number;
   uom: string | null;
+  /** Approximate average quantity per unit, captured at QC batch creation. Internal only. */
+  avg_standard_quantity?: number | null;
+  package_quantity?: number | null;
   unit_price: number;
   manufacturing_date: string | null;
   expiry_date: string | null;

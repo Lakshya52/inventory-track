@@ -139,28 +139,55 @@ export default function Batches() {
 
   const selectedProduct = useMemo(() => products.find((p) => String(p.id) === productId), [productId, products]);
 
-  const filteredBatches = useMemo(() => {
-    if (!debouncedSearchQuery) return batches;
-    const q = debouncedSearchQuery.toLowerCase();
-    return batches.filter(
-      (b) =>
-        (b.product_name || '').toLowerCase().includes(q) ||
-        (b.product_sku || '').toLowerCase().includes(q) ||
-        b.batch_number.toLowerCase().includes(q) ||
-        b.barcode_value.toLowerCase().includes(q)
-    );
-  }, [batches, debouncedSearchQuery]);
-
-  const batchesByGroup = useMemo(() => {
-    const groups = new Map<string, Batch[]>();
-    batches.forEach((batch) => {
-      if (!batch.batch_group_id) return;
-      const group = groups.get(batch.batch_group_id) || [];
-      group.push(batch);
-      groups.set(batch.batch_group_id, group);
-    });
-    return groups;
+  const groupedBatches = useMemo(() => {
+    const groups = new Map<string, any>();
+    for (const batch of batches) {
+      const key = batch.batch_group_id ? `group:${batch.batch_group_id}` : `batch:${batch.id}`;
+      const group = groups.get(key) || {
+        ...batch,
+        id: batch.batch_group_id ? key : batch.id,
+        batch_number: batch.parent_batch_number || batch.batch_number,
+        group_batches: [],
+        product_lines: new Map<string, any>(),
+        total_bags: 0,
+      };
+      group.group_batches.push(batch);
+      group.total_bags += Number(batch.quantity || 0);
+      const productKey = String(batch.product_id);
+      const line = group.product_lines.get(productKey) || {
+        ...batch,
+        quantity: 0,
+        locations: new Set<string>(),
+      };
+      line.quantity += Number(batch.quantity || 0);
+      if (batch.location_code || batch.storage_location) {
+        line.locations.add(String(batch.location_code || batch.storage_location));
+      }
+      group.product_lines.set(productKey, line);
+      groups.set(key, group);
+    }
+    return [...groups.values()].map((group) => ({
+      ...group,
+      product_lines: [...group.product_lines.values()].map((line) => ({
+        ...line,
+        locations: [...line.locations],
+      })),
+    }));
   }, [batches]);
+
+  const filteredBatches = useMemo(() => {
+    if (!debouncedSearchQuery) return groupedBatches;
+    const q = debouncedSearchQuery.toLowerCase();
+    return groupedBatches.filter((batch) =>
+      batch.batch_number.toLowerCase().includes(q) ||
+      batch.group_batches.some((item: Batch) =>
+        (item.product_name || '').toLowerCase().includes(q) ||
+        (item.product_sku || '').toLowerCase().includes(q) ||
+        item.batch_number.toLowerCase().includes(q) ||
+        item.barcode_value.toLowerCase().includes(q)
+      )
+    );
+  }, [groupedBatches, debouncedSearchQuery]);
 
   const resetForm = () => {
     setProductId('');
@@ -281,17 +308,26 @@ export default function Batches() {
     setDownloadingGroupId(groupId);
     setError('');
     try {
+      const productBatches = [...new Map(
+        groupBatches
+          .filter((batch) => batch.qr_job_id)
+          .map((batch) => [String(batch.qr_job_id), batch])
+      ).values()];
       const batchPayloads = await Promise.all(
-        groupBatches.map(async (batch) => {
+        productBatches.map(async (batch) => {
           if (!batch.qr_job_id) {
             throw new Error(`Batch ${batch.batch_number} does not have QR labels ready.`);
           }
           const detail = await api.qc.qrJobs.get(batch.qr_job_id);
-          return { batch_number: batch.batch_number, qr_job: detail.job, labels: detail.labels };
+          return {
+            batch_number: `${batch.product_name || batch.batch_number}-${batch.batch_number}`,
+            qr_job: detail.job,
+            labels: detail.labels,
+          };
         })
       );
       await downloadCreatedQrPdfs(batchPayloads);
-      setSuccess(`Downloaded QR labels for group (${groupBatches.length} batches).`);
+      setSuccess(`Downloaded QR labels for ${productBatches.length} product${productBatches.length === 1 ? '' : 's'} in batch ${groupBatches[0].parent_batch_number || groupBatches[0].batch_number}.`);
     } catch (err: any) {
       setError(err.message || 'Could not download ZIP archive');
     } finally {
@@ -313,10 +349,10 @@ export default function Batches() {
     }
   };
 
-  const totalBatches = batches.length;
-  const inStockBatches = batches.filter((b) => b.status === 'QC_PASSED').length;
-  const readyLoading = batches.filter((b) => b.status === 'DISPATCH_APPROVED' || b.status === 'DISPATCH_ORDER_RAISED').length;
-  const dispatchedBatches = batches.filter((b) => b.status === 'DISPATCHED').length;
+  const totalBatches = groupedBatches.length;
+  const inStockBatches = groupedBatches.filter((b) => b.status === 'QC_PASSED').length;
+  const readyLoading = groupedBatches.filter((b) => b.status === 'DISPATCH_APPROVED' || b.status === 'DISPATCH_ORDER_RAISED').length;
+  const dispatchedBatches = groupedBatches.filter((b) => b.status === 'DISPATCHED').length;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -428,9 +464,6 @@ export default function Batches() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredBatches.map((b) => {
-                const batchGroup = b.batch_group_id ? batchesByGroup.get(b.batch_group_id) : undefined;
-                const isFirstInGroup = batchGroup?.[0].id === b.id;
-                const readyCount = batchGroup?.filter((batch) => batch.qr_job_id).length ?? 0;
                 const badge = statusBadgeStyle[b.status] || {
                   bg: 'bg-slate-100 text-slate-800 border-slate-200',
                   label: b.status,
@@ -439,8 +472,23 @@ export default function Batches() {
                 return (
                   <tr key={b.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-5 py-4">
-                      <div className="font-bold text-slate-900 text-base">{b.product_name}</div>
-                      <div className="text-xs text-slate-500 font-medium mt-0.5">{b.product_sku}</div>
+                      <div className="space-y-2">
+                        {b.product_lines.map((line: any) => (
+                          <div key={line.product_id} className="min-w-48">
+                            <div className="font-bold text-slate-900 text-base">{line.product_name}</div>
+                            <div className="text-xs text-slate-500 font-medium mt-0.5">
+                              {line.product_sku} · {line.package_quantity ? `${line.package_quantity} ${line.uom || ''} × ` : ''}{line.quantity} bags
+                            </div>
+                            {line.locations.length > 0 && (
+                              <div className="mt-0.5 text-xs text-slate-500">
+                                {line.locations.length === 1
+                                  ? line.locations[0]
+                                  : `${line.locations.length} storage positions in ${line.warehouse_name || 'godown'}`}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </td>
 
                     <td className="px-5 py-4">
@@ -450,12 +498,7 @@ export default function Batches() {
                     </td>
 
                     <td className="px-5 py-4">
-                      <div className="font-bold text-slate-900">{b.quantity} bags</div>
-                      {b.bag_quantity && (
-                        <div className="text-xs text-slate-500 font-medium mt-0.5">
-                          {b.bag_quantity} {b.bag_quantity_unit} size
-                        </div>
-                      )}
+                      <div className="font-bold text-slate-900">{b.total_bags} bags</div>
                     </td>
 
                     <td className="px-5 py-4">
@@ -467,7 +510,9 @@ export default function Batches() {
 
                     <td className="px-5 py-4">
                       <span className="text-xs font-bold px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                        {b.location_code || b.storage_location || 'Not set'}
+                        {b.batch_group_id
+                          ? `${b.total_bags} assigned positions · ${[...new Set(b.product_lines.map((line: any) => line.warehouse_name).filter(Boolean))].join(', ') || 'Godown not set'}`
+                          : b.location_code || b.storage_location || 'Not set'}
                       </span>
                     </td>
 
@@ -480,7 +525,17 @@ export default function Batches() {
                     {canDownloadQr && (
                       <td className="px-5 py-4 text-right">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
-                          {b.qr_job_id && (
+                          {b.batch_group_id && (
+                            <button
+                              onClick={() => void handleDownloadGroupZip(b.group_batches)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200"
+                              disabled={downloadingGroupId === b.batch_group_id}
+                            >
+                              <Download size={14} /> {downloadingGroupId === b.batch_group_id ? 'Zipping…' : 'QR Labels ZIP'}
+                            </button>
+                          )}
+
+                          {!b.batch_group_id && b.qr_job_id && (
                             <button
                               onClick={() => handlePrintQR(b)}
                               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200"
@@ -490,19 +545,7 @@ export default function Batches() {
                             </button>
                           )}
 
-                          {batchGroup && batchGroup.length > 1 && isFirstInGroup && (
-                            readyCount === batchGroup.length ? (
-                              <button
-                                onClick={() => void handleDownloadGroupZip(batchGroup)}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200"
-                                disabled={downloadingGroupId === b.batch_group_id}
-                              >
-                                <Download size={14} /> {downloadingGroupId === b.batch_group_id ? 'Zipping…' : `All QR ZIP (${batchGroup.length})`}
-                              </button>
-                            ) : null
-                          )}
-
-                          {canManageBatches && b.status === 'QC_PASSED' && !b.fg_details_completed_at && (
+                          {canManageBatches && !b.batch_group_id && b.status === 'QC_PASSED' && !b.fg_details_completed_at && (
                             <button
                               onClick={() => {
                                 setFinishGoodsSelection({ vendorId: '', gradeId: '', bagQuantityId: '' });

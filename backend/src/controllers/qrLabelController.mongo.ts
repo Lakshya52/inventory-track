@@ -80,17 +80,36 @@ async function jobDetail(id: EntityId): Promise<{ job: Record<string, any>; labe
     'batches',
     labels.map((label) => label.batch_id)
   );
+  const products = await mapByIds<Record<string, any>>(
+    ctx,
+    'products',
+    labels.map((label) => batches.get(idKey(label.batch_id))?.product_id)
+  );
+  const locations = await mapByIds<Record<string, any>>(
+    ctx,
+    'shelf_locations',
+    labels.map((label) => batches.get(idKey(label.batch_id))?.shelf_location_id)
+  );
 
   return {
     job: enrichedJob,
     labels: labels.map((label) => {
       const batch = batches.get(idKey(label.batch_id));
+      const product = products.get(idKey(batch?.product_id));
+      const location = locations.get(idKey(batch?.shelf_location_id));
       return {
         ...label,
-        batch_number: batch?.batch_number ?? null,
+        batch_number: batch?.parent_batch_number ?? batch?.batch_number ?? null,
+        child_batch_number: batch?.batch_number ?? null,
         status: batch?.status ?? null,
-        quantity: batch?.quantity ?? null,
+        quantity: job.quantity ?? batch?.quantity ?? null,
+        package_quantity: batch?.package_quantity ?? null,
         uom: batch?.uom ?? null,
+        product_name: product?.name ?? null,
+        product_sku: product?.sku ?? null,
+        warehouse_name: location?.warehouse ?? null,
+        storage_location_id: batch?.shelf_location_id ?? null,
+        storage_location: location?.location_code ?? batch?.storage_location ?? null,
       };
     }),
   };

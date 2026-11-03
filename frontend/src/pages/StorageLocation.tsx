@@ -198,6 +198,8 @@ function Dialog({
 }
 function RackForm({
 	warehouse,
+	capacity,
+	otherRackPositions,
 	initialRack,
 	isEditing,
 	saving,
@@ -205,6 +207,8 @@ function RackForm({
 	onSubmit,
 }: {
 	warehouse: string;
+	capacity: number;
+	otherRackPositions: number;
 	initialRack?: StorageRack | null;
 	isEditing: boolean;
 	saving: boolean;
@@ -228,6 +232,12 @@ function RackForm({
 	const padLength = String(startNumber + count - 1).length;
 	const firstName = `${values.name.trim()}${String(startNumber).padStart(padLength, "0")}`;
 	const lastName = `${values.name.trim()}${String(startNumber + count - 1).padStart(padLength, "0")}`;
+	const requestedPositions =
+		(Number(values.rows) || 0) *
+		(Number(values.columns) || 0) *
+		(bulk ? count : 1);
+	const remainingPositions = Math.max(0, capacity - otherRackPositions);
+	const exceedsCapacity = requestedPositions > remainingPositions;
 	return (
 		<Dialog title={`${isEditing ? "Edit rack" : "Add rack"} · ${warehouse}`} onClose={onCancel}>
 			<form
@@ -300,6 +310,18 @@ function RackForm({
 					<strong>{(Number(values.rows) || 0) * (Number(values.columns) || 0) * (bulk ? count : 1)} shelf positions</strong> will be generated for QC’s location selector.
 					{bulk && <span className="mt-1 block text-xs">Rack names: {firstName} through {lastName}</span>}
 				</div>
+				<p className="text-xs font-medium text-slate-600">
+					Godown capacity: {capacity.toLocaleString()} positions ·{" "}
+					{otherRackPositions.toLocaleString()} already configured ·{" "}
+					{remainingPositions.toLocaleString()} available for this rack setup.
+				</p>
+				{exceedsCapacity && (
+					<p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+						This would exceed the godown capacity by{" "}
+						{(requestedPositions - remainingPositions).toLocaleString()} positions.
+						Reduce the rack dimensions or number of racks to continue.
+					</p>
+				)}
 				<p className="text-xs text-slate-500">
 					Maximum 300 positions per rack.
 				</p>
@@ -311,7 +333,7 @@ function RackForm({
 					>
 						Cancel
 					</button>
-					<button className="btn-primary" disabled={saving}>
+					<button className="btn-primary" disabled={saving || exceedsCapacity}>
 						{saving ? (
 							<Loader2 size={15} className="animate-spin" />
 						) : (
@@ -441,6 +463,16 @@ export default function StorageLocation() {
 				const existing = new Set(warehouse.racks.map((rack) => rack.rack_code.toLowerCase()));
 				const duplicate = names.find((name) => existing.has(name.toLowerCase()));
 				if (!values.name.trim() || duplicate) throw new Error(duplicate ? `Rack ${duplicate} already exists in this location.` : "Enter a rack name prefix.");
+				const requestedPositions = count * dimensions.rows * dimensions.columns;
+				const remainingPositions = Math.max(
+					0,
+					Number(warehouse.capacity) - positions,
+				);
+				if (requestedPositions > remainingPositions) {
+					throw new Error(
+						`This setup needs ${requestedPositions} positions, but only ${remainingPositions} remain in this godown.`,
+					);
+				}
 				let created = 0;
 				try {
 					for (const name of names) {
@@ -821,6 +853,11 @@ export default function StorageLocation() {
 						<RackForm
 							key={editingRack?.id ?? "new-rack"}
 							warehouse={warehouse.name}
+							capacity={Number(warehouse.capacity)}
+							otherRackPositions={
+								positions -
+								(editingRack?.total_cells || 0)
+							}
 							initialRack={editingRack}
 							isEditing={Boolean(editingRack)}
 							saving={saving}

@@ -246,7 +246,7 @@ export const api = {
       message: string;
     }> =>
       request('/batches', { method: 'POST', body: JSON.stringify(data) }),
-    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; uom: string; shelf_location_id: EntityId; unit_price?: number }> }) =>
+    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; unit_price?: number; avg_standard_quantity?: number | null }> }) =>
       request<{ id: string; batch_group_id: string; batch_number: string; product_count: number; total_quantity: number; batches: Array<any>; labels: Array<QrLabel>; message: string }>('/batches/group', { method: 'POST', body: JSON.stringify(data) }),
     finishGoods: (id: EntityId, data: { vendor_id: EntityId; grade_id: EntityId; bag_quantity_id: EntityId; shelf_location_id?: EntityId }) =>
       request<any>(`/batches/${idPath(id)}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { query, withTransaction } from '../config/database';
-import { RowDataPacket } from 'mysql2';
+import { ResultSetHeader, RowDataPacket } from 'mysql2';
 
 function validName(value: unknown): string { return typeof value === 'string' ? value.trim().slice(0, 120) : ''; }
 function positiveInt(value: unknown, max: number): number { const n = Number(value); return Number.isInteger(n) && n > 0 && n <= max ? n : 0; }
@@ -159,6 +159,8 @@ export async function updateWarehouse(req: Request, res: Response): Promise<void
   if (!name || !capacity) { res.status(400).json({ error: 'Enter a warehouse name and positive capacity.' }); return; }
   const current = await snapshot(req.user!.tenantId, req.params.id);
   if (!current) { res.status(404).json({ error: 'Storage location not found.' }); return; }
+  const positions = (current.racks || []).reduce((sum: number, rack: any) => sum + (rack.cells || []).length, 0);
+  if (capacity < positions) { res.status(409).json({ error: `Capacity cannot be below the ${positions} storage positions already configured.` }); return; }
   if (capacity < Number(current.occupied_capacity)) { res.status(409).json({ error: `Capacity cannot be below the ${current.occupied_capacity} units currently stored.` }); return; }
   const duplicate = await query<RowDataPacket[]>('SELECT id FROM warehouses WHERE tenant_id = ? AND id <> ? AND LOWER(name) = LOWER(?) LIMIT 1', [req.user!.tenantId, req.params.id, name]);
   if (duplicate.length) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
@@ -173,17 +175,29 @@ export async function createRack(req: Request, res: Response): Promise<void> {
   if (!warehouseRows.length) { res.status(404).json({ error: 'Storage location not found.' }); return; }
   const duplicate = await query<RowDataPacket[]>('SELECT id FROM storage_racks WHERE tenant_id = ? AND warehouse_id = ? AND LOWER(rack_code) = LOWER(?) LIMIT 1', [req.user!.tenantId, req.params.id, rackCode]);
   if (duplicate.length) { res.status(409).json({ error: 'That rack name already exists in this storage location.' }); return; }
-  await withTransaction(async conn => {
-    const cells: any[] = [];
-    for (let row = 1; row <= rows; row++) for (let column = 1; column <= columns; column++) {
-      const shelf = `S${row}`;
-      const position = `P${column}`;
-      const locationCode = locationCodeFor(warehouseRows[0].name, rackCode, row, column);
-      const [loc] = await conn.execute('INSERT INTO shelf_locations (tenant_id, location_code, description, warehouse, rack, shelf, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [req.user!.tenantId, locationCode, `${warehouseRows[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouseRows[0].name, rackCode, `${shelf}-${position}`]);
-      cells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: String(loc.insertId), location_code: locationCode });
-    }
-    await conn.execute('INSERT INTO storage_racks (tenant_id, warehouse_id, rack_code, rows_count, columns_count, cells) VALUES (?, ?, ?, ?, ?, ?)', [req.user!.tenantId, req.params.id, rackCode, rows, columns, JSON.stringify(cells)]);
-  });
+  try {
+    await withTransaction(async conn => {
+      const [lockedWarehouse] = await (conn as any).execute('SELECT id, name, capacity FROM warehouses WHERE id = ? AND tenant_id = ? FOR UPDATE', [req.params.id, req.user!.tenantId]) as [RowDataPacket[], any];
+      if (!lockedWarehouse.length) throw Object.assign(new Error('Storage location not found.'), { statusCode: 404 });
+      const [existingRacks] = await (conn as any).execute('SELECT cells FROM storage_racks WHERE tenant_id = ? AND warehouse_id = ? FOR UPDATE', [req.user!.tenantId, req.params.id]) as [RowDataPacket[], any];
+      const currentPositions = existingRacks.reduce((sum: number, rack: RowDataPacket) => sum + parseJson(rack.cells).length, 0);
+      if (currentPositions + rows * columns > Number(lockedWarehouse[0].capacity)) {
+        throw Object.assign(new Error(`This godown can have at most ${lockedWarehouse[0].capacity} positions. It already has ${currentPositions}.`), { statusCode: 409 });
+      }
+      const cells: any[] = [];
+      for (let row = 1; row <= rows; row++) for (let column = 1; column <= columns; column++) {
+        const shelf = `S${row}`;
+        const position = `P${column}`;
+        const locationCode = locationCodeFor(lockedWarehouse[0].name, rackCode, row, column);
+        const [loc] = await (conn as any).execute('INSERT INTO shelf_locations (tenant_id, location_code, description, warehouse, rack, shelf, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [req.user!.tenantId, locationCode, `${lockedWarehouse[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, lockedWarehouse[0].name, rackCode, `${shelf}-${position}`]) as [ResultSetHeader, any];
+        cells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: String(loc.insertId), location_code: locationCode });
+      }
+      await conn.execute('INSERT INTO storage_racks (tenant_id, warehouse_id, rack_code, rows_count, columns_count, cells) VALUES (?, ?, ?, ?, ?, ?)', [req.user!.tenantId, req.params.id, rackCode, rows, columns, JSON.stringify(cells)]);
+    });
+  } catch (error: any) {
+    res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not create rack.' });
+    return;
+  }
   const updated = await snapshot(req.user!.tenantId, req.params.id);
   res.status(201).json(updated?.racks.find((rack: any) => rack.rack_code === rackCode));
 }
@@ -212,37 +226,50 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
     if (occupied.length) { res.status(409).json({ error: 'Move or dispatch the stock before changing rack dimensions.' }); return; }
   }
 
-  await withTransaction(async conn => {
-    let nextCells: any[] = [];
-    if (dimensionsChanged) {
-      if (ids.length) {
-        const marks = ids.map(() => '?').join(',');
-        await conn.execute(`DELETE FROM shelf_locations WHERE tenant_id = ? AND id IN (${marks})`, [req.user!.tenantId, ...ids]);
+  try {
+    await withTransaction(async conn => {
+      const [lockedWarehouse] = await (conn as any).execute('SELECT id, name, capacity FROM warehouses WHERE id = ? AND tenant_id = ? FOR UPDATE', [req.params.id, req.user!.tenantId]) as [RowDataPacket[], any];
+      if (!lockedWarehouse.length) throw Object.assign(new Error('Storage location not found.'), { statusCode: 404 });
+      const [allRacks] = await (conn as any).execute('SELECT id, cells FROM storage_racks WHERE tenant_id = ? AND warehouse_id = ? FOR UPDATE', [req.user!.tenantId, req.params.id]) as [RowDataPacket[], any];
+      const currentPositions = allRacks.reduce((sum: number, rack: RowDataPacket) =>
+        sum + (String(rack.id) === String(req.params.rackId) ? 0 : parseJson(rack.cells).length), 0);
+      if (currentPositions + rows * columns > Number(lockedWarehouse[0].capacity)) {
+        throw Object.assign(new Error(`This godown can have at most ${lockedWarehouse[0].capacity} positions. Other racks already use ${currentPositions}.`), { statusCode: 409 });
       }
-      for (let row = 1; row <= rows; row++) for (let column = 1; column <= columns; column++) {
-        const shelf = `S${row}`;
-        const position = `P${column}`;
-        const locationCode = locationCodeFor(warehouses[0].name, rackCode, row, column);
-        // mysql2's promise `execute` resolves through a mixin type that TS sees
-        // as untyped, so a generic argument is not allowed here.
-        const [location] = await (conn as any).execute('INSERT INTO shelf_locations (tenant_id, location_code, description, warehouse, rack, shelf, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [req.user!.tenantId, locationCode, `${warehouses[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouses[0].name, rackCode, `${shelf}-${position}`]);
-        nextCells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: String(location.insertId), location_code: locationCode });
+      let nextCells: any[] = [];
+      if (dimensionsChanged) {
+        if (ids.length) {
+          const marks = ids.map(() => '?').join(',');
+          await conn.execute(`DELETE FROM shelf_locations WHERE tenant_id = ? AND id IN (${marks})`, [req.user!.tenantId, ...ids]);
+        }
+        for (let row = 1; row <= rows; row++) for (let column = 1; column <= columns; column++) {
+          const shelf = `S${row}`;
+          const position = `P${column}`;
+          const locationCode = locationCodeFor(warehouses[0].name, rackCode, row, column);
+          // mysql2's promise `execute` resolves through a mixin type that TS sees
+          // as untyped, so a generic argument is not allowed here.
+          const [location] = await (conn as any).execute('INSERT INTO shelf_locations (tenant_id, location_code, description, warehouse, rack, shelf, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)', [req.user!.tenantId, locationCode, `${warehouses[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouses[0].name, rackCode, `${shelf}-${position}`]);
+          nextCells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: String(location.insertId), location_code: locationCode });
+        }
+      } else {
+        nextCells = oldCells.map(cell => {
+          const shelf = `S${cell.row}`;
+          const position = `P${cell.column}`;
+          const locationCode = locationCodeFor(warehouses[0].name, rackCode, cell.row, cell.column);
+          return { ...cell, cell_code: `${rackCode}-${shelf}-${position}`, location_code: locationCode };
+        });
       }
-    } else {
-      nextCells = oldCells.map(cell => {
-        const shelf = `S${cell.row}`;
-        const position = `P${cell.column}`;
-        const locationCode = locationCodeFor(warehouses[0].name, rackCode, cell.row, cell.column);
-        return { ...cell, cell_code: `${rackCode}-${shelf}-${position}`, location_code: locationCode };
-      });
       for (const cell of nextCells) {
         const shelf = `S${cell.row}`;
         const position = `P${cell.column}`;
         await conn.execute('UPDATE shelf_locations SET location_code = ?, description = ?, warehouse = ?, rack = ?, shelf = ? WHERE id = ? AND tenant_id = ?', [cell.location_code, `${warehouses[0].name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouses[0].name, rackCode, `${shelf}-${position}`, cell.shelf_location_id, req.user!.tenantId]);
       }
-    }
-    await conn.execute('UPDATE storage_racks SET rack_code = ?, rows_count = ?, columns_count = ?, cells = ? WHERE id = ? AND warehouse_id = ? AND tenant_id = ?', [rackCode, rows, columns, JSON.stringify(nextCells), req.params.rackId, req.params.id, req.user!.tenantId]);
-  });
+      await conn.execute('UPDATE storage_racks SET rack_code = ?, rows_count = ?, columns_count = ?, cells = ? WHERE id = ? AND warehouse_id = ? AND tenant_id = ?', [rackCode, rows, columns, JSON.stringify(nextCells), req.params.rackId, req.params.id, req.user!.tenantId]);
+    });
+  } catch (error: any) {
+    res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not update rack.' });
+    return;
+  }
 
   const updated = await snapshot(req.user!.tenantId, req.params.id);
   res.json(updated?.racks.find((rack: any) => String(rack.id) === String(req.params.rackId)));

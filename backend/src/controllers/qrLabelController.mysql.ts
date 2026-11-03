@@ -17,9 +17,16 @@ async function jobDetail(id: number): Promise<{ job: any; labels: any[] } | null
   );
   if (jobs.length === 0) return null;
   const labels = await query<RowDataPacket[]>(
-    `SELECT l.*, b.batch_number, b.status, b.quantity, b.uom
+    `SELECT l.*, COALESCE(b.parent_batch_number, b.batch_number) AS batch_number,
+            b.batch_number AS child_batch_number, b.status, j.quantity,
+            b.package_quantity, b.uom, p.name AS product_name, p.sku AS product_sku,
+            b.shelf_location_id, COALESCE(s.location_code, b.storage_location) AS storage_location,
+            s.warehouse AS warehouse_name
      FROM qr_labels l
      JOIN batches b ON l.batch_id = b.id
+     JOIN qr_print_jobs j ON l.print_job_id = j.id
+     JOIN products p ON b.product_id = p.id
+     LEFT JOIN shelf_locations s ON b.shelf_location_id = s.id
      WHERE l.print_job_id = ?
      ORDER BY l.serial_no ASC`,
     [id]
