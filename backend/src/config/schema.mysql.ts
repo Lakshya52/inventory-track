@@ -250,6 +250,18 @@ export async function ensureAdminSchema(): Promise<void> {
     "container_number",
     "VARCHAR(100) NULL",
   );
+  // When the load is planned to leave the plant. Captured with the order and
+  // shown on the dispatch dashboard and packing list.
+  await addColumnIfMissing(
+    "dispatch_orders",
+    "scheduled_dispatch_at",
+    "DATETIME(3) NULL",
+  );
+  await addIndexIfMissing(
+    "dispatch_orders",
+    "idx_dispatch_orders_scheduled",
+    "scheduled_dispatch_at",
+  );
   await addColumnIfMissing(
     "dispatch_orders",
     "approved_by_role",

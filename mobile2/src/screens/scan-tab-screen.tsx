@@ -1457,6 +1457,7 @@ export function ScanTabScreen() {
                               {order.driver_phone ? ` · ${order.driver_phone}` : ''}
                               {order.vehicle_number ? ` · ${order.vehicle_number}` : ''}
                               {order.container_number ? ` · ${order.container_number}` : ''}
+                              {order.scheduled_dispatch_at ? ` · Scheduled: ${new Date(order.scheduled_dispatch_at).toLocaleString()}` : ''}
                             </AppText>
                           </View>
                         </View>

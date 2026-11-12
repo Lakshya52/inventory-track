@@ -51,6 +51,14 @@ function toDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * The date and time the load is planned for. Clients that predate scheduling
+ * simply get the creation time, so old APKs keep raising valid orders.
+ */
+function scheduledDispatchAt(value: unknown): Date {
+  return toDate(value) ?? new Date();
+}
+
 function toJson(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   try {
@@ -583,7 +591,7 @@ async function applyDispatchOrderRaise(
       vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
-    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, user.userId]);
+    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, scheduled_dispatch_at, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, scheduledDispatchAt(input.payload.scheduled_dispatch_at), user.userId]);
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, labelId]);
       if (updated.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.');
@@ -679,8 +687,9 @@ async function applyDispatchOrderRaise(
       (batch_id, raised_by, status, client_id, quantity,
        client_operation_id, client_created_at, device_uuid,
        driver_name, driver_phone, vehicle_number, container_number,
+       scheduled_dispatch_at,
        approved_by_role, approved_by_id, stock_reserved_at_order)
-     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`,
+     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`,
     [
       batch.id,
       user.userId,
@@ -695,6 +704,7 @@ async function applyDispatchOrderRaise(
       typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
       typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
+      scheduledDispatchAt(input.payload.scheduled_dispatch_at),
       user.userId,
     ]
   );

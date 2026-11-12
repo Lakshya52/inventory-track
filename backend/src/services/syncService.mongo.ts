@@ -63,6 +63,14 @@ function toDate(value: unknown): Date | null {
   return parseDateValue(value);
 }
 
+/**
+ * The date and time the load is planned for. Clients that predate scheduling
+ * simply get the creation time, so old APKs keep raising valid orders.
+ */
+function scheduledDispatchAt(value: unknown): Date {
+  return parseDateValue(value) ?? now();
+}
+
 function toJson(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   try {
@@ -601,7 +609,7 @@ async function applyDispatchOrderRaise(
       vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
-    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
+    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), scheduled_dispatch_at: scheduledDispatchAt(input.payload.scheduled_dispatch_at), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const assigned = await ctx.updateOne('qr_labels', { id: labelId, batch_id: assignment.batchId, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
       if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: assignment.batchId });
@@ -696,6 +704,7 @@ async function applyDispatchOrderRaise(
     client_id: clientId,
     quantity: requestedQuantity,
     stock_reserved_at_order: now(),
+    scheduled_dispatch_at: scheduledDispatchAt(input.payload.scheduled_dispatch_at),
     // Transport details are captured with the order and can be corrected when
     // the loading session is finalised.
     driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,

@@ -727,3 +727,14 @@ Each payload mirrors its REST body (§6.5); the server resolves `barcode_value`�
 ---
 
 *End of SRS — v2.0. This document alone (with the repository) is sufficient to implement the system as specified.*
+
+
+
+
+
+- ADMIN defines products / customers / vendors / UOMs / Sticker Size / Warehouse Locations
+- dispatch person will create a batch
+- then QCs will pass/fail that created batch
+- then dispatch persons can able to generate the QR codes for that batch and paste it on the products
+- dispatch person will create a dispatch order
+- then dispatch person can able to see it in the mobile application, and then they can dispatch them

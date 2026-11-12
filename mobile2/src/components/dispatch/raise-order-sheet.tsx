@@ -30,14 +30,15 @@ type RaiseOrderSheetProps = {
  */
 export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetProps) {
   const [loadingOptions, setLoadingOptions] = useState(false);
-  const [readyBatches, setReadyBatches] = useState<DispatchBatch[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [readyBatches, setReadyBatches] = useState<DispatchBatch[]>([]];
+  const [clients, setClients] = useState<Client[]>([]];
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [selectedClientId, setSelectedClientId] = useState('');
   const [driverName, setDriverName] = useState('');
   const [driverPhone, setDriverPhone] = useState('');
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [containerNumber, setContainerNumber] = useState('');
+  const [scheduledDispatchAt, setScheduledDispatchAt] = useState<string>('');
   const [raising, setRaising] = useState(false);
 
   const selectedBatchObj = readyBatches.find((b) => String(b.id) === selectedBatchId) || null;
@@ -86,6 +87,10 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
       );
       return;
     }
+    if (!scheduledDispatchAt.trim()) {
+      Alert.alert('Scheduled Dispatch', 'Please enter the scheduled dispatch date and time.');
+      return;
+    }
 
     setRaising(true);
     try {
@@ -96,6 +101,7 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
         driver_phone: driverPhone.trim(),
         vehicle_number: vehicleNumber.trim(),
         container_number: containerNumber.trim(),
+        scheduled_dispatch_at: scheduledDispatchAt.trim(),
       });
       Alert.alert(
         'Dispatch Order Created',
@@ -250,6 +256,14 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
                 placeholder="Container Number (e.g. CONT-9021) *"
                 placeholderTextColor="#8A98AC"
                 autoCapitalize="characters"
+                className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
+              />
+              <TextInput
+                value={scheduledDispatchAt}
+                onChangeText={setScheduledDispatchAt}
+                placeholder="Scheduled date & time (e.g. 2025-01-15T14:30)"
+                placeholderTextColor="#8A98AC"
+                keyboardType="date-time"
                 className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
               />
             </View>

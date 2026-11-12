@@ -71,6 +71,7 @@ export type DispatchOrder = {
   items?: string;
   product?: string;
   driver?: string;
+  scheduled_dispatch_at?: string | null;
 };
 
 export type DispatchBatch = {

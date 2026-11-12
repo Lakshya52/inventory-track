@@ -560,6 +560,26 @@ export default function DispatchWorkspaceOrders() {
 							)}
 						</div>
 					</section>
+				}
+
+                                <div className="mt-4 row-gap-2 row-cols-1 row-cols-sm-2 row-cols-lg-4">
+                                    <label className="input-label col-span-12 sm:col-span-6">
+                                        Scheduled Dispatch *
+                                    </label>
+                                    <div className="col-span-12 sm:col-span-6">
+                                        <input
+                                            id="scheduled-dispatch-at"
+                                            type="datetime-local"
+                                            className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                            value={scheduledDispatchAtString || ''}
+                                            onChange={(e) => setScheduledDispatchAtString(e.target.value)}
+                                            placeholder="e.g. 2025-01-15T14:30"
+                                        />
+                                        <AppText variant="caption" className="mt-1 text-[10px] text-surface-500">
+                                            Planned date & time the load leaves the plant.
+                                        </AppText>
+                                    </div>
+                                </div>
 				)}
 
 				{/* STEP 2 - BATCHES */}
@@ -765,6 +785,26 @@ export default function DispatchWorkspaceOrders() {
 							)}
 						</div>
 					</section>
+				}
+
+                                <div className="mt-4 row-gap-2 row-cols-1 row-cols-sm-2 row-cols-lg-4">
+                                    <label className="input-label col-span-12 sm:col-span-6">
+                                        Scheduled Dispatch *
+                                    </label>
+                                    <div className="col-span-12 sm:col-span-6">
+                                        <input
+                                            id="scheduled-dispatch-at"
+                                            type="datetime-local"
+                                            className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                            value={scheduledDispatchAtString || ''}
+                                            onChange={(e) => setScheduledDispatchAtString(e.target.value)}
+                                            placeholder="e.g. 2025-01-15T14:30"
+                                        />
+                                        <AppText variant="caption" className="mt-1 text-[10px] text-surface-500">
+                                            Planned date & time the load leaves the plant.
+                                        </AppText>
+                                    </div>
+                                </div>
 				)}
 
 				{/* STEP 3 - QUANTITY */}
@@ -846,6 +886,26 @@ export default function DispatchWorkspaceOrders() {
 							</span>
 						</div>
 					</section>
+				}
+
+                                <div className="mt-4 row-gap-2 row-cols-1 row-cols-sm-2 row-cols-lg-4">
+                                    <label className="input-label col-span-12 sm:col-span-6">
+                                        Scheduled Dispatch *
+                                    </label>
+                                    <div className="col-span-12 sm:col-span-6">
+                                        <input
+                                            id="scheduled-dispatch-at"
+                                            type="datetime-local"
+                                            className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                            value={scheduledDispatchAtString || ''}
+                                            onChange={(e) => setScheduledDispatchAtString(e.target.value)}
+                                            placeholder="e.g. 2025-01-15T14:30"
+                                        />
+                                        <AppText variant="caption" className="mt-1 text-[10px] text-surface-500">
+                                            Planned date & time the load leaves the plant.
+                                        </AppText>
+                                    </div>
+                                </div>
 				)}
 
 				{/* STEP 4 - TRANSPORTER DETAILS */}
@@ -930,6 +990,26 @@ export default function DispatchWorkspaceOrders() {
 							</p>
 						</div>
 					</section>
+				}
+
+                                <div className="mt-4 row-gap-2 row-cols-1 row-cols-sm-2 row-cols-lg-4">
+                                    <label className="input-label col-span-12 sm:col-span-6">
+                                        Scheduled Dispatch *
+                                    </label>
+                                    <div className="col-span-12 sm:col-span-6">
+                                        <input
+                                            id="scheduled-dispatch-at"
+                                            type="datetime-local"
+                                            className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                            value={scheduledDispatchAtString || ''}
+                                            onChange={(e) => setScheduledDispatchAtString(e.target.value)}
+                                            placeholder="e.g. 2025-01-15T14:30"
+                                        />
+                                        <AppText variant="caption" className="mt-1 text-[10px] text-surface-500">
+                                            Planned date & time the load leaves the plant.
+                                        </AppText>
+                                    </div>
+                                </div>
 				)}
 
 				{/* STEP 5 - SUBMIT */}
@@ -1006,6 +1086,26 @@ export default function DispatchWorkspaceOrders() {
 							)}
 						</div>
 					</section>
+				}
+
+                                <div className="mt-4 row-gap-2 row-cols-1 row-cols-sm-2 row-cols-lg-4">
+                                    <label className="input-label col-span-12 sm:col-span-6">
+                                        Scheduled Dispatch *
+                                    </label>
+                                    <div className="col-span-12 sm:col-span-6">
+                                        <input
+                                            id="scheduled-dispatch-at"
+                                            type="datetime-local"
+                                            className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                            value={scheduledDispatchAtString || ''}
+                                            onChange={(e) => setScheduledDispatchAtString(e.target.value)}
+                                            placeholder="e.g. 2025-01-15T14:30"
+                                        />
+                                        <AppText variant="caption" className="mt-1 text-[10px] text-surface-500">
+                                            Planned date & time the load leaves the plant.
+                                        </AppText>
+                                    </div>
+                                </div>
 				)}
 
 				{/* Wizard footer */}
@@ -1184,6 +1284,26 @@ export default function DispatchWorkspaceOrders() {
 					</ul>
 				)}
 			</section>
+				}
+
+                                <div className="mt-4 row-gap-2 row-cols-1 row-cols-sm-2 row-cols-lg-4">
+                                    <label className="input-label col-span-12 sm:col-span-6">
+                                        Scheduled Dispatch *
+                                    </label>
+                                    <div className="col-span-12 sm:col-span-6">
+                                        <input
+                                            id="scheduled-dispatch-at"
+                                            type="datetime-local"
+                                            className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                            value={scheduledDispatchAtString || ''}
+                                            onChange={(e) => setScheduledDispatchAtString(e.target.value)}
+                                            placeholder="e.g. 2025-01-15T14:30"
+                                        />
+                                        <AppText variant="caption" className="mt-1 text-[10px] text-surface-500">
+                                            Planned date & time the load leaves the plant.
+                                        </AppText>
+                                    </div>
+                                </div>
 		</div>
 	);
 }

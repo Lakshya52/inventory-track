@@ -570,7 +570,7 @@ export function DispatchOrdersScreen() {
               {packingLoading ? (
                 <View className="items-center justify-center py-12">
                   <ActivityIndicator size="large" color="#011A87" />
-                  <AppText variant="caption" className="mt-3 text-[11px]">Preparing the frozen packing snapshotâ€¦</AppText>
+                  <AppText variant="caption" className="mt-3 text-[11px]">Preparing the frozen packing snapshot....</AppText>
                 </View>
               ) : packingList ? (
                 <>

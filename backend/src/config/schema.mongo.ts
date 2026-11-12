@@ -66,6 +66,7 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('dispatch_orders').createIndex({ raised_by: 1, created_at: -1 }),
     ctx.collection('dispatch_orders').createIndex({ batch_id: 1, status: 1 }),
     ctx.collection('dispatch_orders').createIndex({ updated_at: 1 }),
+    ctx.collection('dispatch_orders').createIndex({ scheduled_dispatch_at: 1 }),
 
     ctx.collection('dispatch_records').createIndex({ client_operation_id: 1 }, sparseUnique),
     ctx.collection('dispatch_records').createIndex({ dispatcher_id: 1, created_at: -1 }),

@@ -99,7 +99,7 @@ export default function QCDashboard() {
             <div>
               <p className="font-semibold text-surface-900">Waiting for QC</p>
               <p className="text-sm text-surface-500">
-                {loading ? "Loadingâ€¦" : `${team.pending} batches to review`}
+                {loading ? "Loading...." : `${team.pending} batches to review`}
               </p>
             </div>
           </div>
@@ -112,7 +112,7 @@ export default function QCDashboard() {
             <div>
               <p className="font-semibold text-surface-900">Passed</p>
               <p className="text-sm text-surface-500">
-                {loading ? "Loadingâ€¦" : `${team.passed} batches in stock`}
+                {loading ? "Loading...." : `${team.passed} batches in stock`}
               </p>
             </div>
           </div>
@@ -125,7 +125,7 @@ export default function QCDashboard() {
             <div>
               <p className="font-semibold text-surface-900">Failed</p>
               <p className="text-sm text-surface-500">
-                {loading ? "Loadingâ€¦" : `${team.failed} not added to stock`}
+                {loading ? "Loading...." : `${team.failed} not added to stock`}
               </p>
             </div>
           </div>
@@ -138,7 +138,7 @@ export default function QCDashboard() {
             <div>
               <p className="font-semibold text-surface-900">Pass rate</p>
               <p className="text-sm text-surface-500">
-                {loading ? "Loadingâ€¦" : `${team.passRate}% of ${team.total} reviews`}
+                {loading ? "Loading...." : `${team.passRate}% of ${team.total} reviews`}
               </p>
             </div>
           </div>
@@ -168,7 +168,7 @@ export default function QCDashboard() {
         {loading ? (
           <div className="px-6 py-12 text-center text-sm text-surface-400">
             <Loader2 size={18} className="mr-2 inline animate-spin" />
-            Loading QC performanceâ€¦
+            Loading QC performance....
           </div>
         ) : people.length === 0 ? (
           <div className="px-6 py-12 text-center">
