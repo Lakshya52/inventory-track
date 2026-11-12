@@ -558,11 +558,22 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
       if (update.matchedCount !== 1) throw new SyncError('This QR label was already recalled', 'QR_ALREADY_RECALLED', 409);
       const sessionUpdate = await ctx.updateOne('loading_sessions', { id: session.id, status: 'ACTIVE', total: { $gt: numeric(session.scanned) } }, { $inc: { total: -1 } });
       if (sessionUpdate.matchedCount !== 1) throw new SyncError('No unscanned units remain to recall', 'NO_UNSCANNED_UNITS', 409);
-      // New orders do not reduce stock until dispatch finalization. For a
-      // legacy order that reserved stock at creation, restore this unit now.
+      // The unit leaves this order, so the order stops expecting it.
+      const order = await ctx.findOne('dispatch_orders', { id: session.dispatch_order_id });
+      if (order) {
+        const orderLines = Array.isArray(order.order_lines) ? order.order_lines : [];
+        const remainingLines = orderLines.filter((line: any) => idKey(line?.batch_id) !== idKey(label.batch_id));
+        await ctx.updateOne('dispatch_orders', { id: order.id }, {
+          $set: {
+            order_lines: remainingLines,
+            quantity: Math.max(0, numeric(order.quantity) - 1),
+          },
+        });
+      }
       if (condition === 'RETURN_TO_STOCK') {
         await ctx.updateOne('qr_labels', { id: label.id, dispatch_order_id: session.dispatch_order_id }, { $set: { dispatch_order_id: null, recall_status: null, recall_condition: null, recall_reason: null, recalled_by: null, recalled_at: null } });
-        const order = await ctx.findOne('dispatch_orders', { id: session.dispatch_order_id });
+        // The unit left the stock when the order was created, so it goes back
+        // on the shelf now.
         if (order?.stock_reserved_at_order) {
           await ctx.updateOne('products', { id: batch.product_id }, { $inc: { quantity: 1 } });
           await ctx.updateOne('dispatch_orders', { id: session.dispatch_order_id }, { $inc: { returned_to_stock_quantity: 1 } });
@@ -695,10 +706,6 @@ export async function finalise(req: Request, res: Response): Promise<void> {
   const vehicleNumber = trimmed(req.body?.vehicle_number).slice(0, 50);
   const containerNumber = trimmed(req.body?.container_number).slice(0, 100);
   const sealNumber = trimmed(req.body?.seal_number).slice(0, 100) || null;
-  if (!driverName || !vehicleNumber || !containerNumber) {
-    res.status(400).json({ error: 'Driver, vehicle, and container details are required', code: 'SHIPMENT_DETAILS_REQUIRED' });
-    return;
-  }
   const outcome = trimmed(req.body?.outcome).toUpperCase();
   if (!['DISPATCHED', 'NOT_DISPATCHED'].includes(outcome)) {
     res.status(400).json({
@@ -729,6 +736,21 @@ export async function finalise(req: Request, res: Response): Promise<void> {
       const batch = await ctx.findOne('batches', { id: session.batch_id });
       if (!batch) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
 
+      // The transporter details are captured when the order is created, so the
+      // finalise step only has to send what the loader wants to correct. Fall
+      // back to the values already stored on the order.
+      const resolvedDriverName = driverName || String(order.driver_name ?? '').trim().slice(0, 150);
+      const resolvedDriverPhone = driverPhone || String(order.driver_phone ?? '').trim().slice(0, 32) || null;
+      const resolvedVehicleNumber = vehicleNumber || String(order.vehicle_number ?? '').trim().slice(0, 50);
+      const resolvedContainerNumber = containerNumber || String(order.container_number ?? '').trim().slice(0, 100);
+      if (!resolvedDriverName || !resolvedVehicleNumber || !resolvedContainerNumber) {
+        throw new SyncError(
+          'Transporter name, vehicle and container details are required',
+          'SHIPMENT_DETAILS_REQUIRED',
+          400
+        );
+      }
+
       const completedAt = now();
       const sessionUpdate = await ctx.updateOne(
         'loading_sessions',
@@ -756,10 +778,10 @@ export async function finalise(req: Request, res: Response): Promise<void> {
         {
           $set: {
             status: orderStatus,
-            driver_name: driverName,
-            driver_phone: driverPhone,
-            vehicle_number: vehicleNumber,
-            container_number: containerNumber,
+            driver_name: resolvedDriverName,
+            driver_phone: resolvedDriverPhone,
+            vehicle_number: resolvedVehicleNumber,
+            container_number: resolvedContainerNumber,
             seal_number: sealNumber,
             outcome,
             dispatched_at: outcome === 'DISPATCHED' ? completedAt : order.dispatched_at ?? null,
@@ -794,10 +816,31 @@ export async function finalise(req: Request, res: Response): Promise<void> {
       const dispatchRecordId = await ctx.insert('dispatch_records', dispatchRecord);
 
       if (outcome === 'NOT_DISPATCHED' && order.stock_reserved_at_order) {
-        const returnedLabels = await ctx.count('qr_labels', { batch_id: batch.id, dispatch_order_id: order.id, recall_condition: 'RETURN_TO_STOCK' });
-        const restoreQuantity = Math.max(0, numeric(order.quantity, numeric(session.total)) - Math.max(returnedLabels, numeric(order.returned_to_stock_quantity)));
-        if (restoreQuantity > 0) {
-          await ctx.updateOne('products', { id: batch.product_id }, { $inc: { quantity: restoreQuantity } });
+        // The units were taken out of the stock when the order was created.
+        // Units that were recalled back to the shelf already went back then,
+        // so everything the order still expects to be loaded comes back now.
+        const orderLines = Array.isArray(order.order_lines) && order.order_lines.length
+          ? order.order_lines
+          : [{ batch_id: batch.id, quantity: numeric(order.quantity, numeric(session.total)) }];
+        const restores = new Map<string, { productId: unknown; quantity: number }>();
+        for (const line of orderLines) {
+          const lineQuantity = numeric(line?.quantity);
+          if (!lineQuantity) continue;
+          const lineBatch = await ctx.findOne(
+            'batches',
+            { id: line?.batch_id },
+            { projection: { _id: 0, product_id: 1 } }
+          );
+          if (!lineBatch) continue;
+          const key = idKey(lineBatch.product_id);
+          const existing = restores.get(key);
+          restores.set(key, {
+            productId: lineBatch.product_id,
+            quantity: (existing?.quantity || 0) + lineQuantity,
+          });
+        }
+        for (const entry of restores.values()) {
+          await ctx.updateOne('products', { id: entry.productId }, { $inc: { quantity: entry.quantity } });
         }
       } else if (outcome === 'NOT_DISPATCHED' && !order.stock_reserved_at_order) {
         const batchIds = Array.isArray(order.order_lines) && order.order_lines.length

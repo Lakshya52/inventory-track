@@ -347,6 +347,8 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
             p.storage_conditions as product_storage_conditions, p.hazard_classification,
             p.physical_state as product_physical_state, p.hsn_code, p.manufacturer,
             l.qr_value AS scanned_qr, s.location_code,
+            l.dispatch_order_id AS label_dispatch_order_id,
+            l.recall_status AS label_recall_status, l.recall_condition AS label_recall_condition,
             (SELECT COUNT(*) FROM qr_labels units WHERE units.batch_id = b.id) AS qr_count,
             CASE
               WHEN b.batch_number = ? AND b.barcode_value <> ? AND l.qr_value IS NULL THEN 1
@@ -366,7 +368,33 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
     res.status(409).json({ error: 'Batch number matches more than one batch. Scan its QR or barcode instead.' });
     return;
   }
-  res.json(batches[0]);
+  const batch = batches[0];
+  // A label that is committed to a dispatch order is no longer stock: the
+  // units left the inventory when the order was created. Report that so the
+  // label is never treated as free stock again.
+  const committedOrder = batch.label_dispatch_order_id
+    ? (await query<RowDataPacket[]>('SELECT id, status FROM dispatch_orders WHERE id = ?', [batch.label_dispatch_order_id]))[0]
+    : null;
+  const openOrder = committedOrder && String(committedOrder.status) === 'APPROVED' ? committedOrder : null;
+  const labelState = batch.label_recall_status === 'RECALLED'
+    ? 'RECALLED'
+    : openOrder
+      ? 'COMMITTED'
+      : String(batch.status) === 'DISPATCHED'
+        ? 'DISPATCHED'
+        : String(batch.status) === 'LOADING'
+          ? 'LOADING'
+          : 'AVAILABLE';
+  res.json({
+    ...batch,
+    label_state: labelState,
+    // Only a label that is still free stock can be picked up again.
+    available_in_stock: labelState === 'AVAILABLE',
+    dispatch_order_id: openOrder?.id ?? null,
+    dispatch_order_status: committedOrder?.status ?? null,
+    recall_status: batch.label_recall_status ?? null,
+    recall_condition: batch.label_recall_condition ?? null,
+  });
 }
 
 export async function search(req: Request, res: Response): Promise<void> {

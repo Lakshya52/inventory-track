@@ -44,6 +44,7 @@ export type DispatchOrder = {
   client_id?: string | null;
   client_name?: string | null;
   driver_name?: string | null;
+  driver_phone?: string | null;
   vehicle_number?: string | null;
   container_number?: string | null;
   quantity?: number | null;
@@ -156,6 +157,7 @@ export type PackingListData = {
   barcode?: string | null;
   client_name?: string | null;
   driver_name?: string | null;
+  driver_phone?: string | null;
   vehicle_number?: string | null;
   container_number?: string | null;
   seal_number?: string | null;

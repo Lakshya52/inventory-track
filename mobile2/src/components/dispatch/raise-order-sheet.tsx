@@ -35,6 +35,7 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [selectedClientId, setSelectedClientId] = useState('');
   const [driverName, setDriverName] = useState('');
+  const [driverPhone, setDriverPhone] = useState('');
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [containerNumber, setContainerNumber] = useState('');
   const [raising, setRaising] = useState(false);
@@ -78,8 +79,11 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
       Alert.alert('Select Client', 'Please choose a destination client.');
       return;
     }
-    if (!driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
-      Alert.alert('Incomplete Transport Info', 'Driver name, vehicle number and container number are required.');
+    if (!driverName.trim() || !driverPhone.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
+      Alert.alert(
+        'Incomplete Transporter Details',
+        'Transporter name, mobile number, vehicle number and container number are required.',
+      );
       return;
     }
 
@@ -89,6 +93,7 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
         batch_id: selectedBatchId,
         client_id: selectedClientId,
         driver_name: driverName.trim(),
+        driver_phone: driverPhone.trim(),
         vehicle_number: vehicleNumber.trim(),
         container_number: containerNumber.trim(),
       });
@@ -213,14 +218,22 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
 
             {/* Transport details */}
             <AppText variant="label" className="mb-1 text-[11px]">
-              3. Transport &amp; Delivery Details *
+              3. Transporter Details *
             </AppText>
             <View className="gap-2.5 mb-4">
               <TextInput
                 value={driverName}
                 onChangeText={setDriverName}
-                placeholder="Driver Full Name *"
+                placeholder="Transporter Name *"
                 placeholderTextColor="#8A98AC"
+                className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
+              />
+              <TextInput
+                value={driverPhone}
+                onChangeText={setDriverPhone}
+                placeholder="Transporter Mobile Number *"
+                placeholderTextColor="#8A98AC"
+                keyboardType="phone-pad"
                 className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
               />
               <TextInput

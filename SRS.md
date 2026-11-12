@@ -41,7 +41,7 @@ Specify the target end-to-end workflow of the ProductScanning system:
 |---|---|
 | **Batch** | A production lot of one product. Holds quantity, UoM, dates, shelf location, vendor, grade, bag quantity, and a unique `barcode_value`. |
 | **QR label** | One printed sticker per unit/pack inside a batch (`qr_print_jobs` → `qr_labels`, unique `qr_value`). Scanned during loading. |
-| **Dispatch order** | A request raised by DISPATCH for one batch: client, driver name, vehicle number, container number. Released for loading as soon as it is raised. |
+| **Dispatch order** | A request raised by DISPATCH for one batch: client, transporter name, transporter mobile, vehicle number, container number. Released for loading as soon as it is raised; the ordered units leave stock at that moment. |
 | **Packing list** | Auto-generated, frozen line items for a dispatch order (product, batch, quantity, UoM, shelf location), frozen at raise time. |
 | **Loading session** | A scan-driven loading run for one dispatch order. Tracks `scanned` vs `total` and drives the Admin live preview. |
 | **Seal number** | Tamper-evidence number that DISPATCH must enter when finishing loading. |
@@ -107,9 +107,9 @@ Specify the target end-to-end workflow of the ProductScanning system:
 
 ### 3.3 DISPATCH — "hands that move the goods"
 1. **View batches:** list of batches with status `QC_PASSED` / `DISPATCH_APPROVED` (product, quantity, UoM, shelf location).
-2. **Raise dispatch order:** pick a batch + client, enter driver name, vehicle number, container number → order `APPROVED` (released immediately); batch → `DISPATCH_APPROVED`; packing list frozen at raise time.
-3. **Track own orders:** `/mine` list with status (`APPROVED`/`CANCELLED`/`CLOSED_DISPATCHED`/`CLOSED_NOT_DISPATCHED`); cancel an order that has not started loading.
-4. **Download packing list:** for its own orders download/print PDF (client, driver, vehicle, product, batch number, quantity, UoM, shelf location).
+2. **Raise dispatch order:** pick a batch + client, enter **transporter name, transporter mobile number, vehicle number, container number** (all required) → order `APPROVED` (released immediately); batch → `DISPATCH_APPROVED`; the ordered units are **deducted from product stock immediately**; packing list frozen at raise time.
+3. **Track own orders:** `/mine` list with status (`APPROVED`/`CANCELLED`/`CLOSED_DISPATCHED`/`CLOSED_NOT_DISPATCHED`); cancel an order that has not started loading (stock and QR labels are returned).
+4. **Download packing list:** for its own orders download/print PDF (client, transporter name + mobile, vehicle, container, product, batch number, quantity, UoM, shelf location).
 5. **Load by scan:** start a Loading Session on a raised order (`total` = order/batch quantity); scan each unit's QR (`scanned` increments); duplicates warned, foreign-batch scans flagged; every scan recorded as an event.
 6. **Seal & finalise:** when done enter a non-empty **seal number**, mark the outcome **DISPATCHED** or **NOT DISPATCHED** (+ optional remarks). Session closes; order and batch reach their final status.
 
@@ -136,9 +136,10 @@ Batches visible (QC_PASSED) ◄────────────────�
   │
 DISPATCH
   │  browses QC_PASSED batches
-  │  picks batch + client + driver + vehicle (+ container)
+  │  picks batch + client + transporter name/mobile + vehicle + container
   │  ──► raises DISPATCH ORDER  (status = APPROVED, released immediately;
-  │        batch = DISPATCH_APPROVED, packing list frozen)
+  │        batch = DISPATCH_APPROVED, units deducted from stock,
+  │        packing list frozen)
   │      (may cancel it later, while loading has not started)
   ▼
 DISPATCH
@@ -187,7 +188,7 @@ flowchart TD
     subgraph DISPATCH["Dispatch (Mobile + Web)"]
         direction TB
         D_View["View QC_PASSED batches"]
-        D_Raise["Raise Dispatch Order<br/>client + driver + vehicle + container<br/>order = APPROVED (released at once)"]
+        D_Raise["Raise Dispatch Order<br/>client + transporter name/mobile + vehicle + container<br/>order = APPROVED (released at once)<br/>units deducted from stock"]
         D_Cancel{"Cancel before<br/>loading starts?"}
         D_PDF["Download / Print Packing List"]
         D_Load["Start Loading Session →<br/>scan unit QR codes<br/>live counter scanned/total"]
@@ -276,9 +277,9 @@ A session MUST NOT be re-opened after `CLOSED`.
 - *Accept:* batches in `LOADING`/`DISPATCHED`/`NOT_DISPATCHED` never appear in this list.
 
 **FR-06 Raise dispatch order**
-- `POST /api/dispatch-orders` (DISPATCH) with either `batch_id` or `barcode_value` + `client_id`, `driver_name`, `vehicle_number`, `container_number` → creates order `APPROVED` (released immediately, there is no approval queue), sets batch `DISPATCH_APPROVED`, and freezes the packing-list snapshot (product/batch/quantity/UoM/location) at raise time.
-- Idempotent via `client_operation_id` (duplicate → 200 + `duplicate:true`, no second order).
-- *Accept:* the order is immediately loadable (FR-09) and downloadable (FR-08); retrying the same `client_operation_id` does not create a second order.
+- `POST /api/dispatch-orders` (DISPATCH) with either `batch_id` or `barcode_value` + `client_id`, `driver_name` (transporter name), `driver_phone` (transporter mobile), `vehicle_number`, `container_number` → creates order `APPROVED` (released immediately, there is no approval queue), sets batch `DISPATCH_APPROVED`, **deducts the ordered units from `products.quantity`** (sets `stock_reserved_at_order`), and freezes the packing-list snapshot (product/batch/quantity/UoM/location) at raise time.
+- All four transporter fields are mandatory: missing any → 400 `code:'MISSING_TRANSPORT_DETAILS'` naming the missing fields.
+- *Accept:* the order is immediately loadable (FR-09) and downloadable (FR-08); retrying the same `client_operation_id` does not create a second order; after creation the units no longer count as available stock and their QR labels report `label_state = 'COMMITTED'` (`available_in_stock: false`) on lookup.
 - *Errors:* batch not in `QC_PASSED` → 409 `code:'INVALID_BATCH_STATE'`; already has an open order → 409 `code:'OPEN_ORDER_EXISTS'`; unknown barcode → 404.
 
 **FR-07 Cancel dispatch order**
@@ -407,7 +408,8 @@ clients { _id, id, name, contact_person, email, phone, address, gst_number,
 // ---------- dispatch_orders (no approval step) ----------
 dispatch_orders { _id, id, batch_id, raised_by,
   status: "APPROVED"|"CANCELLED"|"CLOSED_DISPATCHED"|"CLOSED_NOT_DISPATCHED",
-  client_id, driver_name, vehicle_number, container_number,
+  client_id, driver_name, driver_phone, vehicle_number, container_number,
+  stock_reserved_at_order, returned_to_stock_quantity,
   approved_by_role:"DISPATCH", approved_by_id, approved_at, remarks,
   seal_number, dispatched_at,
   client_operation_id (sparse unique), client_created_at, device_uuid,
@@ -514,8 +516,11 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
               'CLOSED_DISPATCHED','CLOSED_NOT_DISPATCHED') NOT NULL DEFAULT 'APPROVED',
   client_id INT NULL,
   driver_name VARCHAR(150) NULL,
+  driver_phone VARCHAR(32) NULL,
   vehicle_number VARCHAR(50) NULL,
   container_number VARCHAR(100) NULL,
+  stock_reserved_at_order DATETIME(3) NULL,
+  returned_to_stock_quantity INT UNSIGNED NULL,
   approved_by_role VARCHAR(20) NULL DEFAULT 'DISPATCH',
   approved_by_id INT NULL,
   approved_at DATETIME(3) NULL,
@@ -653,9 +658,10 @@ POST   /api/qc/qr-jobs/:id/reprint       ADMIN, QC
 
 -- Dispatch orders (FR-06..08) --------------------------------------
 POST   /api/dispatch-orders              DISPATCH
-        { batch_id | barcode_value, client_id, driver_name, vehicle_number,
-          container_number, client_operation_id }
+        { batch_id | barcode_value, client_id, driver_name, driver_phone,
+          vehicle_number, container_number, client_operation_id }
         → 201 { order, batch_status:'DISPATCH_APPROVED' }   (no approval step)
+        400 codes: MISSING_TRANSPORT_DETAILS
         409 codes: INVALID_BATCH_STATE | OPEN_ORDER_EXISTS
 GET    /api/dispatch-orders/mine         DISPATCH own orders (+status filter)
 GET    /api/dispatch-orders/all          ADMIN(read-only)

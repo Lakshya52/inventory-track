@@ -48,6 +48,17 @@ export type BatchRecord = {
   scanned_qr?: string | null;
   matched_by_batch_number?: number | boolean | null;
 
+  /**
+   * Where this specific label stands. `AVAILABLE` is free stock; every other
+   * state means the unit is no longer on the shelf.
+   */
+  label_state?: 'AVAILABLE' | 'COMMITTED' | 'LOADING' | 'DISPATCHED' | 'RECALLED' | null;
+  available_in_stock?: boolean | null;
+  dispatch_order_id?: string | number | null;
+  dispatch_order_status?: string | null;
+  recall_status?: string | null;
+  recall_condition?: string | null;
+
   /** Future-proof: the API may expose additional columns we still want to show. */
   [key: string]: unknown;
 };

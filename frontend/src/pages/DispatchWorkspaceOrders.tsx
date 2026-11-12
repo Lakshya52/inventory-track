@@ -13,11 +13,13 @@ import {
 	MapPin,
 	Minus,
 	Package,
+	Phone,
 	Plus,
 	RefreshCw,
 	ScanLine,
 	Search,
 	ShoppingCart,
+	Truck,
 	Users,
 	XCircle,
 } from "lucide-react";
@@ -41,7 +43,8 @@ const STEPS = [
 	{ id: 1, title: "Select customer", icon: Users },
 	{ id: 2, title: "Select printed batches", icon: Package },
 	{ id: 3, title: "Review quantity", icon: ClipboardList },
-	{ id: 4, title: "Submit", icon: Check },
+	{ id: 4, title: "Transporter details", icon: Truck },
+	{ id: 5, title: "Submit", icon: Check },
 ];
 
 type OrderStatus = {
@@ -90,6 +93,11 @@ export default function DispatchWorkspaceOrders() {
 	const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
 	const [cancellingId, setCancellingId] = useState<string | null>(null);
 	const [cancelReason, setCancelReason] = useState("");
+	// Transporter details travel with the order and end up on the packing list.
+	const [transporterName, setTransporterName] = useState("");
+	const [transporterMobile, setTransporterMobile] = useState("");
+	const [vehicleNumber, setVehicleNumber] = useState("");
+	const [containerNumber, setContainerNumber] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 250);
 	const debouncedClientSearch = useDebouncedValue(clientSearch, 250);
 
@@ -272,12 +280,22 @@ export default function DispatchWorkspaceOrders() {
 		}
 	};
 
+	const transporterComplete =
+		transporterName.trim() &&
+		transporterMobile.trim() &&
+		vehicleNumber.trim() &&
+		containerNumber.trim();
+
 	const createOrder = async (event: FormEvent) => {
 		event.preventDefault();
 		if (saving) return;
 		const items = buildOrderItems();
 		if (!items.length || !clientId) {
 			setError("Select at least one batch and a customer.");
+			return;
+		}
+		if (!transporterComplete) {
+			setError("Add the transporter name, mobile number, vehicle number and container number.");
 			return;
 		}
 		setSaving(true);
@@ -287,6 +305,10 @@ export default function DispatchWorkspaceOrders() {
 			const result = await api.dispatchOrders.raise({
 				items,
 				client_id: clientId,
+				driver_name: transporterName.trim(),
+				driver_phone: transporterMobile.trim(),
+				vehicle_number: vehicleNumber.trim(),
+				container_number: containerNumber.trim(),
 				client_operation_id: operationId(),
 			});
 			const orderId = result?.id ?? result?.entityId;
@@ -295,10 +317,14 @@ export default function DispatchWorkspaceOrders() {
 			setSelectedLineKeys([]);
 			setClientId("");
 			setQuantities({});
+			setTransporterName("");
+			setTransporterMobile("");
+			setVehicleNumber("");
+			setContainerNumber("");
 			setMessage(
 				`Order #${orderId} was created. Scan the QR codes on the mobile app to load it.`,
 			);
-			setStep(4);
+			setStep(5);
 			await load();
 		} catch (err: any) {
 			setError(err.message || "Could not create the dispatch order. Refresh stock and try again.");
@@ -309,7 +335,13 @@ export default function DispatchWorkspaceOrders() {
 	};
 
 	const canContinue =
-		step === 1 ? Boolean(clientId) : step === 2 ? selectedLineKeys.length > 0 : true;
+		step === 1
+			? Boolean(clientId)
+			: step === 2
+				? selectedLineKeys.length > 0
+				: step === 4
+					? Boolean(transporterComplete)
+					: true;
 
 	const quantityStepper = (line: ProductLine) => {
 		const qty = Number(quantities[line.key] || 0);
@@ -396,7 +428,7 @@ export default function DispatchWorkspaceOrders() {
 			)}
 
 			{/* Step indicator */}
-			<ol className="grid gap-2 sm:grid-cols-4">
+			<ol className="grid gap-2 sm:grid-cols-5">
 				{STEPS.map((item) => {
 					const active = step === item.id;
 					const done = step > item.id;
@@ -816,8 +848,92 @@ export default function DispatchWorkspaceOrders() {
 					</section>
 				)}
 
-				{/* STEP 4 - SUBMIT */}
+				{/* STEP 4 - TRANSPORTER DETAILS */}
 				{step === 4 && (
+					<section className="card overflow-hidden">
+						<div className="border-b border-surface-100 px-5 py-4 sm:px-6">
+							<h2 className="section-title flex items-center gap-2">
+								<Truck size={18} className="text-brand-600" /> Transporter
+								details
+							</h2>
+							<p className="mt-1 text-sm text-surface-500">
+								Who is moving the goods? These details are saved on the order
+								and printed on the packing list.
+							</p>
+						</div>
+						<div className="space-y-4 p-5 sm:px-6">
+							<div className="grid gap-4 sm:grid-cols-2">
+								<div>
+									<label className="input-label" htmlFor="transporter-name">
+										Transporter name *
+									</label>
+									<input
+										id="transporter-name"
+										className="input"
+										value={transporterName}
+										onChange={(event) => setTransporterName(event.target.value)}
+										placeholder="e.g. Ramesh Transport Co."
+										maxLength={150}
+									/>
+								</div>
+								<div>
+									<label className="input-label" htmlFor="transporter-mobile">
+										Transporter mobile number *
+									</label>
+									<div className="relative">
+										<Phone
+											size={15}
+											className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-surface-400"
+										/>
+										<input
+											id="transporter-mobile"
+											className="input pl-9"
+											value={transporterMobile}
+											onChange={(event) => setTransporterMobile(event.target.value)}
+											placeholder="e.g. 98765 43210"
+											inputMode="tel"
+											maxLength={32}
+										/>
+									</div>
+								</div>
+								<div>
+									<label className="input-label" htmlFor="vehicle-number">
+										Vehicle number *
+									</label>
+									<input
+										id="vehicle-number"
+										className="input"
+										value={vehicleNumber}
+										onChange={(event) => setVehicleNumber(event.target.value)}
+										placeholder="e.g. MH-12-AB-1234"
+										maxLength={50}
+									/>
+								</div>
+								<div>
+									<label className="input-label" htmlFor="container-number">
+										Container number *
+									</label>
+									<input
+										id="container-number"
+										className="input"
+										value={containerNumber}
+										onChange={(event) => setContainerNumber(event.target.value)}
+										placeholder="e.g. CONT-9021"
+										maxLength={100}
+									/>
+								</div>
+							</div>
+							<p className="text-xs text-surface-500">
+								The ordered units leave the stock as soon as the order is
+								created, and these details travel with the order to the
+								packing list.
+							</p>
+						</div>
+					</section>
+				)}
+
+				{/* STEP 5 - SUBMIT */}
+				{step === 5 && (
 					<section className="card overflow-hidden">
 						<div className="border-b border-surface-100 px-5 py-4 sm:px-6">
 							<h2 className="section-title flex items-center gap-2">
@@ -893,7 +1009,7 @@ export default function DispatchWorkspaceOrders() {
 				)}
 
 				{/* Wizard footer */}
-				{!(step === 4 && createdOrderId) && (
+				{!(step === 5 && createdOrderId) && (
 					<div className="flex flex-wrap items-center justify-between gap-3">
 						<button
 							type="button"
@@ -903,11 +1019,11 @@ export default function DispatchWorkspaceOrders() {
 						>
 							<ArrowLeft size={15} /> Back
 						</button>
-						{step < 4 ? (
+						{step < 5 ? (
 							<button
 								type="button"
 								className="btn-primary"
-								onClick={() => setStep((current) => Math.min(4, current + 1))}
+								onClick={() => setStep((current) => Math.min(5, current + 1))}
 								disabled={!canContinue}
 							>
 								Continue <ArrowRight size={15} />

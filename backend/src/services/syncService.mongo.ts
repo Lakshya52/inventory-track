@@ -508,6 +508,35 @@ async function applyQcSubmitBulk(
   };
 }
 
+/**
+ * Removes the ordered units from the product stock. The units leave the shelf
+ * when the dispatch order is created, so their QR labels stop counting as
+ * available stock from that moment. The finalise step only has to give them
+ * back when the truck does not actually leave.
+ */
+async function deductReservedStock(
+  ctx: DbContext,
+  deductions: Map<string, { productId: EntityId; quantity: number }>
+): Promise<void> {
+  for (const entry of deductions.values()) {
+    if (!entry.quantity) continue;
+    await ctx.findOneAndUpdate('products', { id: entry.productId }, [
+      {
+        $set: {
+          quantity: {
+            $cond: [
+              { $lt: [{ $subtract: [{ $ifNull: ['$quantity', 0] }, entry.quantity] }, 0] },
+              0,
+              { $subtract: [{ $ifNull: ['$quantity', 0] }, entry.quantity] },
+            ],
+          },
+          updated_at: now(),
+        },
+      },
+    ], { returnDocument: 'after' });
+  }
+}
+
 async function applyDispatchOrderRaise(
   ctx: DbContext,
   user: JwtPayload,
@@ -531,6 +560,7 @@ async function applyDispatchOrderRaise(
     const seen = new Set<string>();
     const lines: Array<Record<string, any>> = [];
     const assignments: Array<{ batchId: EntityId; labelIds: EntityId[] }> = [];
+    const stockDeductions = new Map<string, { productId: EntityId; quantity: number }>();
     for (const line of requested) {
       const batch = await getBatchForUpdate(ctx, { batch_id: line.batch_id });
       const batchKey = idKey(batch.id);
@@ -555,22 +585,31 @@ async function applyDispatchOrderRaise(
       const lineSnapshot = { batch_id: batch.id, batch_number: batch.parent_batch_number || batch.batch_number, product_name: batch.product_name, product_sku: batch.product_sku, quantity, uom: batch.uom, location: location?.location_code || batch.storage_location || 'N/A', location_code: location?.location_code ?? null, location_description: location?.description ?? null };
       lines.push(lineSnapshot);
       assignments.push({ batchId: batch.id as EntityId, labelIds: labels.map((label) => label.id as EntityId) });
+      const productKey = idKey(batch.product_id);
+      const existing = stockDeductions.get(productKey);
+      stockDeductions.set(productKey, {
+        productId: batch.product_id as EntityId,
+        quantity: (existing?.quantity || 0) + quantity,
+      });
     }
     const total = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-    // Transport details are optional at raise time and captured again when the
-    // loading session is finalised. Keep whatever the caller supplied.
+    // Transport details are captured with the order and can be corrected when
+    // the loading session is finalised.
     const transport = {
       driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
       driver_phone: typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
       vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
-    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
+    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const assigned = await ctx.updateOne('qr_labels', { id: labelId, batch_id: assignment.batchId, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
       if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: assignment.batchId });
     }
     for (const line of lines) await ctx.insert('packing_list_items', { dispatch_order_id: orderId, ...line });
+    // The ordered units leave the stock as soon as the order is created, so
+    // their QR labels stop being available stock from here on.
+    await deductReservedStock(ctx, stockDeductions);
     // No approval step: the order is released for loading the moment it is
     // raised, so the batch goes straight to DISPATCH_APPROVED.
     for (const line of lines) {
@@ -656,8 +695,9 @@ async function applyDispatchOrderRaise(
     approved_at: now(),
     client_id: clientId,
     quantity: requestedQuantity,
-    // Transport details are optional at raise time and captured again when the
-    // loading session is finalised. Keep whatever the caller supplied.
+    stock_reserved_at_order: now(),
+    // Transport details are captured with the order and can be corrected when
+    // the loading session is finalised.
     driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
     driver_phone: typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
     vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
@@ -672,6 +712,12 @@ async function applyDispatchOrderRaise(
     const assigned = await ctx.updateOne('qr_labels', { id: label.id, batch_id: batch.id, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
     if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
+
+  // The ordered units leave the stock as soon as the order is created, so
+  // their QR labels stop being available stock from here on.
+  await deductReservedStock(ctx, new Map([
+    [idKey(batch.product_id), { productId: batch.product_id as EntityId, quantity: requestedQuantity }],
+  ]));
 
   // Freeze the packing list at raise time, because there is no approval step
   // left to freeze it later.

@@ -3,6 +3,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, View } from 'react-nat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { BatchRecord } from '@/services/batches';
+import { cx } from '@/lib/cx';
 
 import { AppText } from './app-text';
 import { PrimaryButton } from './buttons';
@@ -86,7 +87,34 @@ const FIELD_SECTIONS: FieldSection[] = [
       { key: 'matched_by_batch_number', label: 'Matched by batch number' },
     ],
   },
+  {
+    title: 'Stock state of this label',
+    fields: [
+      { key: 'label_state', label: 'Label state' },
+      { key: 'available_in_stock', label: 'Available in stock' },
+      { key: 'dispatch_order_id', label: 'Dispatch order ID' },
+      { key: 'dispatch_order_status', label: 'Dispatch order status' },
+      { key: 'recall_status', label: 'Recall status' },
+      { key: 'recall_condition', label: 'Recall condition' },
+    ],
+  },
 ];
+
+/**
+ * Plain-language explanation for a unit that is no longer free stock.
+ * Units leave the inventory the moment their dispatch order is created, so a
+ * scanned label must never look like it can be used again.
+ */
+const UNAVAILABLE_REASON: Record<string, string> = {
+  COMMITTED:
+    'This unit was committed to a dispatch order and has already been taken out of stock. It cannot be used again unless that order is cancelled.',
+  LOADING:
+    'This unit is on a loading session right now and is no longer counted as available stock.',
+  DISPATCHED:
+    'This unit has already been dispatched. It has left the factory and is no longer in stock.',
+  RECALLED:
+    'This unit was recalled from a dispatch order. Check its recall condition before using it.',
+};
 
 const CONFIGURED_KEYS = new Set(FIELD_SECTIONS.flatMap((section) => section.fields.map((field) => field.key)));
 
@@ -225,6 +253,14 @@ export function QrDetailsSheet({
     label: labelFromKey(key),
   }));
 
+  // The unit QR code stops being free stock the moment a dispatch order is
+  // created, so say so plainly instead of showing it like usable inventory.
+  const labelState = batch?.label_state ? String(batch.label_state) : null;
+  const unavailableReason =
+    labelState && labelState !== 'AVAILABLE'
+      ? UNAVAILABLE_REASON[labelState] ?? 'This unit is no longer available in stock.'
+      : null;
+
   return (
     <Modal
       visible={visible}
@@ -349,8 +385,39 @@ export function QrDetailsSheet({
                         {batch.qr_count ?? '—'} unit QR codes
                       </AppText>
                     </View>
+                    {labelState ? (
+                      <View
+                        className={cx(
+                          'rounded-full px-2.5 py-1',
+                          labelState === 'AVAILABLE' ? 'bg-[#E7F7EE]' : 'bg-[#FDECEC]',
+                        )}>
+                        <AppText
+                          className={cx(
+                            'text-[10px] font-manrope-bold',
+                            labelState === 'AVAILABLE' ? 'text-[#15803D]' : 'text-[#B91C1C]',
+                          )}>
+                          {labelState === 'AVAILABLE' ? 'In stock' : `Not in stock · ${labelState}`}
+                        </AppText>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
+
+                {unavailableReason ? (
+                  <View className="mt-4 rounded-2xl border border-[#FCA5A5] bg-[#FEF2F2] p-4">
+                    <View className="flex-row items-start gap-2">
+                      <AlertTriangle size={18} color="#DC2626" />
+                      <View className="flex-1">
+                        <AppText className="text-[12.5px] font-manrope-bold text-[#B91C1C]">
+                          This QR code is not available in stock
+                        </AppText>
+                        <AppText className="mt-1 text-[11px] leading-[16px] text-[#7F1D1D]">
+                          {unavailableReason}
+                        </AppText>
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
 
                 {FIELD_SECTIONS.map((section) => (
                   <DetailSection

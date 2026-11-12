@@ -121,8 +121,8 @@ export default function PackingList() {
         <div><strong>Product:</strong> ${escapeHtml(packingData.product_name || '-')}</div>
         <div><strong>Batch Number:</strong> ${escapeHtml(packingData.batch_number || '-')}</div>
         <div><strong>Client:</strong> ${escapeHtml(packingData.client_name || '-')}</div>
-        <div><strong>Driver:</strong> ${escapeHtml(packingData.driver_name || '-')}</div>
-        <div><strong>Driver mobile:</strong> ${escapeHtml(packingData.driver_phone || '-')}</div>
+        <div><strong>Transporter:</strong> ${escapeHtml(packingData.driver_name || '-')}</div>
+        <div><strong>Transporter mobile:</strong> ${escapeHtml(packingData.driver_phone || '-')}</div>
         <div><strong>Vehicle:</strong> ${escapeHtml(packingData.vehicle_number || '-')}</div>
         <div><strong>Container:</strong> ${escapeHtml(packingData.container_number || '-')}</div>
       </div>
@@ -245,7 +245,7 @@ export default function PackingList() {
                         {order.vehicle_number || '-'}
                       </div>
                       <div className="text-xs text-slate-500 mt-0.5">
-                        Driver: {order.driver_name || '-'} · Cont: {order.container_number || '-'}
+                        Transporter: {order.driver_name || '-'} · {order.driver_phone || 'No mobile'} · Cont: {order.container_number || '-'}
                       </div>
                     </td>
 
@@ -328,8 +328,8 @@ export default function PackingList() {
               <span className="font-bold text-slate-900">{packingData.product_name || '-'}</span>
             </div>
             <div>
-              <span className="block text-xs font-bold text-slate-400 uppercase">Driver / Truck</span>
-              <span className="font-bold text-slate-900">{packingData.driver_name || '-'} ({packingData.vehicle_number || '-'})</span>
+              <span className="block text-xs font-bold text-slate-400 uppercase">Transporter / Truck</span>
+              <span className="font-bold text-slate-900">{packingData.driver_name || '-'} · {packingData.driver_phone || 'No mobile'} ({packingData.vehicle_number || '-'})</span>
             </div>
             <div>
               <span className="block text-xs font-bold text-slate-400 uppercase">Container #</span>

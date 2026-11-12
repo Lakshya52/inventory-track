@@ -70,6 +70,7 @@ export default function DispatchOrders() {
   const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [clientId, setClientId] = useState('');
   const [driverName, setDriverName] = useState('');
+  const [driverPhone, setDriverPhone] = useState('');
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [containerNumber, setContainerNumber] = useState('');
   const [loading, setLoading] = useState(true);
@@ -164,8 +165,8 @@ export default function DispatchOrders() {
   };
 
   const handleRaiseOrder = async () => {
-    if (selectedBatchIds.length === 0 || !clientId || !driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
-      showMessage('Please select at least one batch, a client, and fill in driver, vehicle, and container details.', 'error');
+    if (selectedBatchIds.length === 0 || !clientId || !driverName.trim() || !driverPhone.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
+      showMessage('Please select at least one batch, a client, and fill in the transporter name, mobile number, vehicle, and container details.', 'error');
       return;
     }
     setActionLoading(true);
@@ -176,6 +177,7 @@ export default function DispatchOrders() {
             batch_id: id,
             client_id: clientId,
             driver_name: driverName.trim(),
+            driver_phone: driverPhone.trim(),
             vehicle_number: vehicleNumber.trim(),
             container_number: containerNumber.trim(),
             client_operation_id: newOperationId(),
@@ -194,6 +196,7 @@ export default function DispatchOrders() {
       setSelectedBatchIds([]);
       setClientId('');
       setDriverName('');
+      setDriverPhone('');
       setVehicleNumber('');
       setContainerNumber('');
       await fetchData();
@@ -395,16 +398,28 @@ export default function DispatchOrders() {
             </select>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-                Driver Name *
+                Transporter Name *
               </label>
               <input
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                placeholder="Driver name"
+                placeholder="Transporter name"
                 value={driverName}
                 onChange={(e) => setDriverName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
+                Transporter Mobile *
+              </label>
+              <input
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="e.g. 98765 43210"
+                inputMode="tel"
+                value={driverPhone}
+                onChange={(e) => setDriverPhone(e.target.value)}
               />
             </div>
             <div>
@@ -437,6 +452,7 @@ export default function DispatchOrders() {
               !selectedBatchIds.length ||
               !clientId ||
               !driverName.trim() ||
+              !driverPhone.trim() ||
               !vehicleNumber.trim() ||
               !containerNumber.trim() ||
               actionLoading
@@ -480,7 +496,7 @@ export default function DispatchOrders() {
               <tr>
                 <th className="px-5 py-4">Product &amp; Batch</th>
                 <th className="px-5 py-4">Client Destination</th>
-                <th className="px-5 py-4">Transport Info</th>
+                <th className="px-5 py-4">Transporter Info</th>
                 <th className="px-5 py-4">Order Date</th>
                 <th className="px-5 py-4">Status</th>
                 <th className="px-5 py-4 text-right">Actions</th>
@@ -520,7 +536,7 @@ export default function DispatchOrders() {
                         {order.vehicle_number || 'No Vehicle'}
                       </div>
                       <div className="text-xs text-slate-500 mt-0.5">
-                        Driver: {order.driver_name || '-'} · Cont: {order.container_number || '-'}
+                        Transporter: {order.driver_name || '-'} · {order.driver_phone || 'No mobile'} · Cont: {order.container_number || '-'}
                       </div>
                     </td>
 
@@ -634,8 +650,8 @@ export default function DispatchOrders() {
                   <span className="font-bold text-slate-900">{selectedOrder.client_name || '-'}</span>
                 </div>
                 <div>
-                  <span className="block text-xs font-bold text-slate-500 uppercase">Transport</span>
-                  <span className="font-medium text-slate-800">{selectedOrder.driver_name || '-'} · {selectedOrder.vehicle_number || '-'}</span>
+                  <span className="block text-xs font-bold text-slate-500 uppercase">Transporter</span>
+                  <span className="font-medium text-slate-800">{selectedOrder.driver_name || '-'} · {selectedOrder.driver_phone || 'No mobile'} · {selectedOrder.vehicle_number || '-'}</span>
                 </div>
                 <div>
                   <span className="block text-xs font-bold text-slate-500 uppercase">Container</span>

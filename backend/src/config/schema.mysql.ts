@@ -232,6 +232,7 @@ export async function ensureAdminSchema(): Promise<void> {
   );
   await addColumnIfMissing("dispatch_orders", "driver_phone", "VARCHAR(32) NULL");
   await addColumnIfMissing("dispatch_orders", "stock_reserved_at_order", "DATETIME(3) NULL");
+  await addColumnIfMissing("dispatch_orders", "returned_to_stock_quantity", "INT UNSIGNED NULL");
   await addColumnIfMissing("dispatch_orders", "quantity", "INT UNSIGNED NULL");
   await addColumnIfMissing("qr_labels", "dispatch_order_id", "INT NULL");
   await addColumnIfMissing("qr_labels", "recall_status", "VARCHAR(20) NULL");

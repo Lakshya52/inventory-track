@@ -136,6 +136,7 @@ export async function initDatabase(): Promise<void> {
       admin_remarks TEXT,
       client_id TEXT,
       driver_name TEXT,
+      driver_phone TEXT,
       vehicle_number TEXT,
       container_number TEXT,
       client_name TEXT,
@@ -206,6 +207,7 @@ export async function initDatabase(): Promise<void> {
   await addColumnIfMissing(db, 'batches', 'notes', 'TEXT');
   await addColumnIfMissing(db, 'dispatch_orders', 'client_id', 'TEXT');
   await addColumnIfMissing(db, 'dispatch_orders', 'driver_name', 'TEXT');
+  await addColumnIfMissing(db, 'dispatch_orders', 'driver_phone', 'TEXT');
   await addColumnIfMissing(db, 'dispatch_orders', 'vehicle_number', 'TEXT');
   await addColumnIfMissing(db, 'dispatch_orders', 'container_number', 'TEXT');
   await addColumnIfMissing(db, 'dispatch_orders', 'client_name', 'TEXT');
@@ -262,7 +264,7 @@ async function migrateLocalIdentifiers(db: SQLite.SQLiteDatabase): Promise<void>
     batches: { columns: ['id', 'product_id', 'batch_number', 'quantity', 'uom', 'storage_location', 'shelf_location_id', 'qr_job_id', 'vendor_id', 'vendor_name', 'grade_id', 'grade_name', 'bag_quantity_id', 'bag_quantity', 'bag_quantity_unit', 'fg_details_completed_at', 'unit_price', 'manufacturing_date', 'expiry_date', 'notes', 'location_code', 'unit_qr_codes', 'status', 'barcode_value', 'created_at', 'updated_at', 'product_name', 'product_sku', 'cas_number', 'molecular_formula', 'product_grade', 'product_purity', 'hazard_classification', 'storage_conditions', 'age_minutes', 'local_pending'], create: `CREATE TABLE batches_next (id TEXT PRIMARY KEY, product_id TEXT, batch_number TEXT, quantity REAL DEFAULT 0, uom TEXT, storage_location TEXT, shelf_location_id TEXT, qr_job_id TEXT, vendor_id TEXT, vendor_name TEXT, grade_id TEXT, grade_name TEXT, bag_quantity_id TEXT, bag_quantity REAL, bag_quantity_unit TEXT, fg_details_completed_at TEXT, unit_price REAL, manufacturing_date TEXT, expiry_date TEXT, notes TEXT, location_code TEXT, unit_qr_codes TEXT, status TEXT, barcode_value TEXT UNIQUE, created_at TEXT, updated_at TEXT, product_name TEXT, product_sku TEXT, cas_number TEXT, molecular_formula TEXT, product_grade TEXT, product_purity TEXT, hazard_classification TEXT, storage_conditions TEXT, age_minutes INTEGER DEFAULT 0, local_pending INTEGER NOT NULL DEFAULT 0);` },
     qr_labels: { columns: ['qr_value', 'batch_id'], create: `CREATE TABLE qr_labels_next (qr_value TEXT PRIMARY KEY, batch_id TEXT NOT NULL);` },
     qc_records: { columns: ['id', 'batch_id', 'tester_id', 'result', 'remarks', 'images', 'created_at', 'client_operation_id', 'device_uuid', 'batch_number', 'product_name', 'product_sku', 'tester_name'], create: `CREATE TABLE qc_records_next (id TEXT PRIMARY KEY, batch_id TEXT, tester_id TEXT, result TEXT, remarks TEXT, images TEXT, created_at TEXT, client_operation_id TEXT UNIQUE, device_uuid TEXT, batch_number TEXT, product_name TEXT, product_sku TEXT, tester_name TEXT);` },
-    dispatch_orders: { columns: ['id', 'batch_id', 'raised_by', 'status', 'admin_id', 'admin_remarks', 'client_id', 'driver_name', 'vehicle_number', 'container_number', 'client_name', 'created_at', 'updated_at', 'dispatched_at', 'batch_number', 'barcode_value', 'product_name', 'product_sku', 'quantity', 'uom', 'local_pending', 'client_operation_id'], create: `CREATE TABLE dispatch_orders_next (id TEXT PRIMARY KEY, batch_id TEXT, raised_by TEXT, status TEXT, admin_id TEXT, admin_remarks TEXT, client_id TEXT, driver_name TEXT, vehicle_number TEXT, container_number TEXT, client_name TEXT, created_at TEXT, updated_at TEXT, dispatched_at TEXT, batch_number TEXT, barcode_value TEXT, product_name TEXT, product_sku TEXT, quantity REAL, uom TEXT, local_pending INTEGER NOT NULL DEFAULT 0, client_operation_id TEXT);` },
+    dispatch_orders: { columns: ['id', 'batch_id', 'raised_by', 'status', 'admin_id', 'admin_remarks', 'client_id', 'driver_name', 'driver_phone', 'vehicle_number', 'container_number', 'client_name', 'created_at', 'updated_at', 'dispatched_at', 'batch_number', 'barcode_value', 'product_name', 'product_sku', 'quantity', 'uom', 'local_pending', 'client_operation_id'], create: `CREATE TABLE dispatch_orders_next (id TEXT PRIMARY KEY, batch_id TEXT, raised_by TEXT, status TEXT, admin_id TEXT, admin_remarks TEXT, client_id TEXT, driver_name TEXT, driver_phone TEXT, vehicle_number TEXT, container_number TEXT, client_name TEXT, created_at TEXT, updated_at TEXT, dispatched_at TEXT, batch_number TEXT, barcode_value TEXT, product_name TEXT, product_sku TEXT, quantity REAL, uom TEXT, local_pending INTEGER NOT NULL DEFAULT 0, client_operation_id TEXT);` },
     dispatch_records: { columns: ['id', 'batch_id', 'dispatcher_id', 'remarks', 'images', 'created_at', 'dispatch_order_id', 'batch_number', 'product_name', 'product_sku'], create: `CREATE TABLE dispatch_records_next (id TEXT PRIMARY KEY, batch_id TEXT, dispatcher_id TEXT, remarks TEXT, images TEXT, created_at TEXT, dispatch_order_id TEXT, batch_number TEXT, product_name TEXT, product_sku TEXT);` },
     outbox: { columns: ['operation_id', 'type', 'payload', 'client_timestamp', 'status', 'attempts', 'last_error', 'created_at', 'next_attempt_at', 'entity_type', 'entity_id'], create: `CREATE TABLE outbox_next (operation_id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, client_timestamp TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at TEXT NOT NULL, next_attempt_at TEXT, entity_type TEXT, entity_id TEXT);` },
   };
@@ -500,14 +502,15 @@ async function upsertQcRecord(db: SQLite.SQLiteDatabase, record: any): Promise<v
 async function upsertDispatchOrder(db: SQLite.SQLiteDatabase, order: any): Promise<void> {
   await db.runAsync(
     `INSERT INTO dispatch_orders (id, batch_id, raised_by, status, admin_id, admin_remarks,
-       client_id, driver_name, vehicle_number, container_number, client_name,
+       client_id, driver_name, driver_phone, vehicle_number, container_number, client_name,
        created_at, updated_at, dispatched_at, batch_number, barcode_value, product_name,
        product_sku, quantity, uom, local_pending, client_operation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
      ON CONFLICT(id) DO UPDATE SET
        status = CASE WHEN dispatch_orders.local_pending = 1 THEN dispatch_orders.status ELSE excluded.status END,
        admin_id = excluded.admin_id, admin_remarks = excluded.admin_remarks,
        client_id = excluded.client_id, driver_name = excluded.driver_name,
+       driver_phone = excluded.driver_phone,
        vehicle_number = excluded.vehicle_number, container_number = excluded.container_number,
        client_name = excluded.client_name,
        updated_at = CASE WHEN dispatch_orders.local_pending = 1 THEN dispatch_orders.updated_at ELSE excluded.updated_at END,
@@ -517,6 +520,7 @@ async function upsertDispatchOrder(db: SQLite.SQLiteDatabase, order: any): Promi
     [
       order.id, order.batch_id, order.raised_by, order.status, order.admin_id ?? null,
       order.admin_remarks || null, order.client_id ?? null, order.driver_name || null,
+      order.driver_phone || null,
       order.vehicle_number || null, order.container_number || null, order.client_name || null,
       toIso(order.created_at), toIso(order.updated_at),
       order.dispatched_at ? toIso(order.dispatched_at) : null,
@@ -1061,6 +1065,7 @@ export async function queueDispatchOrderRequests(orders: {
   client_id: EntityId;
   client_name: string;
   driver_name: string;
+  driver_phone: string;
   vehicle_number: string;
   container_number: string;
 }[]): Promise<void> {
@@ -1074,6 +1079,7 @@ export async function queueDispatchOrderRequests(orders: {
         expected_status: order.batch.status,
         client_id: order.client_id,
         driver_name: order.driver_name,
+        driver_phone: order.driver_phone,
         vehicle_number: order.vehicle_number,
         container_number: order.container_number,
       };
@@ -1085,13 +1091,13 @@ export async function queueDispatchOrderRequests(orders: {
       );
       await db.runAsync(
         `INSERT INTO dispatch_orders (id, batch_id, raised_by, status, admin_id, admin_remarks,
-           client_id, driver_name, vehicle_number, container_number, client_name, created_at, updated_at,
+           client_id, driver_name, driver_phone, vehicle_number, container_number, client_name, created_at, updated_at,
            dispatched_at, batch_number, barcode_value, product_name, product_sku, quantity,
            uom, local_pending, client_operation_id)
-         VALUES (?, ?, ?, 'APPROVED', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?)`,
+         VALUES (?, ?, ?, 'APPROVED', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?)`,
         [
           order.local_id, order.batch.id, order.raised_by, order.client_id,
-          order.driver_name, order.vehicle_number, order.container_number, order.client_name, timestamp, timestamp,
+          order.driver_name, order.driver_phone, order.vehicle_number, order.container_number, order.client_name, timestamp, timestamp,
           order.batch.batch_number, order.batch.barcode_value, order.batch.product_name,
           order.batch.product_sku, Number(order.batch.quantity || 0), order.batch.uom,
           order.operation_id,

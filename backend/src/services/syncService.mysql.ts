@@ -541,6 +541,7 @@ async function applyDispatchOrderRaise(
     const seen = new Set<number>();
     const lines: Array<Record<string, any>> = [];
     const assignments: Array<{ batchId: number; labelIds: number[] }> = [];
+    const stockDeductions = new Map<number, { productId: number; quantity: number }>();
     for (const line of requested) {
       const batch = await getBatchForUpdate(conn, { batch_id: line.batch_id });
       const batchId = Number(batch.id);
@@ -569,20 +570,31 @@ async function applyDispatchOrderRaise(
       const location = locations[0];
       lines.push({ batch_id: batchId, batch_number: batch.parent_batch_number || batch.batch_number, child_batch_number: batch.batch_number, product_name: batch.product_name, product_sku: batch.product_sku, quantity, uom: batch.uom, location: location?.location_code || batch.storage_location || 'N/A', location_code: location?.location_code ?? null, location_description: location?.description ?? null });
       assignments.push({ batchId, labelIds: labels.map((label) => Number(label.id)) });
+      const productId = Number(batch.product_id);
+      const existing = stockDeductions.get(productId);
+      stockDeductions.set(productId, { productId, quantity: (existing?.quantity || 0) + quantity });
     }
     const total = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-    // Transport details are optional at raise time and captured again when the
-    // loading session is finalised. Keep whatever the caller supplied.
+    // Transport details are captured with the order and can be corrected when
+    // the loading session is finalised.
     const transport = {
       driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
       driver_phone: typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
       vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
-    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, approved_by_role, approved_by_id) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?)`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, user.userId]);
+    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, user.userId]);
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, labelId]);
       if (updated.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.');
+    }
+    // The ordered units leave the stock as soon as the order is created, so
+    // their QR labels stop being available stock from here on.
+    for (const entry of stockDeductions.values()) {
+      await conn.execute(
+        'UPDATE products SET quantity = GREATEST(0, COALESCE(quantity, 0) - ?), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+        [entry.quantity, entry.productId]
+      );
     }
     // No approval step: the order is released for loading the moment it is
     // raised, so the batch goes straight to DISPATCH_APPROVED.
@@ -667,8 +679,8 @@ async function applyDispatchOrderRaise(
       (batch_id, raised_by, status, client_id, quantity,
        client_operation_id, client_created_at, device_uuid,
        driver_name, driver_phone, vehicle_number, container_number,
-       approved_by_role, approved_by_id)
-     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?)`,
+       approved_by_role, approved_by_id, stock_reserved_at_order)
+     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`,
     [
       batch.id,
       user.userId,
@@ -677,8 +689,8 @@ async function applyDispatchOrderRaise(
       input.operation_id,
       toDate(input.client_timestamp),
       deviceUuid,
-      // Transport details are optional at raise time and captured again when
-      // the loading session is finalised. Keep whatever the caller supplied.
+      // Transport details are captured with the order and can be corrected when
+      // the loading session is finalised.
       typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
       typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
       typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
@@ -691,6 +703,13 @@ async function applyDispatchOrderRaise(
     const [assigned] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, label.id]);
     if (assigned.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
+
+  // The ordered units leave the stock as soon as the order is created, so
+  // their QR labels stop being available stock from here on.
+  await conn.execute(
+    'UPDATE products SET quantity = GREATEST(0, COALESCE(quantity, 0) - ?), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+    [requestedQuantity, batch.product_id]
+  );
 
   // No approval step: the order is released for loading the moment it is
   // raised, so the batch goes straight to DISPATCH_APPROVED.

@@ -134,6 +134,28 @@ export async function raise(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // Transporter details belong to the order, so they are captured up front
+  // rather than only when the loading session is finalised.
+  const transport = {
+    driver_name: String(req.body.driver_name ?? '').trim(),
+    driver_phone: String(req.body.driver_phone ?? '').trim(),
+    vehicle_number: String(req.body.vehicle_number ?? '').trim(),
+    container_number: String(req.body.container_number ?? '').trim(),
+  };
+  const missingTransport = [
+    ['transporter name', transport.driver_name],
+    ['transporter mobile number', transport.driver_phone],
+    ['vehicle number', transport.vehicle_number],
+    ['container number', transport.container_number],
+  ].filter(([, value]) => !value).map(([label]) => label);
+  if (missingTransport.length > 0) {
+    res.status(400).json({
+      error: `Missing transporter details: ${missingTransport.join(', ')}`,
+      code: 'MISSING_TRANSPORT_DETAILS',
+    });
+    return;
+  }
+
   const operation: SyncOperationInput = {
     operation_id: req.body.client_operation_id || randomUUID(),
     type: 'DISPATCH_ORDER_RAISE',
@@ -145,11 +167,12 @@ export async function raise(req: Request, res: Response): Promise<void> {
       quantity: req.body.quantity,
       items: items?.map((item: any) => ({ batch_id: item.batch_id, quantity: item.quantity })),
       client_id: req.body.client_id as EntityId,
-      // Transport details are optional here and captured again when the
-      // loading session is finalised. Keep whatever the caller supplied.
-      driver_name: typeof req.body.driver_name === 'string' ? req.body.driver_name : '',
-      vehicle_number: typeof req.body.vehicle_number === 'string' ? req.body.vehicle_number : '',
-      container_number: typeof req.body.container_number === 'string' ? req.body.container_number : '',
+      // Transport details are captured here and can be corrected when the
+      // loading session is finalised.
+      driver_name: transport.driver_name,
+      driver_phone: transport.driver_phone,
+      vehicle_number: transport.vehicle_number,
+      container_number: transport.container_number,
     },
   };
 
@@ -206,6 +229,64 @@ export async function listMine(req: Request, res: Response): Promise<void> {
     projection: { _id: 0 },
   });
   res.json(await enrichOrders(ctx, orders));
+}
+
+/**
+ * Puts units back into the product stock. The units were taken out of the
+ * stock when the dispatch order was created, so they have to go back when the
+ * order is called off or the unit is recalled to the shelf.
+ */
+async function restoreProductStock(
+  ctx: DbContext,
+  entries: Array<{ productId: EntityId; quantity: number }>
+): Promise<void> {
+  const totals = new Map<string, { productId: EntityId; quantity: number }>();
+  for (const entry of entries) {
+    if (!entry.quantity) continue;
+    const key = idKey(entry.productId);
+    const existing = totals.get(key);
+    totals.set(key, {
+      productId: entry.productId,
+      quantity: (existing?.quantity || 0) + entry.quantity,
+    });
+  }
+  for (const entry of totals.values()) {
+    await ctx.findOneAndUpdate('products', { id: entry.productId }, [
+      {
+        $set: {
+          quantity: { $add: [{ $ifNull: ['$quantity', 0] }, entry.quantity] },
+          updated_at: now(),
+        },
+      },
+    ], { returnDocument: 'after' });
+  }
+}
+
+/**
+ * The units an order is still holding, grouped per product, so they can be
+ * returned to the stock. Units that were already recalled back to the shelf
+ * are not included: those went back when they were recalled.
+ */
+async function orderStockEntries(
+  ctx: DbContext,
+  order: Record<string, any>
+): Promise<Array<{ productId: EntityId; quantity: number }>> {
+  const lines = Array.isArray(order.order_lines) && order.order_lines.length
+    ? order.order_lines
+    : [{ batch_id: order.batch_id, quantity: order.quantity }];
+  const entries: Array<{ productId: EntityId; quantity: number }> = [];
+  for (const line of lines) {
+    const quantity = Number(line?.quantity ?? 0);
+    if (!quantity) continue;
+    const batch = await ctx.findOne(
+      'batches',
+      { id: line?.batch_id },
+      { projection: { _id: 0, product_id: 1 } }
+    );
+    if (!batch) continue;
+    entries.push({ productId: batch.product_id as EntityId, quantity });
+  }
+  return entries;
 }
 
 /**
@@ -281,6 +362,12 @@ export async function cancel(req: Request, res: Response): Promise<void> {
       }
       await ctx.deleteMany('packing_list_items', { dispatch_order_id: id });
 
+      // The order took these units out of the stock when it was created, so
+      // cancelling it has to put them back on the shelf.
+      if (order.stock_reserved_at_order) {
+        await restoreProductStock(ctx, await orderStockEntries(ctx, order));
+      }
+
       await ctx.insert('activity_logs', {
         user_id: req.user!.userId,
         user_name: req.user!.name,
@@ -335,6 +422,7 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
       if (loadedEvent) {
         throw new SyncConflictError('This QR code has already been loaded and cannot be recalled', { qr_value: qrValue, code: 'QR_ALREADY_LOADED' });
       }
+      const batch = await ctx.findOne('batches', { id: label.batch_id }, { projection: { _id: 0, product_id: 1 } });
 
       // The unit leaves this order: drop its line and lower the order quantity.
       const orderLines = Array.isArray(order.order_lines) ? order.order_lines : [];
@@ -374,6 +462,16 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
           recalled_at: null,
         } });
         await ctx.updateOne('batches', { id: label.batch_id, status: 'DISPATCH_APPROVED' }, { $set: { status: 'QC_PASSED' } });
+        // The unit left the stock when the order was created, so it goes back
+        // on the shelf now.
+        if (order.stock_reserved_at_order && batch) {
+          await restoreProductStock(ctx, [{ productId: batch.product_id as EntityId, quantity: 1 }]);
+          await ctx.updateOne(
+            'dispatch_orders',
+            { id: order.id },
+            { $inc: { returned_to_stock_quantity: 1 } },
+          );
+        }
       } else {
         await ctx.updateOne('qr_labels', { id: label.id, recall_status: { $ne: 'RECALLED' } }, { $set: {
           recall_status: 'RECALLED',

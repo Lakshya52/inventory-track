@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { query, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
+import type { PoolConnection } from 'mysql2/promise';
 import { applyOperation, SyncConflictError, SyncError } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import { buildPackingListPdf } from '../services/packingListPdf';
@@ -13,6 +14,14 @@ function errorResponse(res: Response, error: unknown, fallback: string): void {
   }
   console.error(fallback, error);
   res.status(500).json({ error: fallback });
+}
+
+function parseOrderLines(value: unknown): any[] {
+  let items: any = value;
+  if (typeof items === 'string') {
+    try { items = JSON.parse(items); } catch { items = []; }
+  }
+  return Array.isArray(items) ? items : [];
 }
 
 function withOrderLines(order: any): any {
@@ -32,6 +41,28 @@ export async function raise(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // Transporter details belong to the order, so they are captured up front
+  // rather than only when the loading session is finalised.
+  const transport = {
+    driver_name: String(req.body.driver_name ?? '').trim(),
+    driver_phone: String(req.body.driver_phone ?? '').trim(),
+    vehicle_number: String(req.body.vehicle_number ?? '').trim(),
+    container_number: String(req.body.container_number ?? '').trim(),
+  };
+  const missingTransport = [
+    ['transporter name', transport.driver_name],
+    ['transporter mobile number', transport.driver_phone],
+    ['vehicle number', transport.vehicle_number],
+    ['container number', transport.container_number],
+  ].filter(([, value]) => !value).map(([label]) => label);
+  if (missingTransport.length > 0) {
+    res.status(400).json({
+      error: `Missing transporter details: ${missingTransport.join(', ')}`,
+      code: 'MISSING_TRANSPORT_DETAILS',
+    });
+    return;
+  }
+
   const operation: SyncOperationInput = {
     operation_id: req.body.client_operation_id || randomUUID(),
     type: 'DISPATCH_ORDER_RAISE',
@@ -43,11 +74,12 @@ export async function raise(req: Request, res: Response): Promise<void> {
       client_id: Number(req.body.client_id),
       quantity: req.body.quantity,
       items: items?.map((item: any) => ({ batch_id: Number(item.batch_id), quantity: item.quantity })),
-      // Transport details are optional here and captured again when the
-      // loading session is finalised. Keep whatever the caller supplied.
-      driver_name: typeof req.body.driver_name === 'string' ? req.body.driver_name : '',
-      vehicle_number: typeof req.body.vehicle_number === 'string' ? req.body.vehicle_number : '',
-      container_number: typeof req.body.container_number === 'string' ? req.body.container_number : '',
+      // Transport details are captured here and can be corrected when the
+      // loading session is finalised.
+      driver_name: transport.driver_name,
+      driver_phone: transport.driver_phone,
+      vehicle_number: transport.vehicle_number,
+      container_number: transport.container_number,
     },
   };
 
@@ -179,8 +211,7 @@ export async function cancel(req: Request, res: Response): Promise<void> {
         throw new SyncConflictError(`Order is already ${order.status}`, { order_id: order.id, status: order.status });
       }
 
-      let cancelLines: any[] = [];
-      try { cancelLines = JSON.parse(order.order_lines || '[]'); } catch { cancelLines = []; }
+      const cancelLines = parseOrderLines(order.order_lines);
       const releaseBatchIds = cancelLines.length
         ? cancelLines.map((line: any) => Number(line?.batch_id)).filter((batchId: number) => Number.isInteger(batchId) && batchId > 0)
         : [Number(order.batch_id)];
@@ -215,6 +246,11 @@ export async function cancel(req: Request, res: Response): Promise<void> {
           [batchId]
         );
       }
+      // The order took these units out of the stock when it was created, so
+      // cancelling it has to put them back on the shelf.
+      if (order.stock_reserved_at_order) {
+        await restoreOrderStock(conn, order);
+      }
       await conn.execute(
         `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
          VALUES (?, ?, ?, 'DISPATCH_ORDER_CANCELLED', ?)`,
@@ -231,6 +267,34 @@ export async function cancel(req: Request, res: Response): Promise<void> {
 type PackingListResult =
   | { ok: true; data: Record<string, any> }
   | { ok: false; statusCode: number; error: string };
+
+/**
+ * Puts units back into the product stock. The units were taken out of the
+ * stock when the dispatch order was created, so they have to go back when the
+ * order is called off or the unit is recalled to the shelf.
+ */
+async function restoreOrderStock(conn: PoolConnection, order: any): Promise<void> {
+  const lines = parseOrderLines(order.order_lines);
+  if (!lines.length) lines.push({ batch_id: order.batch_id, quantity: order.quantity });
+  const totals = new Map<number, number>();
+  for (const line of lines) {
+    const quantity = Number(line?.quantity ?? 0);
+    if (!quantity) continue;
+    const [batches] = await conn.execute<RowDataPacket[]>(
+      'SELECT product_id FROM batches WHERE id = ?',
+      [line?.batch_id]
+    );
+    const productId = Number(batches[0]?.product_id);
+    if (!productId) continue;
+    totals.set(productId, (totals.get(productId) || 0) + quantity);
+  }
+  for (const [productId, quantity] of totals) {
+    await conn.execute(
+      'UPDATE products SET quantity = COALESCE(quantity, 0) + ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+      [quantity, productId]
+    );
+  }
+}
 
 async function buildPackingListData(req: Request): Promise<PackingListResult> {
   const { id } = req.params;
@@ -362,8 +426,7 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
       // Loading sessions are MongoDB-only, so on MySQL no label can already be
       // loaded and there is no session total to adjust.
       // The unit leaves this order: drop its line and lower the order quantity.
-      let orderLines: any[] = [];
-      try { orderLines = JSON.parse(order.order_lines || '[]'); } catch { orderLines = []; }
+      const orderLines = parseOrderLines(order.order_lines);
       const remainingLines = orderLines.filter(
         (line: any) => Number(line?.batch_id) !== Number(label.batch_id),
       );
@@ -384,6 +447,25 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
           "UPDATE batches SET status = 'QC_PASSED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'DISPATCH_APPROVED'",
           [label.batch_id]
         );
+        // The unit left the stock when the order was created, so it goes back
+        // on the shelf now.
+        if (order.stock_reserved_at_order) {
+          const [batches] = await conn.execute<RowDataPacket[]>(
+            'SELECT product_id FROM batches WHERE id = ?',
+            [label.batch_id]
+          );
+          const productId = Number(batches[0]?.product_id);
+          if (productId) {
+            await conn.execute(
+              'UPDATE products SET quantity = COALESCE(quantity, 0) + 1, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+              [productId]
+            );
+          }
+          await conn.execute(
+            'UPDATE dispatch_orders SET returned_to_stock_quantity = COALESCE(returned_to_stock_quantity, 0) + 1 WHERE id = ?',
+            [order.id]
+          );
+        }
       } else {
         await conn.execute(
           `UPDATE qr_labels SET recall_status = 'RECALLED', recall_condition = ?, recall_reason = ?,

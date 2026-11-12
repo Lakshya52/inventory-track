@@ -160,6 +160,7 @@ export interface DispatchOrder {
   admin_remarks: string | null;
   client_id?: EntityId | null;
   driver_name?: string | null;
+  driver_phone?: string | null;
   vehicle_number?: string | null;
   container_number?: string | null;
   client_name?: string | null;

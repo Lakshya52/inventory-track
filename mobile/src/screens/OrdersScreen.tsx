@@ -35,6 +35,7 @@ export default function OrdersScreen() {
   const [selectedBatch, setSelectedBatch] = useState<any>(null);
   const [clientId, setClientId] = useState<EntityId | null>(null);
   const [driver, setDriver] = useState('');
+  const [phone, setPhone] = useState('');
   const [vehicle, setVehicle] = useState('');
   const [container, setContainer] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -75,11 +76,11 @@ export default function OrdersScreen() {
   useFocusEffect(useCallback(() => { setLoading(true); void load(); }, [load]));
 
   const openRaise = (batch: any) => {
-    setSelectedBatch(batch); setClientId(null); setDriver(''); setVehicle(''); setContainer(''); setRemarks('');
+    setSelectedBatch(batch); setClientId(null); setDriver(''); setPhone(''); setVehicle(''); setContainer(''); setRemarks('');
   };
   const raise = async () => {
-    if (!selectedBatch || !clientId || !driver.trim() || !vehicle.trim() || !container.trim()) {
-      Alert.alert('Complete dispatch details', 'Choose a client and enter the driver, vehicle and container details.'); return;
+    if (!selectedBatch || !clientId || !driver.trim() || !phone.trim() || !vehicle.trim() || !container.trim()) {
+      Alert.alert('Complete transporter details', 'Choose a client and enter the transporter name, mobile number, vehicle and container details.'); return;
     }
     setBusyId(selectedBatch.id ?? selectedBatch._id);
     try {
@@ -89,6 +90,7 @@ export default function OrdersScreen() {
           barcode_value: selectedBatch.barcode_value,
           client_id: clientId,
           driver_name: driver.trim(),
+          driver_phone: phone.trim(),
           vehicle_number: vehicle.trim(),
           container_number: container.trim(),
         });
@@ -97,7 +99,7 @@ export default function OrdersScreen() {
         await queueDispatchOrderRequests([{
           operation_id: operationId, local_id: `local:${operationId}`, batch: selectedBatch,
           raised_by: session.user.id, client_id: clientId, client_name: clients.find((item) => String(item.id ?? item._id) === String(clientId))?.name || '',
-          driver_name: driver.trim(), vehicle_number: vehicle.trim(), container_number: container.trim(),
+          driver_name: driver.trim(), driver_phone: phone.trim(), vehicle_number: vehicle.trim(), container_number: container.trim(),
         }]);
       }
       setSelectedBatch(null); setSegment('mine');
@@ -222,7 +224,8 @@ export default function OrdersScreen() {
             <SectionHeader title="Raise dispatch request" subtitle={`${selectedBatch?.batch_number || ''} · ${selectedBatch?.product_name || ''}`} right={<Pressable accessibilityRole="button" accessibilityLabel="Close" style={styles.closeButton} onPress={() => setSelectedBatch(null)}><Ionicons name="close" size={22} color={colors.text} /></Pressable>} />
             <Text style={styles.label}>Client</Text>
             <View style={styles.clientList}>{clients.map((client) => <Pressable key={String(client.id ?? client._id)} accessibilityRole="radio" accessibilityState={{ selected: String(clientId) === String(client.id ?? client._id) }} onPress={() => setClientId(client.id ?? client._id)} style={[styles.clientChip, String(clientId) === String(client.id ?? client._id) && styles.clientSelected]}><Text style={[styles.segmentText, String(clientId) === String(client.id ?? client._id) && styles.segmentTextActive]}>{client.name}</Text></Pressable>)}</View>
-            <Field label="Driver name" value={driver} onChangeText={setDriver} />
+            <Field label="Transporter name" value={driver} onChangeText={setDriver} />
+            <Field label="Transporter mobile number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
             <Field label="Vehicle number" value={vehicle} onChangeText={setVehicle} autoCapitalize="characters" />
             <Field label="Container number" value={container} onChangeText={setContainer} autoCapitalize="characters" />
             <Button title={busyId ? 'Sending…' : 'Create dispatch order'} loading={!!busyId} onPress={() => void raise()} />

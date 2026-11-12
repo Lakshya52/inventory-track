@@ -65,6 +65,7 @@ export default function DispatchScreen() {
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<EntityId | null>(null);
   const [driverName, setDriverName] = useState('');
+  const [driverPhone, setDriverPhone] = useState('');
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [containerNumber, setContainerNumber] = useState('');
   const [selectedReadyIds, setSelectedReadyIds] = useState<EntityId[]>([]);
@@ -206,8 +207,8 @@ export default function DispatchScreen() {
     if (!session) return;
     const selectedBatches = ready.filter((batch) => selectedReadyIds.some((id) => String(id) === String(batch.id)));
     const client = clients.find((item) => String(item.id) === String(selectedClientId));
-    if (selectedBatches.length === 0 || !client || !driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
-      showMessage('Select at least one batch and a client, then enter the driver, vehicle, and container details.', 'error');
+    if (selectedBatches.length === 0 || !client || !driverName.trim() || !driverPhone.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
+      showMessage('Select at least one batch and a client, then enter the transporter name, mobile number, vehicle, and container details.', 'error');
       return;
     }
     setRaisingId(true);
@@ -220,12 +221,14 @@ export default function DispatchScreen() {
         client_id: client.id,
         client_name: client.name,
         driver_name: driverName.trim(),
+        driver_phone: driverPhone.trim(),
         vehicle_number: vehicleNumber.trim(),
         container_number: containerNumber.trim(),
       })));
       showMessage(`${selectedBatches.length} dispatch request${selectedBatches.length === 1 ? '' : 's'} queued for ${client.name}.`, 'success');
       setSelectedReadyIds([]);
       setDriverName('');
+      setDriverPhone('');
       setVehicleNumber('');
       setContainerNumber('');
       await load();
@@ -542,10 +545,17 @@ export default function DispatchScreen() {
                     );
                   })}
                   <Field
-                    label="Driver name"
+                    label="Transporter name"
                     value={driverName}
                     onChangeText={setDriverName}
-                    placeholder="Enter the assigned driver"
+                    placeholder="Enter the transporter name"
+                  />
+                  <Field
+                    label="Transporter mobile number"
+                    value={driverPhone}
+                    onChangeText={setDriverPhone}
+                    placeholder="Enter the transporter mobile number"
+                    keyboardType="phone-pad"
                   />
                   <Field
                     label="Vehicle number"
@@ -584,7 +594,7 @@ export default function DispatchScreen() {
               <Button
               title={raisingId ? 'Queuing requests...' : `Raise request for ${selectedReadyIds.length} batch${selectedReadyIds.length === 1 ? '' : 'es'}`}
               loading={raisingId}
-                disabled={selectedReadyIds.length === 0 || !selectedClientId || !driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()}
+                disabled={selectedReadyIds.length === 0 || !selectedClientId || !driverName.trim() || !driverPhone.trim() || !vehicleNumber.trim() || !containerNumber.trim()}
                 onPress={() => void raiseOrders()}
               />
             </View>

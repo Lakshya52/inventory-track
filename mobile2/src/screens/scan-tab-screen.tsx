@@ -499,6 +499,7 @@ export function ScanTabScreen() {
           order.batch_number,
           order.client_name,
           order.driver_name,
+          order.driver_phone,
           order.vehicle_number,
           order.container_number,
         ]
@@ -1452,7 +1453,8 @@ export function ScanTabScreen() {
                           <View className="flex-row items-center gap-1.5">
                             <Truck size={11} color="#71829B" />
                             <AppText variant="tiny" className="flex-1 text-[10px] text-[#71829B]">
-                              {order.driver_name || 'Driver not assigned'}
+                              {order.driver_name || 'Transporter not assigned'}
+                              {order.driver_phone ? ` · ${order.driver_phone}` : ''}
                               {order.vehicle_number ? ` · ${order.vehicle_number}` : ''}
                               {order.container_number ? ` · ${order.container_number}` : ''}
                             </AppText>

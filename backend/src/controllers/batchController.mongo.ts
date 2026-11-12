@@ -378,7 +378,7 @@ export async function list(_req: Request, res: Response): Promise<void> {
 export async function getByBarcode(req: Request, res: Response): Promise<void> {
   const { barcode } = req.params;
   const ctx = await getContext();
-  const label = await ctx.findOne('qr_labels', { qr_value: barcode }, { projection: { _id: 0, batch_id: 1 } });
+  const label = await ctx.findOne('qr_labels', { qr_value: barcode }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1, recall_condition: 1 } });
   let batch = await ctx.findOne('batches', { barcode_value: barcode }, { projection: { _id: 0 } });
   let matchedByBatchNumber = false;
   if (!batch && label) {
@@ -406,6 +406,25 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
     : null;
   const qrCount = await ctx.count('qr_labels', { batch_id: batch.id });
 
+  // A label that is committed to a dispatch order is no longer stock: the
+  // units left the inventory when the order was created. Report that so the
+  // label is never treated as free stock again.
+  const committedOrder = label?.dispatch_order_id
+    ? await ctx.findOne('dispatch_orders', { id: label.dispatch_order_id }, { projection: { _id: 0, id: 1, status: 1, order_lines: 1 } })
+    : null;
+  const openOrder = committedOrder && String(committedOrder.status) === 'APPROVED'
+    ? committedOrder
+    : null;
+  const labelState = label?.recall_status === 'RECALLED'
+    ? 'RECALLED'
+    : openOrder
+      ? 'COMMITTED'
+      : String(batch.status) === 'DISPATCHED'
+        ? 'DISPATCHED'
+        : String(batch.status) === 'LOADING'
+          ? 'LOADING'
+          : 'AVAILABLE';
+
   res.json({
     ...batch,
     product_name: product?.name ?? null,
@@ -427,6 +446,13 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
     grade_name: batch.grade_id
       ? (await ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } }))?.name ?? product?.grade ?? null
       : product?.grade ?? null,
+    label_state: labelState,
+    // Only a label that is still free stock can be picked up again.
+    available_in_stock: labelState === 'AVAILABLE',
+    dispatch_order_id: openOrder?.id ?? null,
+    dispatch_order_status: committedOrder?.status ?? null,
+    recall_status: label?.recall_status ?? null,
+    recall_condition: label?.recall_condition ?? null,
   });
 }
 

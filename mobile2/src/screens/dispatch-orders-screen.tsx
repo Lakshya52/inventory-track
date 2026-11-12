@@ -366,10 +366,11 @@ export function DispatchOrdersScreen() {
                         </View>
                         <View className="flex-1 pl-2">
                           <AppText variant="tiny" className="text-[9px] uppercase tracking-wide text-[#71829B]">
-                            Driver
+                            Transporter
                           </AppText>
                           <AppText variant="caption" className="font-manrope-medium text-[11px] text-[#293A54]">
                             {order.driver_name || '-'}
+                            {order.driver_phone ? ` · ${order.driver_phone}` : ''}
                           </AppText>
                         </View>
                       </View>
@@ -452,8 +453,8 @@ export function DispatchOrdersScreen() {
             />
             <SheetInfoRow
               icon={Truck}
-              title="Transport Details"
-              subtitle={`Driver: ${selected.driver_name || '-'}\nVehicle: ${selected.vehicle_number || '-'}\nContainer: ${selected.container_number || '-'}`}
+              title="Transporter Details"
+              subtitle={`Transporter: ${selected.driver_name || '-'}\nMobile: ${selected.driver_phone || '-'}\nVehicle: ${selected.vehicle_number || '-'}\nContainer: ${selected.container_number || '-'}`}
             />
             {selected.storage_location ? (
               <SheetInfoRow icon={MapPin} title="Storage Location" subtitle={selected.storage_location} />
@@ -578,7 +579,7 @@ export function DispatchOrdersScreen() {
                   Customer: {packingList?.client_name || 'N/A'}
                 </AppText>
                 <AppText variant="caption" className="mt-1 text-[11px] text-[#4E5D76]">
-                  Driver: {packingList?.driver_name || '-'} | Vehicle: {packingList?.vehicle_number || '-'} | Container: {packingList?.container_number || '-'}
+                  Transporter: {packingList?.driver_name || '-'} | Mobile: {packingList?.driver_phone || '-'} | Vehicle: {packingList?.vehicle_number || '-'} | Container: {packingList?.container_number || '-'}
                 </AppText>
                 {packingList?.seal_number ? (
                   <AppText variant="caption" className="mt-1 text-[11px] font-manrope-bold text-[#15803D]">

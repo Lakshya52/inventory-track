@@ -48,6 +48,7 @@ export type RaiseOrderPayload = {
   barcode_value?: string;
   client_id: string;
   driver_name: string;
+  driver_phone: string;
   vehicle_number: string;
   container_number: string;
   client_operation_id?: string;
