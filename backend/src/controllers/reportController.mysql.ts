@@ -40,9 +40,9 @@ export async function summary(_req: Request, res: Response): Promise<void> {
   const [requests] = await query<RowDataPacket[]>(
     `SELECT
        COUNT(*) AS total,
-       SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pending,
-       SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved,
-       SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected
+       SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN status IN ('APPROVED','CLOSED_DISPATCHED','CLOSED_NOT_DISPATCHED') THEN 1 ELSE 0 END) AS approved,
+       SUM(CASE WHEN status IN ('REJECTED','CANCELLED') THEN 1 ELSE 0 END) AS rejected
      FROM dispatch_orders`
   );
   const [locations] = await query<RowDataPacket[]>(

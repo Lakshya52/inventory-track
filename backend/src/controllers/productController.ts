@@ -5,6 +5,8 @@ import * as mongoImpl from './productController.mongo';
 const implementation = useMongo ? mongoImpl : mysqlImpl;
 
 export const create = implementation.create;
+export const createFamily = implementation.createFamily;
+export const renameFamily = implementation.renameFamily;
 export const list = implementation.list;
 export const getById = implementation.getById;
 export const search = implementation.search;

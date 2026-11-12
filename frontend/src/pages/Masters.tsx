@@ -5,10 +5,11 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import type { EntityId } from '../types';
 import Clients from './Clients';
 import Vendors from './Vendors';
+import Products from './Products';
 import {
   Building2,
   Factory,
-  FlaskConical,
+  Package,
   PackageCheck,
   SlidersHorizontal,
   Plus,
@@ -23,8 +24,8 @@ import {
   Printer,
 } from 'lucide-react';
 
-type MasterTab = 'clients' | 'vendors' | 'grades' | 'uoms' | 'printer-label';
-type SimpleMasterKind = 'grades' | 'uoms';
+type MasterTab = 'clients' | 'vendors' | 'products' | 'uoms' | 'printer-label';
+type SimpleMasterKind = 'uoms';
 type StatusFilter = 'all' | 'active' | 'inactive';
 
 type MasterItem = {
@@ -40,10 +41,15 @@ function isActive(item: MasterItem): boolean {
 const TABS: { id: MasterTab; label: string; icon: any }[] = [
   { id: 'clients', label: 'Customer', icon: Building2 },
   { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
-  { id: 'grades', label: 'Product Grades', icon: FlaskConical },
+  { id: 'products', label: 'Products & Grades', icon: Package },
   { id: 'uoms', label: 'Units of Measure (UOM)', icon: Scale },
   { id: 'printer-label', label: 'Printer Label Size', icon: Printer },
 ];
+
+function normalizeTab(value: string | null): MasterTab {
+  if (value === 'grades') return 'products';
+  return TABS.some((tab) => tab.id === value) ? (value as MasterTab) : 'clients';
+}
 
 function PrinterLabelSettings() {
   const [widthMm, setWidthMm] = useState('60');
@@ -129,13 +135,11 @@ function PrinterLabelSettings() {
 
 export default function Masters() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialTab = (searchParams.get('tab') as MasterTab) || 'clients';
-  const [activeTab, setActiveTab] = useState<MasterTab>(
-    TABS.some((t) => t.id === initialTab) ? initialTab : 'clients'
-  );
+  const initialTab = normalizeTab(searchParams.get('tab'));
+  const [activeTab, setActiveTab] = useState<MasterTab>(initialTab);
 
-  const isSimpleMaster = activeTab === 'grades' || activeTab === 'uoms';
-  const simpleKind = (isSimpleMaster ? activeTab : 'grades') as SimpleMasterKind;
+  const isSimpleMaster = activeTab === 'uoms';
+  const simpleKind: SimpleMasterKind = 'uoms';
 
   const [items, setItems] = useState<MasterItem[]>([]);
   const [name, setName] = useState('');
@@ -151,11 +155,14 @@ export default function Masters() {
   const requestSequence = useRef(0);
 
   useEffect(() => {
-    const tabParam = searchParams.get('tab') as MasterTab;
-    if (tabParam && TABS.some((t) => t.id === tabParam) && tabParam !== activeTab) {
+    const tabParam = normalizeTab(searchParams.get('tab'));
+    if (searchParams.get('tab') !== tabParam) {
+      setSearchParams({ tab: tabParam }, { replace: true });
+    }
+    if (tabParam !== activeTab) {
       setActiveTab(tabParam);
     }
-  }, [searchParams, activeTab]);
+  }, [searchParams, activeTab, setSearchParams]);
 
   const switchTab = (tab: MasterTab) => {
     setActiveTab(tab);
@@ -249,8 +256,8 @@ export default function Masters() {
         result.reactivated
           ? 'Existing inactive value reactivated and is now available in dropdowns.'
           : editId
-          ? `${simpleKind === 'grades' ? 'Grade' : 'UOM'} updated.`
-          : `${simpleKind === 'grades' ? 'Grade' : 'UOM'} added.`
+          ? 'UOM updated.'
+          : 'UOM added.'
       );
       closeForm();
       await loadSimpleMaster();
@@ -269,36 +276,40 @@ export default function Masters() {
     setShowForm(true);
   };
 
-  const handleDeactivate = async (item: MasterItem) => {
+  const itemTitle = 'UOMs';
+  const itemLabel = 'UOM';
+
+  const handleDelete = async (item: MasterItem) => {
     const label = item.name;
-    const typeLabel = simpleKind === 'grades' ? 'grade' : 'UOM';
-    if (!window.confirm(`Deactivate "${label}"? Existing records will keep this value.`)) return;
+    if (
+      !window.confirm(
+        `Delete "${label}" permanently? This cannot be undone.\n\nIf any grade still uses this ${itemLabel}, deletion is blocked until those grades are changed to another ${itemLabel}.`
+      )
+    ) {
+      return;
+    }
     setError('');
     setNotice('');
     try {
-      await api.masters.remove(simpleKind, item.id);
-      setNotice(`${typeLabel.toUpperCase()} deactivated.`);
+      const result = await api.masters.remove(simpleKind, item.id);
+      setNotice(result?.message || `${itemLabel} deleted.`);
       await loadSimpleMaster();
     } catch (err: any) {
-      setError(err.message || 'Could not deactivate master value');
+      setError(err.message || `Could not delete ${itemLabel}`);
     }
   };
 
   const handleActivate = async (item: MasterItem) => {
-    const typeLabel = simpleKind === 'grades' ? 'grade' : 'UOM';
     setError('');
     setNotice('');
     try {
       await api.masters.setStatus(simpleKind, item.id, true);
-      setNotice(`${typeLabel.toUpperCase()} activated and is now available.`);
+      setNotice('UOM activated and is now available.');
       await loadSimpleMaster();
     } catch (err: any) {
       setError(err.message || 'Could not activate master value');
     }
   };
-
-  const itemTitle = simpleKind === 'grades' ? 'Grades' : 'UOMs';
-  const itemLabel = simpleKind === 'grades' ? 'grade' : 'UOM';
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -313,7 +324,7 @@ export default function Masters() {
               Masters Management
             </h1>
             <p className="text-sm sm:text-base text-slate-500 mt-0.5">
-              Manage clients, vendors, product grades, units of measure, and printer labels.
+              Manage customers, vendors, products and their grades, units of measure, and printer labels.
             </p>
           </div>
         </div>
@@ -347,8 +358,9 @@ export default function Masters() {
       {/* 3. TAB CONTENTS */}
       {activeTab === 'clients' && <Clients embedded />}
       {activeTab === 'vendors' && <Vendors embedded />}
+      {activeTab === 'products' && <Products embedded />}
       {activeTab === 'printer-label' && <PrinterLabelSettings />}
-      {/* Grades & UOMs Tab Content */}
+      {/* UOM master register */}
       {isSimpleMaster && (
         <div className="space-y-6">
           <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -391,7 +403,7 @@ export default function Masters() {
             {[
               { label: `Total ${itemTitle}`, value: items.length, bg: 'bg-blue-100 text-blue-700' },
               { label: 'Active in System', value: activeCount, bg: 'bg-emerald-100 text-emerald-700' },
-              { label: 'Deactivated / Inactive', value: inactiveCount, bg: 'bg-slate-100 text-slate-700' },
+              { label: 'Inactive', value: inactiveCount, bg: 'bg-slate-100 text-slate-700' },
             ].map((stat) => (
               <div key={stat.label} className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs">
                 <span className="text-xs sm:text-sm font-bold text-slate-600 uppercase tracking-wide">
@@ -466,31 +478,30 @@ export default function Masters() {
                         )}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex flex-wrap items-center justify-end gap-2">
                           <button
                             onClick={() => handleEdit(item)}
-                            className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200"
                             title={`Edit ${itemLabel}`}
                           >
-                            <Pencil size={17} />
+                            <Pencil size={15} /> Edit
                           </button>
-                          {isActive(item) ? (
-                            <button
-                              onClick={() => void handleDeactivate(item)}
-                              className="p-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition-colors"
-                              title={`Deactivate ${itemLabel}`}
-                            >
-                              <Trash2 size={17} />
-                            </button>
-                          ) : (
+                          {!isActive(item) && (
                             <button
                               onClick={() => void handleActivate(item)}
-                              className="p-2 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded-lg transition-colors"
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-100"
                               title={`Activate ${itemLabel}`}
                             >
-                              <Check size={17} />
+                              <Check size={15} /> Activate
                             </button>
                           )}
+                          <button
+                            onClick={() => void handleDelete(item)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 ring-1 ring-rose-200 transition-colors hover:bg-rose-100"
+                            title={`Delete ${itemLabel} permanently`}
+                          >
+                            <Trash2 size={15} /> Delete
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -546,11 +557,7 @@ export default function Masters() {
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       maxLength={100}
-                      placeholder={
-                        simpleKind === 'grades'
-                          ? 'e.g. Industrial, Commercial, Pharma Grade'
-                          : 'e.g. 25 kg Bag, 50 kg Bag, 1000 kg Jumbo'
-                      }
+                      placeholder="e.g. 25 kg Bag, 50 kg Bag, 1000 kg Jumbo"
                       required
                       autoFocus
                     />

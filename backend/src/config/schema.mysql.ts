@@ -167,10 +167,32 @@ export async function ensureAdminSchema(): Promise<void> {
   }
   if (legacyTenantId) {
     for (const table of USER_TABLES) await execute(`UPDATE \`${table}\` SET tenant_id = ? WHERE tenant_id IS NULL`, [legacyTenantId]);
-    for (const table of ['products', 'batches', 'qc_records', 'dispatch_records', 'dispatch_orders', 'clients', 'vendors', 'shelf_locations', 'activity_logs']) {
+    for (const table of ['products', 'batches', 'qc_records', 'dispatch_records', 'dispatch_orders', 'clients', 'vendors', 'shelf_locations', 'activity_logs', 'qr_print_jobs']) {
       await execute(`UPDATE \`${table}\` SET tenant_id = ? WHERE tenant_id IS NULL`, [legacyTenantId]);
     }
   }
+
+  // Existing print jobs belong to the workspace of the batch they printed.
+  // Backfill so tenant-scoped print-job queries keep returning the old stock.
+  await execute(
+    `UPDATE qr_print_jobs j
+     SET j.tenant_id = (
+       SELECT b.tenant_id FROM qr_labels l JOIN batches b ON l.batch_id = b.id
+       WHERE l.print_job_id = j.id LIMIT 1
+     )
+     WHERE j.tenant_id IS NULL`
+  );
+
+  // Existing batches whose labels were already printed count as printed, so
+  // current stock stays orderable after the print gate was introduced.
+  await execute(
+    `UPDATE batches b
+     SET b.qr_printed_at = (
+       SELECT MAX(l.last_printed_at) FROM qr_labels l WHERE l.batch_id = b.id
+     )
+     WHERE b.qr_printed_at IS NULL
+       AND EXISTS (SELECT 1 FROM qr_labels l WHERE l.batch_id = b.id)`
+  );
   for (const table of USER_TABLES) {
     await addColumnIfMissing(
       table,
@@ -255,7 +277,26 @@ export async function ensureAdminSchema(): Promise<void> {
   );
   await addColumnIfMissing("batches", "batch_group_id", "CHAR(36) NULL");
   await addColumnIfMissing("batches", "parent_batch_number", "VARCHAR(100) NULL");
+  // Timestamp of the first successful QR print for this batch. A dispatch
+  // order may only be raised for a batch whose labels were physically printed.
+  await addColumnIfMissing("batches", "qr_printed_at", "DATETIME(3) NULL");
   await addIndexIfMissing("batches", "idx_batches_group", "batch_group_id");
+
+  // Dispatch creates batches as PENDING_QC. Older installs used a narrow ENUM
+  // for batches.status, so widen it before workflow statuses are written.
+  const batchStatusColumn = await query<RowDataPacket[]>(
+    `SELECT DATA_TYPE FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'batches'
+       AND COLUMN_NAME = 'status' LIMIT 1`,
+  );
+  if (
+    batchStatusColumn[0] &&
+    String(batchStatusColumn[0].DATA_TYPE).toLowerCase() !== "varchar"
+  ) {
+    await execute(
+      "ALTER TABLE batches MODIFY COLUMN status VARCHAR(30) NOT NULL DEFAULT 'PENDING_QC'",
+    );
+  }
 
   await execute(`CREATE TABLE IF NOT EXISTS batch_groups (
     group_key CHAR(36) PRIMARY KEY,
@@ -264,12 +305,14 @@ export async function ensureAdminSchema(): Promise<void> {
     created_by INT NOT NULL,
     product_count INT NOT NULL,
     total_quantity INT NOT NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'QC_PASSED',
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING_QC',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_batch_groups_created (created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   await addColumnIfMissing('batch_groups', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addIndexIfMissing('batch_groups', 'idx_batch_groups_tenant', 'tenant_id');
+  await addColumnIfMissing('batch_groups', 'client_operation_id', 'VARCHAR(64) NULL');
+  await addUniqueIndexIfMissing('batch_groups', 'uq_batch_groups_client_operation', 'client_operation_id');
 
   // Offline idempotency / provenance columns. The server timestamp stays in
   // created_at; client_created_at preserves the time the field user acted.
@@ -516,6 +559,8 @@ export async function ensureAdminSchema(): Promise<void> {
     KEY idx_qr_jobs_created (created_at),
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await addColumnIfMissing("qr_print_jobs", "tenant_id", "BIGINT UNSIGNED NULL");
+  await addIndexIfMissing("qr_print_jobs", "idx_qr_jobs_tenant", "tenant_id");
 
   await execute(`CREATE TABLE IF NOT EXISTS uoms (
     id INT AUTO_INCREMENT PRIMARY KEY,

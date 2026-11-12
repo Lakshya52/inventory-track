@@ -62,14 +62,14 @@ export async function stats(_req: Request, res: Response): Promise<void> {
     ctx.count('batches', { status: { $in: ['QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED', 'LOADING'] } }),
     Promise.resolve(0),
     ctx.count('dispatch_records', { created_at: { $gte: startOfDay() } }),
-    ctx.count('dispatch_orders', { status: 'PENDING' }),
+    ctx.count('dispatch_orders', { status: 'APPROVED' }),
     ctx.count('clients', { is_active: 1 }),
     ctx.count('shelf_locations', { is_active: 1 }),
     ctx.find('activity_logs', {}, { sort: { created_at: -1 }, limit: 10, projection: { _id: 0 } }),
     ctx.find('batches', {}, { sort: { created_at: -1 }, limit: 10, projection: { _id: 0 } }),
     Promise.resolve(0),
     Promise.resolve(0),
-    ctx.count('batches', { status: { $in: ['DISPATCH_ORDER_RAISED', 'LOADING'] } }),
+    ctx.count('batches', { status: 'LOADING' }),
     ctx.count('batches', { status: 'DISPATCH_APPROVED' }),
   ]);
 
@@ -127,9 +127,9 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
     ctx.count('dispatch_records'),
     ctx.count('dispatch_records', { created_at: { $gte: startOfDay() } }),
     ctx.count('dispatch_orders'),
-    ctx.count('dispatch_orders', { status: 'PENDING' }),
     ctx.count('dispatch_orders', { status: 'APPROVED' }),
-    ctx.count('dispatch_orders', { status: 'REJECTED' }),
+    ctx.count('dispatch_orders', { status: 'APPROVED' }),
+    ctx.count('dispatch_orders', { status: { $in: ['REJECTED', 'CANCELLED'] } }),
     ctx.count('shelf_locations'),
     ctx.count('shelf_locations', { is_active: 1 }),
     ctx.count('admins', { email: { $not: /^__role_archive_/i } }),
@@ -143,7 +143,7 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
   const [recentQcRaw, recentDispatchesRaw, pendingRequestsRaw, recentActivity] = await Promise.all([
     ctx.find('qc_records', {}, { sort: { created_at: -1 }, limit: 5, projection: { _id: 0 } }),
     ctx.find('dispatch_records', {}, { sort: { created_at: -1 }, limit: 5, projection: { _id: 0 } }),
-    ctx.find('dispatch_orders', { status: 'PENDING' }, { sort: { created_at: -1 }, limit: 5, projection: { _id: 0 } }),
+    ctx.find('dispatch_orders', {}, { sort: { created_at: -1 }, limit: 5, projection: { _id: 0 } }),
     ctx.find('activity_logs', {}, { sort: { created_at: -1 }, limit: 8, projection: { _id: 0 } }),
   ]);
 

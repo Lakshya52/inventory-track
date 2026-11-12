@@ -33,13 +33,13 @@ import { PrimaryButton } from '@/components/ui/buttons';
 import { PageHeading } from '@/components/ui/page';
 import { Screen } from '@/components/ui/screen';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { fetchClients, type Client } from '@/services/clients';
+import { RaiseOrderSheet } from '@/components/dispatch/raise-order-sheet';
 import { getAccessToken } from '@/services/api';
 import { dispatchApi } from '@/services/dispatch';
 import { useRole } from '@/context/role-context';
-import type { DispatchBatch, DispatchOrder, PackingListData } from '@/types';
+import type { DispatchOrder, PackingListData } from '@/types';
 
-type OrderFilter = 'ALL' | 'PENDING' | 'APPROVED' | 'DISPATCHED' | 'REJECTED';
+type OrderFilter = 'ALL' | 'APPROVED' | 'DISPATCHED' | 'CANCELLED';
 
 export function DispatchOrdersScreen() {
   const router = useRouter();
@@ -58,15 +58,6 @@ export function DispatchOrdersScreen() {
 
   // Raise order modal state
   const [raiseVisible, setRaiseVisible] = useState(false);
-  const [loadingRequestOptions, setLoadingRequestOptions] = useState(false);
-  const [readyBatches, setReadyBatches] = useState<DispatchBatch[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
-  const [selectedBatchId, setSelectedBatchId] = useState('');
-  const [selectedClientId, setSelectedClientId] = useState('');
-  const [driverName, setDriverName] = useState('');
-  const [vehicleNumber, setVehicleNumber] = useState('');
-  const [containerNumber, setContainerNumber] = useState('');
-  const [raising, setRaising] = useState(false);
 
   // Packing list modal state
   const [packingList, setPackingList] = useState<PackingListData | null>(null);
@@ -98,68 +89,9 @@ export function DispatchOrdersScreen() {
     void loadData();
   };
 
-  const openRaiseModal = async () => {
+  const openRaiseModal = () => {
     if (!canRaiseOrders) return;
     setRaiseVisible(true);
-    setLoadingRequestOptions(true);
-    setSelectedBatchId('');
-    setSelectedClientId('');
-    setDriverName('');
-    setVehicleNumber('');
-    setContainerNumber('');
-    try {
-      const [batchesList, clientsList] = await Promise.all([
-        dispatchApi.readyBatches(),
-        fetchClients(),
-      ]);
-      setReadyBatches(batchesList || []);
-      setClients(clientsList?.filter((c) => {
-        const isActive: unknown = c.is_active;
-        return isActive == null || isActive === true || Number(isActive) === 1;
-      }) || []);
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Could not load batches or clients for dispatch request.');
-    } finally {
-      setLoadingRequestOptions(false);
-    }
-  };
-
-  const handleRaiseSubmit = async () => {
-    if (!canRaiseOrders) return;
-    if (!selectedBatchId) {
-      Alert.alert('Select Batch', 'Please select a QC-passed batch.');
-      return;
-    }
-    if (!selectedClientId) {
-      Alert.alert('Select Client', 'Please choose a destination client.');
-      return;
-    }
-    if (!driverName.trim() || !vehicleNumber.trim() || !containerNumber.trim()) {
-      Alert.alert('Incomplete Transport Info', 'Driver name, vehicle number, and container number are required.');
-      return;
-    }
-
-    setRaising(true);
-    try {
-      await dispatchApi.raiseOrder({
-        batch_id: selectedBatchId,
-        client_id: selectedClientId,
-        driver_name: driverName.trim(),
-        vehicle_number: vehicleNumber.trim(),
-        container_number: containerNumber.trim(),
-      });
-
-      Alert.alert(
-        'Dispatch Order Raised',
-        'Your dispatch request has been submitted and is pending QC approval.'
-      );
-      setRaiseVisible(false);
-      void loadData();
-    } catch (err: any) {
-      Alert.alert('Could Not Raise Order', err?.message || 'Please check your inputs and try again.');
-    } finally {
-      setRaising(false);
-    }
   };
 
   const handleViewPackingList = async (orderId: string | number) => {
@@ -220,10 +152,9 @@ export function DispatchOrdersScreen() {
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
       const s = String(order.status || '').toUpperCase();
-      if (filter === 'PENDING' && s !== 'PENDING') return false;
       if (filter === 'APPROVED' && s !== 'APPROVED' && s !== 'DISPATCH_APPROVED') return false;
       if (filter === 'DISPATCHED' && s !== 'CLOSED_DISPATCHED' && s !== 'DISPATCHED') return false;
-      if (filter === 'REJECTED' && s !== 'REJECTED') return false;
+      if (filter === 'CANCELLED' && s !== 'CANCELLED' && s !== 'REJECTED') return false;
 
       if (!search.trim()) return true;
       const q = search.trim().toLowerCase();
@@ -242,16 +173,10 @@ export function DispatchOrdersScreen() {
   const orderCounts = useMemo(() => {
     const statusOf = (order: DispatchOrder) => String(order.status || '').toUpperCase();
     return {
-      pending: orders.filter((order) => statusOf(order) === 'PENDING').length,
       ready: orders.filter((order) => ['APPROVED', 'DISPATCH_APPROVED'].includes(statusOf(order))).length,
       completed: orders.filter((order) => ['CLOSED_DISPATCHED', 'DISPATCHED'].includes(statusOf(order))).length,
     };
   }, [orders]);
-
-  const selectedBatchObj = useMemo(
-    () => readyBatches.find((b) => String(b.id) === selectedBatchId) || null,
-    [readyBatches, selectedBatchId]
-  );
 
   return (
     <Screen>
@@ -268,7 +193,6 @@ export function DispatchOrdersScreen() {
             {canRaiseOrders ? <Pressable
               accessibilityRole="button"
               accessibilityLabel="Request a dispatch order"
-              disabled={loadingRequestOptions}
               onPress={openRaiseModal}
               className="flex-row items-center gap-1 rounded-full bg-navy px-3.5 py-2"
               style={({ pressed }) => (pressed ? { opacity: 0.85 } : undefined)}>
@@ -280,7 +204,6 @@ export function DispatchOrdersScreen() {
           </View>
 
           <View className="mt-4 flex-row gap-2.5">
-            <OrderSummary label="Pending QC" value={orderCounts.pending} tone="amber" />
             <OrderSummary label="Ready to load" value={orderCounts.ready} tone="blue" />
             <OrderSummary label="Completed" value={orderCounts.completed} tone="green" />
           </View>
@@ -311,10 +234,9 @@ export function DispatchOrdersScreen() {
             {(
               [
                 { id: 'ALL', label: 'All Orders' },
-                { id: 'PENDING', label: 'Pending QC' },
-                { id: 'APPROVED', label: 'Approved & Ready' },
+                { id: 'APPROVED', label: 'Ready to Load' },
                 { id: 'DISPATCHED', label: 'Dispatched' },
-                { id: 'REJECTED', label: 'Rejected' },
+                { id: 'CANCELLED', label: 'Cancelled' },
               ] as const
             ).map((chip) => {
               const active = filter === chip.id;
@@ -351,13 +273,13 @@ export function DispatchOrdersScreen() {
                 <AppText variant="caption" className="mt-1 text-center text-[11px]">
                   {search
                     ? 'No dispatch orders matched your search query.'
-                    : filter === 'PENDING'
-                      ? 'No dispatch requests currently waiting for QC approval.'
-                      : filter === 'APPROVED'
-                        ? 'No approved orders waiting to be loaded.'
+                    : filter === 'APPROVED'
+                      ? 'No orders waiting to be loaded.'
+                      : filter === 'CANCELLED'
+                        ? 'No cancelled orders.'
                         : 'No orders recorded yet. Tap "+ Request" to create one.'}
                 </AppText>
-                {canRaiseOrders && (readyBatches.length > 0 || !search) ? (
+                {canRaiseOrders && !search ? (
                   <PrimaryButton
                     label="Raise New Dispatch Order"
                     icon={Plus}
@@ -371,8 +293,7 @@ export function DispatchOrdersScreen() {
               filteredOrders.map((order) => {
                 const status = String(order.status || '').toUpperCase();
                 const isApproved = status === 'APPROVED' || status === 'DISPATCH_APPROVED';
-                const isRejected = status === 'REJECTED';
-                const isPending = status === 'PENDING';
+                const isRejected = status === 'REJECTED' || status === 'CANCELLED';
                 const isDispatched = status === 'CLOSED_DISPATCHED' || status === 'DISPATCHED';
 
                 return (
@@ -403,15 +324,13 @@ export function DispatchOrdersScreen() {
                         status={status}
                         className="shrink-0"
                         label={
-                          isPending
-                            ? 'Pending QC'
-                            : isApproved
-                              ? 'Approved'
-                              : isRejected
-                                ? 'Rejected'
-                                : isDispatched
-                                  ? 'Dispatched'
-                                  : status
+                          isApproved
+                            ? 'Ready to Load'
+                            : isRejected
+                              ? 'Cancelled'
+                              : isDispatched
+                                ? 'Dispatched'
+                                : status
                         }
                       />
                     </View>
@@ -431,7 +350,7 @@ export function DispatchOrdersScreen() {
                             Product / Quantity
                           </AppText>
                           <AppText variant="bodyDark" className="font-manrope-bold text-[12px]">
-                            {order.product_name || 'Product'} · {order.quantity ?? '-'} x {order.uom || 'units'}
+                            {order.product_name || 'Product'} Â· {order.quantity ?? '-'} x {order.uom || 'units'}
                           </AppText>
                         </View>
                       </View>
@@ -442,7 +361,7 @@ export function DispatchOrdersScreen() {
                             Vehicle &amp; Container
                           </AppText>
                           <AppText variant="caption" className="font-manrope-medium text-[11px] text-[#293A54]">
-                            {order.vehicle_number || '-'} · {order.container_number || '-'}
+                            {order.vehicle_number || '-'} Â· {order.container_number || '-'}
                           </AppText>
                         </View>
                         <View className="flex-1 pl-2">
@@ -490,7 +409,7 @@ export function DispatchOrdersScreen() {
                       <View className="mt-2.5 flex-row items-center gap-1.5 rounded-lg bg-[#F0FDF4] px-3 py-1.5 border border-[#BBF7D0]">
                         <CheckCircle2 size={13} color="#16A34A" />
                         <AppText variant="tiny" className="text-[10.5px] text-[#15803D] font-manrope-bold">
-                          Seal #{order.seal_number} · Dispatched
+                          Seal #{order.seal_number} Â· Dispatched
                         </AppText>
                       </View>
                     ) : null}
@@ -529,7 +448,7 @@ export function DispatchOrdersScreen() {
             <SheetInfoRow
               icon={Package}
               title="Product & Batch"
-              subtitle={`${selected.product_name || 'Product'} · Batch ${selected.batch_number || 'N/A'} (${selected.quantity ?? '-'} x ${selected.uom || 'units'})`}
+              subtitle={`${selected.product_name || 'Product'} Â· Batch ${selected.batch_number || 'N/A'} (${selected.quantity ?? '-'} x ${selected.uom || 'units'})`}
             />
             <SheetInfoRow
               icon={Truck}
@@ -617,151 +536,12 @@ export function DispatchOrdersScreen() {
       </BottomSheet>
 
       {/* Raise Dispatch Order Modal */}
-      <Modal visible={raiseVisible} transparent animationType="slide" onRequestClose={() => setRaiseVisible(false)}>
-        <View className="flex-1 justify-end bg-black/40">
-          <Pressable className="flex-1" onPress={() => setRaiseVisible(false)} />
-          <View className="max-h-[85%] rounded-t-[24px] bg-white px-5 pt-5 pb-8">
-            <View className="flex-row items-center justify-between pb-3 border-b border-line">
-              <View>
-                <AppText variant="h2" className="text-[18px]">
-                  Request Dispatch Order
-                </AppText>
-                <AppText variant="caption" className="text-[11px]">
-                  Select a QC-passed batch & destination details
-                </AppText>
-              </View>
-              <Pressable
-                onPress={() => setRaiseVisible(false)}
-                className="h-8 w-8 items-center justify-center rounded-full bg-canvas">
-                <X size={17} color="#001A6E" />
-              </Pressable>
-            </View>
-
-            <ScrollView className="mt-3" showsVerticalScrollIndicator={false}>
-              {/* Batch selection */}
-              <AppText variant="label" className="mb-1 text-[11px]">
-                1. Select QC-Passed Batch *
-              </AppText>
-              {loadingRequestOptions ? (
-                <View className="mb-4 flex-row items-center gap-2 rounded-xl border border-[#D4E3FA] bg-[#F7FAFF] p-3">
-                  <ActivityIndicator size="small" color="#011A87" />
-                  <AppText variant="caption" className="text-[11px]">Loading eligible batches and clients…</AppText>
-                </View>
-              ) : readyBatches.length === 0 ? (
-                <View className="mb-4 rounded-xl border border-[#FCD0D4] bg-[#FFF2F3] p-3">
-                  <AppText className="text-[11px] text-danger-text font-manrope-medium">
-                    No QC-passed batches currently ready for dispatch.
-                  </AppText>
-                </View>
-              ) : (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4 -mx-1 px-1">
-                  <View className="flex-row gap-2 py-1">
-                    {readyBatches.map((b) => {
-                      const isSel = selectedBatchId === String(b.id);
-                      return (
-                        <Pressable
-                          key={b.id}
-                          onPress={() => setSelectedBatchId(String(b.id))}
-                          className={`rounded-xl border p-3 ${
-                            isSel
-                              ? 'border-navy bg-[#EBF3FF]'
-                              : 'border-line bg-white'
-                          }`}
-                          style={{ minWidth: 160 }}>
-                          <AppText className="text-[13px] font-manrope-bold text-navy">
-                            {b.batch_number}
-                          </AppText>
-                          <AppText variant="caption" className="mt-0.5 text-[10.5px]">
-                            {b.product_name}
-                          </AppText>
-                          <AppText variant="tiny" className="mt-1 text-[9.5px] text-[#71829B]">
-                            Qty: {b.quantity} x {b.uom || 'units'}
-                          </AppText>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </ScrollView>
-              )}
-
-              {selectedBatchObj ? (
-                <View className="mb-4 rounded-xl bg-canvas p-3 border border-line">
-                  <AppText variant="tiny" className="text-[10px] text-[#71829B] uppercase font-manrope-bold">
-                    Selected Batch Info
-                  </AppText>
-                  <AppText className="text-[12px] font-manrope-bold text-navy mt-0.5">
-                    {selectedBatchObj.batch_number} — {selectedBatchObj.product_name}
-                  </AppText>
-                  <AppText variant="caption" className="text-[11px] text-[#4E5D76]">
-                    Grade: {selectedBatchObj.grade_name || 'Standard'} · Location: {selectedBatchObj.storage_location || selectedBatchObj.location_code || 'Warehouse'}
-                  </AppText>
-                </View>
-              ) : null}
-
-              {/* Client selection */}
-              <AppText variant="label" className="mb-1 text-[11px]">
-                2. Select Client / Customer *
-              </AppText>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4 -mx-1 px-1">
-                <View className="flex-row gap-2 py-1">
-                  {clients.map((c) => {
-                    const isSel = selectedClientId === String(c.id);
-                    return (
-                      <Pressable
-                        key={c.id}
-                        onPress={() => setSelectedClientId(String(c.id))}
-                        className={`rounded-xl border px-3 py-2 ${
-                          isSel ? 'border-navy bg-[#EBF3FF]' : 'border-line bg-white'
-                        }`}>
-                        <AppText className={`text-[12px] ${isSel ? 'font-manrope-bold text-navy' : 'text-[#293A54]'}`}>
-                          {c.name}
-                        </AppText>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </ScrollView>
-
-              {/* Transport details */}
-              <AppText variant="label" className="mb-1 text-[11px]">
-                3. Transport &amp; Delivery Details *
-              </AppText>
-              <View className="gap-2.5 mb-4">
-                <TextInput
-                  value={driverName}
-                  onChangeText={setDriverName}
-                  placeholder="Driver Full Name *"
-                  placeholderTextColor="#8A98AC"
-                  className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
-                />
-                <TextInput
-                  value={vehicleNumber}
-                  onChangeText={setVehicleNumber}
-                  placeholder="Vehicle Number (e.g. MH-12-AB-1234) *"
-                  placeholderTextColor="#8A98AC"
-                  autoCapitalize="characters"
-                  className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
-                />
-                <TextInput
-                  value={containerNumber}
-                  onChangeText={setContainerNumber}
-                  placeholder="Container Number (e.g. CONT-9021) *"
-                  placeholderTextColor="#8A98AC"
-                  autoCapitalize="characters"
-                  className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
-                />
-              </View>
-
-              <PrimaryButton
-                label={raising ? 'Submitting...' : 'Submit Dispatch Request'}
-                disabled={raising || loadingRequestOptions || !selectedBatchId || !selectedClientId}
-                onPress={handleRaiseSubmit}
-                className="mt-2"
-              />
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      <RaiseOrderSheet
+        key={raiseVisible ? 'raise-open' : 'raise-closed'}
+        visible={raiseVisible}
+        onClose={() => setRaiseVisible(false)}
+        onRaised={() => void loadData()}
+      />
 
       {/* Packing List Modal */}
       <Modal visible={packingList !== null || packingLoading} transparent animationType="slide" onRequestClose={() => setPackingList(null)}>
@@ -774,7 +554,7 @@ export function DispatchOrdersScreen() {
                   {packingLoading ? 'Loading packing list' : 'Packing List'}
                 </AppText>
                 <AppText variant="caption" className="text-[11px]">
-                  {packingList ? `Order #${packingList.order_id} · Frozen Snapshot` : 'Please wait while we retrieve the approved order'}
+                  {packingList ? `Order #${packingList.order_id} Â· Frozen Snapshot` : 'Please wait while we retrieve the approved order'}
                 </AppText>
               </View>
               <Pressable
@@ -789,7 +569,7 @@ export function DispatchOrdersScreen() {
               {packingLoading ? (
                 <View className="items-center justify-center py-12">
                   <ActivityIndicator size="large" color="#011A87" />
-                  <AppText variant="caption" className="mt-3 text-[11px]">Preparing the frozen packing snapshot…</AppText>
+                  <AppText variant="caption" className="mt-3 text-[11px]">Preparing the frozen packing snapshotâ€¦</AppText>
                 </View>
               ) : packingList ? (
                 <>
@@ -821,7 +601,7 @@ export function DispatchOrdersScreen() {
                     </AppText>
                   </View>
                   <AppText variant="caption" className="mt-0.5 text-[11px]">
-                    Batch #{item.batch_number} · Location: {item.location_code || item.location || 'Warehouse'}
+                    Batch #{item.batch_number} Â· Location: {item.location_code || item.location || 'Warehouse'}
                   </AppText>
                 </View>
               ))}

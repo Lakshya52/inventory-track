@@ -133,9 +133,7 @@ export default function DispatchScreen() {
     }
     if (batch.status !== 'DISPATCH_APPROVED') {
       if (batch.status === 'QC_PASSED') {
-        showMessage('QC passed, but no approved dispatch order exists. Raise an order below first.', 'info');
-      } else if (batch.status === 'DISPATCH_ORDER_RAISED') {
-        showMessage('That dispatch order is still waiting for admin approval.', 'info');
+        showMessage('QC passed, but no dispatch order exists for it. Raise an order below first.', 'info');
       } else if (batch.status === 'DISPATCHED') {
         showMessage('That QR code has already been dispatched.', 'error');
       } else {

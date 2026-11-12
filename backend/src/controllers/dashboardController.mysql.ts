@@ -15,7 +15,7 @@ export async function stats(_req: Request, res: Response): Promise<void> {
     "SELECT COALESCE(SUM(quantity), 0) as qty, COALESCE(SUM(quantity * price), 0) as value FROM products"
   );
   const pendingOrders = await query<RowDataPacket[]>(
-    "SELECT COUNT(*) as count FROM dispatch_orders WHERE status = 'PENDING'"
+    "SELECT COUNT(*) as count FROM dispatch_orders WHERE status = 'APPROVED'"
   );
   const activeClients = await query<RowDataPacket[]>(
     "SELECT COUNT(*) as count FROM clients WHERE is_active = 1"
@@ -40,9 +40,9 @@ export async function stats(_req: Request, res: Response): Promise<void> {
   );
   const dispatchQueueStats = await query<RowDataPacket[]>(
     `SELECT
-       SUM(CASE WHEN status = 'DISPATCH_ORDER_RAISED' THEN 1 ELSE 0 END) as awaiting_approval,
+       SUM(CASE WHEN status = 'LOADING' THEN 1 ELSE 0 END) as awaiting_approval,
        SUM(CASE WHEN status = 'DISPATCH_APPROVED' THEN 1 ELSE 0 END) as approved_ready
-     FROM batches WHERE status IN ('DISPATCH_ORDER_RAISED','DISPATCH_APPROVED','DISPATCH_REJECTED')`
+     FROM batches WHERE status IN ('LOADING','DISPATCH_APPROVED')`
   );
 
   res.json({
@@ -115,7 +115,6 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN dispatch_users du ON d.raised_by = du.id
-     WHERE d.status = 'PENDING'
      ORDER BY d.created_at DESC LIMIT 5`
   );
   const recentActivity = await query<RowDataPacket[]>(

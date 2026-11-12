@@ -25,8 +25,10 @@ import {
   QrCode,
   RefreshCw,
   Search,
+  ScanLine,
   ShieldCheck,
   Truck,
+  Undo2,
   X,
   XCircle,
 } from 'lucide-react-native';
@@ -36,7 +38,7 @@ import { PrimaryButton } from '@/components/ui/buttons';
 import { PageHeading } from '@/components/ui/page';
 import { Screen } from '@/components/ui/screen';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { dispatchApi } from '@/services/dispatch';
+import { dispatchApi, type RecallCondition } from '@/services/dispatch';
 import {
   enqueueLoadingSessionFinalise,
   enqueueLoadingSessionScan,
@@ -61,8 +63,17 @@ type NoticeState = {
   message: string;
 } | null;
 
+type ScanMode = 'load' | 'recall';
+
+const RECALL_CONDITIONS: { id: RecallCondition; label: string; hint: string }[] = [
+  { id: 'DAMAGED', label: 'Damaged', hint: 'The label or bag is damaged' },
+  { id: 'HOLD', label: 'On hold', hint: 'Keep this unit back for now' },
+  { id: 'RETURN_TO_STOCK', label: 'Return to stock', hint: 'Put the unit back on the shelf' },
+];
+
 export function ScanTabScreen() {
   const [permission, requestPermission] = useCameraPermissions();
+  const [mode, setMode] = useState<ScanMode>('load');
   const [activeSession, setActiveSession] = useState<LoadingSession | null>(null);
   const [events, setEvents] = useState<LoadingScanEvent[]>([]);
   const [approvedOrders, setApprovedOrders] = useState<DispatchOrder[]>([]);
@@ -96,6 +107,13 @@ export function ScanTabScreen() {
 
   // Banner shown after a session is finalised or cancelled
   const [notice, setNotice] = useState<NoticeState>(null);
+
+  // Recall mode state
+  const [recallCode, setRecallCode] = useState('');
+  const [recallCondition, setRecallCondition] = useState<RecallCondition>('DAMAGED');
+  const [recallReason, setRecallReason] = useState('');
+  const [recalling, setRecalling] = useState(false);
+  const [recallResult, setRecallResult] = useState<NoticeState>(null);
 
   const loadActiveState = useCallback(async () => {
     try {
@@ -313,6 +331,49 @@ export function ScanTabScreen() {
     }
   };
 
+  /**
+   * Recall a printed QR label out of a dispatch order. With a session open the
+   * recall goes through that session so the load total drops; without one it
+   * goes straight against the order.
+   */
+  const handleRecall = async (qrValue: string) => {
+    const code = qrValue.trim();
+    if (!code || recalling) return;
+    if (!recallReason.trim()) {
+      Alert.alert('Reason Required', 'Add a reason so the recall is recorded properly.');
+      return;
+    }
+
+    const now = Date.now();
+    if (lastScanRef.current.code === code && now - lastScanRef.current.time < 1500) {
+      return;
+    }
+    lastScanRef.current = { code, time: now };
+
+    setRecalling(true);
+    setRecallResult(null);
+    try {
+      const result = activeSession
+        ? await dispatchApi.recallSessionQr(
+            String(activeSession.id),
+            code,
+            recallCondition,
+            recallReason.trim(),
+          )
+        : await dispatchApi.recallQr(code, recallCondition, recallReason.trim());
+
+      setRecallResult({ tone: 'success', message: result.message });
+      setRecallCode('');
+      setRecallReason('');
+      // The load counters changed, so pull the fresh state.
+      void loadActiveState();
+    } catch (err: any) {
+      Alert.alert('Could Not Recall QR', err?.message || 'Please check the QR code and try again.');
+    } finally {
+      setRecalling(false);
+    }
+  };
+
   const handleFinaliseSubmit = async () => {
     if (!activeSession) return;
     if (!sealNumber.trim()) {
@@ -458,9 +519,41 @@ export function ScanTabScreen() {
         }>
         <View className="px-5 pt-6">
           <PageHeading
-            title="Scan & Loading"
-            subtitle="Unit-level scanning with live progress & seal verification"
+            title="Scan & Load"
+            subtitle="Load your dispatch orders by QR code, or recall a label"
           />
+
+          {/* Mode switch: load units into a truck, or pull a label back out */}
+          <View className="mt-4 flex-row rounded-xl border border-[#D4E3FA] bg-white p-1">
+            {([
+              { id: 'load' as const, label: 'Load units', icon: ScanLine },
+              { id: 'recall' as const, label: 'Recall QR', icon: Undo2 },
+            ]).map((option) => {
+              const active = mode === option.id;
+              return (
+                <Pressable
+                  key={option.id}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={option.label}
+                  onPress={() => {
+                    setMode(option.id);
+                    setFeedback(null);
+                    setRecallResult(null);
+                  }}
+                  className={`flex-1 flex-row items-center justify-center gap-1.5 rounded-lg py-2.5 ${
+                    active ? 'bg-navy' : 'bg-transparent'
+                  }`}>
+                  <option.icon size={15} color={active ? '#FFFFFF' : '#4E5D76'} />
+                  <AppText
+                    className={`text-[12px] ${active ? 'text-white' : 'text-[#4E5D76]'}`}
+                    style={{ fontFamily: active ? 'Manrope_700Bold' : 'Manrope_500Medium' }}>
+                    {option.label}
+                  </AppText>
+                </Pressable>
+              );
+            })}
+          </View>
 
           {/* Success / info banner after finalising or cancelling a session */}
           {notice ? (
@@ -514,6 +607,208 @@ export function ScanTabScreen() {
           ) : null}
 
           {/* Initial sync / loading after finalise or cancel */}
+          {mode === 'recall' ? (
+            /* RECALL MODE — pull a printed QR label back out of an order */
+            <View className="mt-5">
+              <View className="rounded-[18px] border border-[#CCDDF5] bg-white p-5 shadow-sm">
+                <View className="flex-row items-center gap-3">
+                  <View className="h-10 w-10 items-center justify-center rounded-full bg-[#FFF1F2]">
+                    <Undo2 size={20} color="#DC2626" />
+                  </View>
+                  <View className="flex-1">
+                    <AppText variant="h2" className="text-[16px]">
+                      Recall a QR code
+                    </AppText>
+                    <AppText variant="caption" className="text-[11px]">
+                      {activeSession
+                        ? `Pulls the label out of the order you are loading (Order #${activeSession.dispatch_order_id}).`
+                        : 'Pulls the label out of one of your open dispatch orders.'}
+                    </AppText>
+                  </View>
+                </View>
+              </View>
+
+              {recallResult ? (
+                <View className="mt-4 flex-row items-center gap-2 rounded-xl border border-[#BBF7D0] bg-[#F0FDF4] p-3.5">
+                  <CheckCircle2 size={18} color="#16A34A" />
+                  <AppText className="flex-1 text-[12px] font-manrope-bold text-[#15803D]">
+                    {recallResult.message}
+                  </AppText>
+                  <Pressable
+                    onPress={() => setRecallResult(null)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Dismiss">
+                    <X size={15} color="#15803D" />
+                  </Pressable>
+                </View>
+              ) : null}
+
+              {/* Condition */}
+              <AppText variant="label" className="mt-5 mb-1 text-[11px]">
+                Why are you recalling it? *
+              </AppText>
+              <View className="gap-2">
+                {RECALL_CONDITIONS.map((option) => {
+                  const active = recallCondition === option.id;
+                  return (
+                    <Pressable
+                      key={option.id}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
+                      onPress={() => setRecallCondition(option.id)}
+                      className={`flex-row items-center gap-3 rounded-xl border p-3 ${
+                        active ? 'border-navy bg-[#EBF3FF]' : 'border-line bg-white'
+                      }`}>
+                      <View
+                        className={`h-4 w-4 items-center justify-center rounded-full border ${
+                          active ? 'border-navy bg-navy' : 'border-[#C5D2E3]'
+                        }`}>
+                        {active ? <View className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
+                      </View>
+                      <View className="flex-1">
+                        <AppText className="text-[12.5px] font-manrope-bold text-navy">
+                          {option.label}
+                        </AppText>
+                        <AppText variant="tiny" className="mt-0.5 text-[10.5px] text-[#71829B]">
+                          {option.hint}
+                        </AppText>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* Reason */}
+              <AppText variant="label" className="mt-5 mb-1 text-[11px]">
+                Reason *
+              </AppText>
+              <TextInput
+                value={recallReason}
+                onChangeText={setRecallReason}
+                placeholder="e.g. Bag damaged during handling"
+                placeholderTextColor="#8A98AC"
+                editable={!recalling}
+                className="h-11 rounded-xl border border-line bg-white px-3.5 font-manrope-medium text-[12px] text-navy"
+              />
+
+              {/* QR capture */}
+              <AppText variant="label" className="mt-5 mb-1 text-[11px]">
+                QR code *
+              </AppText>
+              {isCameraActive ? (
+                <View className="relative mb-3 h-[230px] w-full overflow-hidden rounded-2xl border-2 border-navy bg-black">
+                  {permission?.granted ? (
+                    <CameraView
+                      facing="back"
+                      barcodeScannerSettings={{
+                        barcodeTypes: ['qr', 'code128', 'code39', 'ean13', 'upc_a'],
+                      }}
+                      onBarcodeScanned={
+                        recalling
+                          ? undefined
+                          : (result) => {
+                              if (result.data) {
+                                void handleRecall(result.data);
+                              }
+                            }
+                      }
+                      style={{ flex: 1 }}
+                    />
+                  ) : (
+                    <View className="flex-1 items-center justify-center p-4">
+                      <Camera size={30} color="#94A3B8" />
+                      <AppText className="mt-2 text-center text-[12px] font-manrope-medium text-white">
+                        Camera permission is needed to scan the QR label.
+                      </AppText>
+                      <PrimaryButton
+                        label="Grant Permission"
+                        size="md"
+                        className="mt-3 px-4"
+                        onPress={requestPermission}
+                      />
+                    </View>
+                  )}
+                  <View className="pointer-events-none absolute inset-0 items-center justify-center">
+                    <View className="h-36 w-36 rounded-2xl border-2 border-white/85" />
+                    <View className="mt-3 rounded-full bg-black/65 px-3 py-1">
+                      <AppText className="text-[10.5px] font-manrope-bold text-white">
+                        {recalling ? 'Recalling QR code…' : 'Align the QR label inside the box'}
+                      </AppText>
+                    </View>
+                  </View>
+                  <Pressable
+                    onPress={toggleCamera}
+                    accessibilityRole="button"
+                    accessibilityLabel="Hide camera"
+                    className="absolute right-2.5 top-2.5 h-8 w-8 items-center justify-center rounded-full bg-black/60">
+                    <X size={15} color="#FFFFFF" />
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={toggleCamera}
+                  accessibilityRole="button"
+                  accessibilityLabel="Scan the QR label with the camera"
+                  className="mb-3 flex-row items-center gap-3 rounded-2xl border border-dashed border-[#9FBDF0] bg-[#F4F8FF] p-3.5">
+                  <View className="h-11 w-11 items-center justify-center rounded-xl bg-navy">
+                    <Camera size={20} color="#FFFFFF" />
+                  </View>
+                  <View className="flex-1">
+                    <AppText className="text-[13px] font-manrope-bold text-navy">
+                      Scan with camera
+                    </AppText>
+                    <AppText variant="tiny" className="mt-0.5 text-[10.5px] text-[#5B6B84]">
+                      Point the camera at the QR label you want to recall.
+                    </AppText>
+                  </View>
+                </Pressable>
+              )}
+
+              <View className="flex-row items-center gap-2">
+                <View className="h-11 flex-1 flex-row items-center rounded-xl border border-line bg-white px-3">
+                  <QrCode size={15} color="#8A98AC" />
+                  <TextInput
+                    value={recallCode}
+                    onChangeText={setRecallCode}
+                    placeholder="Or type the QR code"
+                    placeholderTextColor="#8A98AC"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!recalling}
+                    returnKeyType="done"
+                    submitBehavior="submit"
+                    className="ml-2 h-11 flex-1 font-manrope-medium text-[12px] text-navy"
+                    onSubmitEditing={() => handleRecall(recallCode)}
+                  />
+                  {recallCode.length > 0 && !recalling ? (
+                    <Pressable
+                      onPress={() => setRecallCode('')}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel="Clear entered code">
+                      <X size={14} color="#8A98AC" />
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+
+              <PrimaryButton
+                label={recalling ? 'Recalling…' : 'Recall QR code'}
+                icon={Undo2}
+                size="md"
+                disabled={recalling || !recallCode.trim() || !recallReason.trim()}
+                onPress={() => handleRecall(recallCode)}
+                className="mt-4"
+              />
+
+              <AppText variant="tiny" className="mt-3 text-[10px] leading-[15px] text-[#71829B]">
+                A recalled unit stops being counted on this order. Choose “Return to stock”
+                if the unit goes back on the shelf.
+              </AppText>
+            </View>
+          ) : (
+            <>
           {loading && !activeSession ? (
             <View className="mt-10 items-center gap-2 rounded-2xl border border-[#D4E3FA] bg-white px-6 py-10">
               <ActivityIndicator color="#011A87" size="large" />
@@ -1178,6 +1473,8 @@ export function ScanTabScreen() {
                 </View>
               )}
             </View>
+          )}
+            </>
           )}
         </View>
       </ScrollView>

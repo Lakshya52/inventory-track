@@ -717,7 +717,7 @@ export async function getQcLocalStats(userId: EntityId): Promise<QcLocalStats> {
 
 export interface DispatchLocalStats {
   ready: number;
-  pendingOrders: number;
+  cancelledOrders: number;
   approvedOrders: number;
   dispatchedToday: number;
   totalDispatches: number;
@@ -726,12 +726,12 @@ export interface DispatchLocalStats {
 export async function getDispatchLocalStats(userId: EntityId): Promise<DispatchLocalStats> {
   const db = await getDb();
   const today = startOfToday();
-  const [ready, pendingOrders, approvedOrders, dispatchedToday, total] = await Promise.all([
+  const [ready, cancelledOrders, approvedOrders, dispatchedToday, total] = await Promise.all([
     db.getFirstAsync<{ count: number }>(
       "SELECT COUNT(*) AS count FROM batches WHERE status IN ('QC_PASSED', 'DISPATCH_REJECTED')"
     ),
     db.getFirstAsync<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING' AND (raised_by = ? OR raised_by IS NULL)",
+      "SELECT COUNT(*) AS count FROM dispatch_orders WHERE status IN ('CANCELLED','REJECTED') AND (raised_by = ? OR raised_by IS NULL)",
       [userId]
     ),
     db.getFirstAsync<{ count: number }>(
@@ -755,7 +755,7 @@ export async function getDispatchLocalStats(userId: EntityId): Promise<DispatchL
   ]);
   return {
     ready: Number(ready?.count || 0),
-    pendingOrders: Number(pendingOrders?.count || 0),
+    cancelledOrders: Number(cancelledOrders?.count || 0),
     approvedOrders: Number(approvedOrders?.count || 0),
     dispatchedToday: Number(dispatchedToday?.count || 0),
     totalDispatches: Number(total?.count || 0),
@@ -929,7 +929,7 @@ export async function retryOutbox(operationId: string): Promise<void> {
     const status = operation.type.startsWith('QC_SUBMIT')
       ? (String(payload.result).toUpperCase() === 'PASS' ? 'QC_PASSED' : 'QC_FAILED')
       : operation.type.startsWith('DISPATCH_CONFIRM') ? 'DISPATCHED'
-        : operation.type === 'DISPATCH_ORDER_RAISE' ? 'DISPATCH_ORDER_RAISED' : null;
+        : operation.type === 'DISPATCH_ORDER_RAISE' ? 'DISPATCH_APPROVED' : null;
     if (!status) return;
     const batchIds: EntityId[] = Array.isArray(payload.batch_ids)
       ? payload.batch_ids.filter((id: unknown): id is EntityId =>
@@ -1088,7 +1088,7 @@ export async function queueDispatchOrderRequests(orders: {
            client_id, driver_name, vehicle_number, container_number, client_name, created_at, updated_at,
            dispatched_at, batch_number, barcode_value, product_name, product_sku, quantity,
            uom, local_pending, client_operation_id)
-         VALUES (?, ?, ?, 'PENDING', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?)`,
+         VALUES (?, ?, ?, 'APPROVED', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?)`,
         [
           order.local_id, order.batch.id, order.raised_by, order.client_id,
           order.driver_name, order.vehicle_number, order.container_number, order.client_name, timestamp, timestamp,
@@ -1098,7 +1098,7 @@ export async function queueDispatchOrderRequests(orders: {
         ]
       );
       await db.runAsync(
-        "UPDATE batches SET status = 'DISPATCH_ORDER_RAISED', local_pending = 1, updated_at = ? WHERE id = ?",
+        "UPDATE batches SET status = 'DISPATCH_APPROVED', local_pending = 1, updated_at = ? WHERE id = ?",
         [timestamp, order.batch.id]
       );
     }

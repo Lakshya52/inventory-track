@@ -53,11 +53,11 @@ export async function summary(_req: Request, res: Response): Promise<void> {
     ctx.count('dispatch_records'),
     ctx.count('dispatch_records', { created_at: { $gte: startOfDay() } }),
     ctx.count('dispatch_orders'),
-    ctx.count('dispatch_orders', { status: 'PENDING' }),
+    ctx.count('dispatch_orders', { status: 'APPROVED' }),
     ctx.count('dispatch_orders', {
       status: { $in: ['APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'] },
     }),
-    ctx.count('dispatch_orders', { status: 'REJECTED' }),
+    ctx.count('dispatch_orders', { status: { $in: ['REJECTED', 'CANCELLED'] } }),
     ctx.count('shelf_locations'),
     ctx.count('shelf_locations', { is_active: 1 }),
     ctx.count('admins'),

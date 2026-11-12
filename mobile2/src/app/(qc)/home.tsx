@@ -16,28 +16,26 @@ import { QuickLink } from '@/components/ui/cards';
 import { SectionLabel } from '@/components/ui/page';
 import { StatCard } from '@/components/ui/stat-card';
 import { useRole } from '@/context/role-context';
-import { dispatchApi } from '@/services/dispatch';
 import { qcApi } from '@/services/qc';
 
 export default function QCHomeScreen() {
   const router = useRouter();
   const { user } = useRole();
-  const [stats, setStats] = useState({ pendingQc: 0, passed: 0, failed: 0, testsToday: 0, pendingApprovals: 0 });
+  const [stats, setStats] = useState({ pendingQc: 0, passed: 0, failed: 0, testsToday: 0 });
   const go = (href: Href) => router.push(href);
 
   const loadStats = useCallback(async () => {
-    const [qc, approvals] = await Promise.allSettled([qcApi.stats(), dispatchApi.pendingOrders()]);
+    const qc = await qcApi.stats().catch(() => null);
     setStats({
-      pendingQc: qc.status === 'fulfilled' ? qc.value.pendingQc : 0,
-      passed: qc.status === 'fulfilled' ? qc.value.passed : 0,
-      failed: qc.status === 'fulfilled' ? qc.value.failed : 0,
-      testsToday: qc.status === 'fulfilled' ? qc.value.testsToday : 0,
-      pendingApprovals: approvals.status === 'fulfilled' ? approvals.value.length : 0,
+      pendingQc: qc?.pendingQc ?? 0,
+      passed: qc?.passed ?? 0,
+      failed: qc?.failed ?? 0,
+      testsToday: qc?.testsToday ?? 0,
     });
   }, []);
 
   useEffect(() => {
-    // Load live QC totals and pending order approvals.
+    // Load live QC totals.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadStats();
   }, [loadStats]);
@@ -59,13 +57,6 @@ export default function QCHomeScreen() {
           </AppText>
 
           <View className="mt-5 flex-row flex-wrap justify-between gap-y-3">
-            <StatCard
-              icon={ClipboardCheck}
-              value={String(stats.pendingApprovals)}
-              label="Pending Approvals"
-              tone="peach"
-              className="w-[48.2%]"
-            />
             <StatCard
               icon={CircleCheck}
               value={String(stats.passed)}
@@ -107,12 +98,6 @@ export default function QCHomeScreen() {
               />
             </View>
             <View className="flex-row gap-2">
-              <QuickLink
-                icon={ClipboardCheck}
-                label="Dispatch Approvals"
-                tone="purple"
-                onPress={() => go('/(qc)/approvals')}
-              />
               <QuickLink
                 icon={PieChart}
                 label="QC Reports"

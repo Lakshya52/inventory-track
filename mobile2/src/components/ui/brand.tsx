@@ -1,7 +1,9 @@
-import { View } from 'react-native';
+import { View, Pressable } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { EllipsisVertical } from 'lucide-react-native';
 
-import { useRole } from '@/context/role-context';
+import { roleSettingsHref, useRole } from '@/context/role-context';
 import { AppText } from './app-text';
 
 export function BrandMark({ size = 50 }: { size?: number }) {
@@ -22,7 +24,8 @@ export function BrandMark({ size = 50 }: { size?: number }) {
 
 export function BrandHeader() {
   const insets = useSafeAreaInsets();
-  const { user } = useRole();
+  const router = useRouter();
+  const { user, role } = useRole();
 
   return (
     <View
@@ -43,6 +46,13 @@ export function BrandHeader() {
             {user.role.toUpperCase()}
           </AppText>
         )}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open settings"
+          onPress={() => router.push(roleSettingsHref[role])}
+          className="h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/15">
+          <EllipsisVertical size={17} color="#FFFFFF" />
+        </Pressable>
       </View>
     </View>
   );

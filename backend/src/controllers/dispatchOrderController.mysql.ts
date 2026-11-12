@@ -43,9 +43,11 @@ export async function raise(req: Request, res: Response): Promise<void> {
       client_id: Number(req.body.client_id),
       quantity: req.body.quantity,
       items: items?.map((item: any) => ({ batch_id: Number(item.batch_id), quantity: item.quantity })),
-      driver_name: '',
-      vehicle_number: '',
-      container_number: '',
+      // Transport details are optional here and captured again when the
+      // loading session is finalised. Keep whatever the caller supplied.
+      driver_name: typeof req.body.driver_name === 'string' ? req.body.driver_name : '',
+      vehicle_number: typeof req.body.vehicle_number === 'string' ? req.body.vehicle_number : '',
+      container_number: typeof req.body.container_number === 'string' ? req.body.container_number : '',
     },
   };
 
@@ -76,38 +78,13 @@ function searchClause(q: string): { sql: string; params: string[] } {
   };
 }
 
-export async function listPending(req: Request, res: Response): Promise<void> {
-  const q = String(req.query.q || '').trim();
-  const search = searchClause(q);
-  const orders = await query<RowDataPacket[]>(
-    `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, p.name AS product_name,
-            p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
-            q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
-            u.name AS raised_by_name, c.name AS client_name,
-            d.container_number, COALESCE(aa.name, qu.name) AS approver_name
-     FROM dispatch_orders d
-     JOIN batches b ON d.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
-     LEFT JOIN dispatch_users u ON d.raised_by = u.id
-     LEFT JOIN clients c ON c.id = d.client_id
-     LEFT JOIN admins aa ON aa.id = d.approved_by_id AND d.approved_by_role = 'ADMIN'
-     LEFT JOIN qc_users qu ON qu.id = d.approved_by_id AND d.approved_by_role = 'QC'
-     WHERE d.status = 'PENDING' ${search.sql}
-     ORDER BY d.created_at ASC LIMIT 100`,
-    search.params
-  );
-  res.json(orders.map(withOrderLines));
-}
-
 export async function listAll(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || '').toUpperCase();
   const search = searchClause(q);
   const where = ['1=1'];
   const params: any[] = [];
-  if (['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
+  if (['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(status)) {
     where.push('d.status = ?');
     params.push(status);
   }
@@ -119,7 +96,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             u.name AS raised_by_name, a.name AS admin_name,
             c.name AS client_name, d.container_number,
-            COALESCE(aa.name, qu.name) AS approver_name
+            COALESCE(aa.name, qu.name, du.name) AS approver_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
@@ -130,6 +107,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
      LEFT JOIN admins a ON d.admin_id = a.id
      LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
      LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
+     LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH'
      WHERE ${where.join(' AND ')} ${search.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
     params
@@ -143,7 +121,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   const search = searchClause(q);
   const where = ['d.raised_by = ?'];
   const params: any[] = [req.user!.userId];
-  if (['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
+  if (['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(status)) {
     where.push('d.status = ?');
     params.push(status);
   }
@@ -154,7 +132,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
             p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             a.name AS admin_name, c.name AS client_name,
-            d.container_number, COALESCE(aa.name, qu.name) AS approver_name
+            d.container_number, COALESCE(aa.name, qu.name, du.name) AS approver_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
@@ -163,6 +141,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
      LEFT JOIN admins a ON d.admin_id = a.id
      LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
      LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
+     LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH'
      LEFT JOIN clients c ON c.id = d.client_id
      WHERE ${where.join(' AND ')} ${search.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
@@ -171,9 +150,20 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   res.json(orders.map(withOrderLines));
 }
 
-export async function approve(req: Request, res: Response): Promise<void> {
+/**
+ * Dispatch orders need no approval: raising one releases it straight away.
+ * A raised order can still be cancelled by the dispatcher who raised it (or
+ * an administrator) as long as loading has not started yet. Cancelling frees
+ * the reserved QR labels and puts the stock back on the shelf.
+ */
+export async function cancel(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const admin_remarks = req.body.admin_remarks ?? req.body.remarks;
+  const rawRemarks = req.body.admin_remarks ?? req.body.remarks;
+  const remarks = rawRemarks === null || rawRemarks === undefined ? '' : String(rawRemarks).trim();
+  if (!remarks) {
+    res.status(400).json({ error: 'A reason is required to cancel a dispatch order' });
+    return;
+  }
   try {
     const result = await withTransaction(async (conn) => {
       const [orders] = await conn.execute<RowDataPacket[]>(
@@ -182,91 +172,59 @@ export async function approve(req: Request, res: Response): Promise<void> {
       );
       if (orders.length === 0) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
       const order = orders[0];
-      if (order.status !== 'PENDING') {
+      if (req.user!.role !== 'ADMIN' && Number(order.raised_by) !== Number(req.user!.userId)) {
+        throw new SyncError('You can only cancel a dispatch order you raised', 'FORBIDDEN', 403);
+      }
+      if (order.status !== 'APPROVED') {
         throw new SyncConflictError(`Order is already ${order.status}`, { order_id: order.id, status: order.status });
       }
 
-      const [batches] = await conn.execute<RowDataPacket[]>(
-        'SELECT * FROM batches WHERE id = ? FOR UPDATE',
-        [order.batch_id]
+      let cancelLines: any[] = [];
+      try { cancelLines = JSON.parse(order.order_lines || '[]'); } catch { cancelLines = []; }
+      const releaseBatchIds = cancelLines.length
+        ? cancelLines.map((line: any) => Number(line?.batch_id)).filter((batchId: number) => Number.isInteger(batchId) && batchId > 0)
+        : [Number(order.batch_id)];
+
+      // Loading must not have started: the batch is already on the truck.
+      const [loadingBatches] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, batch_number, status FROM batches
+         WHERE id IN (?) AND status NOT IN ('QC_PASSED', 'DISPATCH_APPROVED') LIMIT 1`,
+        [releaseBatchIds]
       );
-      if (batches.length === 0) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
-      if (batches[0].status !== 'DISPATCH_ORDER_RAISED') {
-        throw new SyncConflictError(`Batch is not awaiting approval. Current status: ${batches[0].status}`, {
-          batch_id: order.batch_id,
-          current_status: batches[0].status,
+      if (loadingBatches.length > 0) {
+        throw new SyncConflictError('Loading has already started for this order. It cannot be cancelled.', {
+          batch_id: loadingBatches[0].id,
+          current_status: loadingBatches[0].status,
         });
       }
 
       await conn.execute(
-        `UPDATE dispatch_orders SET status = 'APPROVED', admin_id = ?, approved_by_role = ?, approved_by_id = ?,
-         admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND status = 'PENDING'`,
-        [req.user!.role === 'ADMIN' ? req.user!.userId : null, req.user!.role, req.user!.userId, admin_remarks || null, id]
+        `UPDATE dispatch_orders SET status = 'CANCELLED', admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
+         WHERE id = ? AND status = 'APPROVED'`,
+        [remarks, id]
       );
-      const [batchUpdate] = await conn.execute(
-        `UPDATE batches SET status = 'DISPATCH_APPROVED', updated_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND status = 'DISPATCH_ORDER_RAISED'`,
-        [order.batch_id]
+      // Release the reserved QR labels so the stock becomes orderable again.
+      await conn.execute(
+        'UPDATE qr_labels SET dispatch_order_id = NULL WHERE dispatch_order_id = ? AND batch_id IN (?)',
+        [id, releaseBatchIds]
       );
-      if ((batchUpdate as any).affectedRows !== 1) {
-        throw new SyncConflictError('Batch was changed by another user', { batch_id: order.batch_id });
+      for (const batchId of releaseBatchIds) {
+        await conn.execute(
+          `UPDATE batches SET status = 'QC_PASSED', updated_at = CURRENT_TIMESTAMP(3)
+           WHERE id = ? AND status = 'DISPATCH_APPROVED'`,
+          [batchId]
+        );
       }
       await conn.execute(
         `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-         VALUES (?, ?, ?, 'DISPATCH_APPROVED', ?)`,
-        [req.user!.userId, req.user!.name, req.user!.role, `Dispatch order #${id} approved for batch #${order.batch_id}`]
+         VALUES (?, ?, ?, 'DISPATCH_ORDER_CANCELLED', ?)`,
+        [req.user!.userId, req.user!.name, req.user!.role, `Dispatch order #${id} cancelled for batch #${order.batch_id}`]
       );
-      return { message: 'Dispatch order approved', status: 'APPROVED' };
+      return { message: 'Dispatch order cancelled', status: 'CANCELLED' };
     });
     res.json(result);
   } catch (error) {
-    errorResponse(res, error, 'Could not approve dispatch order');
-  }
-}
-
-export async function reject(req: Request, res: Response): Promise<void> {
-  const { id } = req.params;
-  const admin_remarks = req.body.admin_remarks ?? req.body.remarks;
-  try {
-    const result = await withTransaction(async (conn) => {
-      const [orders] = await conn.execute<RowDataPacket[]>(
-        'SELECT * FROM dispatch_orders WHERE id = ? FOR UPDATE',
-        [id]
-      );
-      if (orders.length === 0) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
-      const order = orders[0];
-      if (order.status !== 'PENDING') {
-        throw new SyncConflictError(`Order is already ${order.status}`, { order_id: order.id, status: order.status });
-      }
-
-      const [batches] = await conn.execute<RowDataPacket[]>(
-        'SELECT * FROM batches WHERE id = ? FOR UPDATE',
-        [order.batch_id]
-      );
-      if (batches.length === 0) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
-
-      await conn.execute(
-        `UPDATE dispatch_orders SET status = 'REJECTED', admin_id = ?, approved_by_role = ?, approved_by_id = ?,
-         admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND status = 'PENDING'`,
-        [req.user!.role === 'ADMIN' ? req.user!.userId : null, req.user!.role, req.user!.userId, admin_remarks || null, id]
-      );
-      await conn.execute(
-        `UPDATE batches SET status = 'DISPATCH_REJECTED', updated_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND status = 'DISPATCH_ORDER_RAISED'`,
-        [order.batch_id]
-      );
-      await conn.execute(
-        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-         VALUES (?, ?, ?, 'DISPATCH_REJECTED', ?)`,
-        [req.user!.userId, req.user!.name, req.user!.role, `Dispatch order #${id} rejected for batch #${order.batch_id}`]
-      );
-      return { message: 'Dispatch order rejected', status: 'REJECTED' };
-    });
-    res.json(result);
-  } catch (error) {
-    errorResponse(res, error, 'Could not reject dispatch order');
+    errorResponse(res, error, 'Could not cancel dispatch order');
   }
 }
 
@@ -356,6 +314,104 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
       generated_at: new Date().toISOString(),
     },
   };
+}
+
+/**
+ * Standalone QR recall. Pulls a printed label out of one of the caller's own
+ * open dispatch orders, with or without an active loading session. The unit
+ * stops being expected on this order, so the order quantity drops by one.
+ *
+ * - DAMAGED / HOLD  the label stays with the order but is flagged as recalled
+ * - RETURN_TO_STOCK the label goes back to free stock and its batch returns to
+ *   the shelf
+ */
+export async function recallQr(req: Request, res: Response): Promise<void> {
+  const qrValue = String(req.body?.qr_value ?? '').trim();
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 1000);
+  const condition = String(req.body?.condition ?? '').trim().toUpperCase();
+  if (!qrValue || !reason || !['DAMAGED', 'HOLD', 'RETURN_TO_STOCK'].includes(condition)) {
+    res.status(400).json({ error: 'Provide a valid QR code, reason and condition', code: 'INVALID_RECALL_DETAILS' });
+    return;
+  }
+  try {
+    const result = await withTransaction(async (conn) => {
+      const [labels] = await conn.execute<RowDataPacket[]>(
+        'SELECT * FROM qr_labels WHERE qr_value = ? FOR UPDATE',
+        [qrValue]
+      );
+      if (labels.length === 0) throw new SyncError('QR label not found', 'QR_NOT_FOUND', 404);
+      const label = labels[0];
+      if (!label.dispatch_order_id) {
+        throw new SyncError('This QR label is not assigned to a dispatch order', 'QR_NOT_IN_ORDER', 409);
+      }
+      const [orders] = await conn.execute<RowDataPacket[]>(
+        'SELECT * FROM dispatch_orders WHERE id = ? FOR UPDATE',
+        [label.dispatch_order_id]
+      );
+      if (orders.length === 0) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
+      const order = orders[0];
+      if (req.user!.role !== 'ADMIN' && Number(order.raised_by) !== Number(req.user!.userId)) {
+        throw new SyncError('You can only recall labels on orders you raised', 'FORBIDDEN', 403);
+      }
+      if (order.status !== 'APPROVED') {
+        throw new SyncConflictError(`This order is already ${order.status}`, { order_id: order.id, status: order.status });
+      }
+      if (label.recall_status === 'RECALLED') {
+        throw new SyncConflictError('This QR label has already been recalled', { qr_value: qrValue, code: 'QR_ALREADY_RECALLED' });
+      }
+      // Loading sessions are MongoDB-only, so on MySQL no label can already be
+      // loaded and there is no session total to adjust.
+      // The unit leaves this order: drop its line and lower the order quantity.
+      let orderLines: any[] = [];
+      try { orderLines = JSON.parse(order.order_lines || '[]'); } catch { orderLines = []; }
+      const remainingLines = orderLines.filter(
+        (line: any) => Number(line?.batch_id) !== Number(label.batch_id),
+      );
+      await conn.execute(
+        'UPDATE dispatch_orders SET order_lines = ?, quantity = ?, remarks = ?, admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
+        [JSON.stringify(remainingLines), Math.max(0, Number(order.quantity || 0) - 1), reason, reason, order.id]
+      );
+
+      if (condition === 'RETURN_TO_STOCK') {
+        // The label goes back to free stock and its batch returns to the shelf.
+        await conn.execute(
+          `UPDATE qr_labels SET dispatch_order_id = NULL, recall_status = NULL, recall_condition = NULL,
+             recall_reason = NULL, recalled_by = NULL, recalled_at = NULL
+           WHERE id = ?`,
+          [label.id]
+        );
+        await conn.execute(
+          "UPDATE batches SET status = 'QC_PASSED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'DISPATCH_APPROVED'",
+          [label.batch_id]
+        );
+      } else {
+        await conn.execute(
+          `UPDATE qr_labels SET recall_status = 'RECALLED', recall_condition = ?, recall_reason = ?,
+             recalled_by = ?, recalled_at = CURRENT_TIMESTAMP(3)
+           WHERE id = ? AND (recall_status IS NULL OR recall_status <> 'RECALLED')`,
+          [condition, reason, String(req.user!.userId), label.id]
+        );
+      }
+
+      await conn.execute(
+        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
+         VALUES (?, ?, ?, 'DISPATCH_QR_RECALLED', ?)`,
+        [req.user!.userId, req.user!.name, req.user!.role, `QR ${qrValue} recalled from dispatch order ${order.id}; condition ${condition}; reason: ${reason}`]
+      );
+
+      return {
+        message: condition === 'RETURN_TO_STOCK'
+          ? 'QR label recalled and returned to stock'
+          : 'QR label recalled and excluded from loading',
+        condition,
+        order_id: order.id,
+        batch_id: label.batch_id,
+      };
+    });
+    res.json(result);
+  } catch (error) {
+    errorResponse(res, error, 'Could not recall QR label');
+  }
 }
 
 export async function getPackingList(req: Request, res: Response): Promise<void> {

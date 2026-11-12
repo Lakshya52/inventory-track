@@ -49,6 +49,13 @@ export const roleHomeHref: Record<Role, Href> = {
   dispatch: '/(dispatch)/home',
 };
 
+/** Settings stays reachable from the header, even when a role has only two tabs. */
+export const roleSettingsHref: Record<Role, Href> = {
+  admin: '/(admin)/settings',
+  qc: '/(qc)/settings',
+  dispatch: '/(dispatch)/settings',
+};
+
 const backendRoleToAppRole: Record<AuthUser['role'], Role> = {
   ADMIN: 'admin',
   QC: 'qc',

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { query, execute, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
-import { buildBatchNumbers } from '../utils/batchNumbers';
+import { buildBatchNumbers, skuFromBatchNumber } from '../utils/batchNumbers';
 
 export async function create(req: Request, res: Response): Promise<void> {
   const { product_id, batch_number, quantity, batch_count = 1, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
@@ -311,10 +311,11 @@ export async function list(req: Request, res: Response): Promise<void> {
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
             (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.print_count > 0) AS printed_label_count,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL) AS reserved_quantity,
             (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED') AS recalled_quantity,
             GREATEST(0, b.quantity - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL) - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED')) AS available_quantity
-     FROM batches b JOIN products p ON b.product_id = p.id
+     FROM batches b LEFT JOIN products p ON b.product_id = p.id
      LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
      LEFT JOIN vendors v ON v.id = b.vendor_id
      LEFT JOIN grades g ON g.id = b.grade_id
@@ -322,7 +323,17 @@ export async function list(req: Request, res: Response): Promise<void> {
      ORDER BY b.created_at DESC`
   );
   // The average standard quantity is an internal-only reference; never return it.
-  for (const batch of batches) { delete (batch as any).avg_standard_quantity; }
+  for (const batch of batches) {
+    delete (batch as any).avg_standard_quantity;
+    const total = Number((batch as any).qr_count || 0);
+    const printed = Number((batch as any).printed_label_count || 0);
+    (batch as any).qr_printed = total > 0 && printed >= total;
+    // Legacy batches can outlive their product row. The SKU still lives in the
+    // batch number, so the stock stays identifiable instead of showing blank.
+    if (!(batch as any).product_sku) {
+      (batch as any).product_sku = skuFromBatchNumber((batch as any).batch_number);
+    }
+  }
   res.json(batches);
 }
 

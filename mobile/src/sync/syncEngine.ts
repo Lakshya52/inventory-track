@@ -48,7 +48,7 @@ async function applyLocalPending(operation: OutboxOperation): Promise<void> {
   const status = operation.type.startsWith('QC_SUBMIT')
     ? (String(operation.payload.result).toUpperCase() === 'PASS' ? 'QC_PASSED' : 'QC_FAILED')
     : operation.type.startsWith('DISPATCH_CONFIRM') ? 'DISPATCHED'
-      : operation.type === 'DISPATCH_ORDER_RAISE' ? 'DISPATCH_ORDER_RAISED' : null;
+      : operation.type === 'DISPATCH_ORDER_RAISE' ? 'DISPATCH_APPROVED' : null;
   if (!status) return;
   for (const batchId of batchIds) await setBatchLocalStatus(batchId, status, 1);
 }
@@ -77,7 +77,7 @@ async function applyLocalSuccess(operation: OutboxOperation, result: SyncResult)
   }
   if (operation.type === 'DISPATCH_ORDER_RAISE') {
     await deleteLocalOrderByOperation(operation.operation_id);
-    for (const batchId of batchIds) await setBatchLocalStatus(batchId, 'DISPATCH_ORDER_RAISED', 0);
+    for (const batchId of batchIds) await setBatchLocalStatus(batchId, 'DISPATCH_APPROVED', 0);
     return;
   }
   if (operation.type === 'DISPATCH_CONFIRM' || operation.type === 'DISPATCH_CONFIRM_BULK') {

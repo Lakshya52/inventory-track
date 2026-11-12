@@ -46,8 +46,6 @@ const ALLOWED_TYPES = new Set<SyncOperationType>([
   'DISPATCH_CONFIRM',
   'DISPATCH_CONFIRM_BULK',
   'BATCH_CREATE_AUTO_PASS',
-  'QC_ORDER_APPROVE',
-  'QC_ORDER_REJECT',
   'LOADING_SESSION_START',
   'LOADING_SESSION_SCAN',
   'LOADING_SESSION_FINALISE',
@@ -540,9 +538,13 @@ async function applyDispatchOrderRaise(
       seen.add(batchKey);
       const quantity = Number(line.quantity);
       if (!Number.isInteger(quantity) || quantity < 1) throw new SyncError('Each product line needs a whole-number quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
-      if (!['QC_PASSED', 'DISPATCH_APPROVED'].includes(String(batch.status))) throw new SyncError(`Batch ${batch.batch_number} is not available for dispatch`, 'INVALID_BATCH_STATE', 409);
+      if (!['QC_PASSED'].includes(String(batch.status))) throw new SyncError(`Batch ${batch.batch_number} is not available for dispatch`, 'INVALID_BATCH_STATE', 409);
+      // The QR labels must exist and every one of them must have been printed
+      // before the batch can be put on a truck.
       const qrCount = await ctx.count('qr_labels', { batch_id: batch.id });
       if (qrCount !== Number(batch.quantity)) throw new SyncConflictError(`QR labels are incomplete for ${batch.batch_number}`, { batch_id: batch.id, expected: Number(batch.quantity), actual: qrCount });
+      const printedCount = await ctx.count('qr_labels', { batch_id: batch.id, print_count: { $gt: 0 } });
+      if (printedCount < qrCount) throw new SyncConflictError(`Print the QR labels for ${batch.batch_number} before raising a dispatch order`, { batch_id: batch.id, expected: qrCount, printed: printedCount, code: 'QR_NOT_PRINTED' });
       const reserved = await ctx.count('qr_labels', { batch_id: batch.id, dispatch_order_id: { $exists: true, $ne: null } });
       const recalled = await ctx.count('qr_labels', { batch_id: batch.id, recall_status: 'RECALLED' });
       const available = Math.max(0, Number(batch.quantity) - reserved - recalled);
@@ -555,13 +557,26 @@ async function applyDispatchOrderRaise(
       assignments.push({ batchId: batch.id as EntityId, labelIds: labels.map((label) => label.id as EntityId) });
     }
     const total = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, client_id: clientId, quantity: total, client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, driver_name: null, driver_phone: null, vehicle_number: null, container_number: null, dispatched_at: null });
+    // Transport details are optional at raise time and captured again when the
+    // loading session is finalised. Keep whatever the caller supplied.
+    const transport = {
+      driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
+      driver_phone: typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
+      vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
+      container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
+    };
+    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const assigned = await ctx.updateOne('qr_labels', { id: labelId, batch_id: assignment.batchId, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
       if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: assignment.batchId });
     }
     for (const line of lines) await ctx.insert('packing_list_items', { dispatch_order_id: orderId, ...line });
-    await logActivity(ctx, user, 'DISPATCH_ORDER_RAISED', `Dispatch order ${orderId} created with ${lines.length} product lines and ${total} units`);
+    // No approval step: the order is released for loading the moment it is
+    // raised, so the batch goes straight to DISPATCH_APPROVED.
+    for (const line of lines) {
+      await ctx.updateOne('batches', { id: line.batch_id }, { $set: { status: 'DISPATCH_APPROVED' } });
+    }
+    await logActivity(ctx, user, 'DISPATCH_ORDER_CREATED', `Dispatch order ${orderId} created with ${lines.length} product lines and ${total} units, ready for loading`);
     return { entityType: 'dispatch_order', entityId: orderId, data: { id: orderId, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : `Multi-product order`, product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
   }
   const batch = await getBatchForUpdate(ctx, input.payload);
@@ -576,7 +591,7 @@ async function applyDispatchOrderRaise(
       current_status: batch.status,
     });
   }
-  if (!['QC_PASSED', 'DISPATCH_APPROVED'].includes(String(batch.status))) {
+  if (!['QC_PASSED'].includes(String(batch.status))) {
     throw new SyncError(
       `Dispatch order can only be raised for QC_PASSED batches. Current status: ${batch.status}`,
       'INVALID_BATCH_STATE',
@@ -608,6 +623,18 @@ async function applyDispatchOrderRaise(
       });
     }
   }
+  // Every QR label of the batch must have been printed before it can be
+  // assigned to a dispatch order.
+  const totalLabels = await ctx.count('qr_labels', { batch_id: batch.id });
+  const printedLabels = await ctx.count('qr_labels', { batch_id: batch.id, print_count: { $gt: 0 } });
+  if (printedLabels < totalLabels) {
+    throw new SyncConflictError(`Print the QR labels for ${batch.batch_number} before raising a dispatch order`, {
+      batch_id: batch.id,
+      expected: totalLabels,
+      printed: printedLabels,
+      code: 'QR_NOT_PRINTED',
+    });
+  }
 
   const reservedLabels = await ctx.count('qr_labels', { batch_id: batch.id, dispatch_order_id: { $exists: true, $ne: null } });
   const recalledLabels = await ctx.count('qr_labels', { batch_id: batch.id, recall_status: 'RECALLED' });
@@ -624,12 +651,17 @@ async function applyDispatchOrderRaise(
     status: 'APPROVED',
     admin_id: null,
     admin_remarks: null,
+    approved_by_role: 'DISPATCH',
+    approved_by_id: user.userId,
+    approved_at: now(),
     client_id: clientId,
     quantity: requestedQuantity,
-    driver_name: null,
-    driver_phone: null,
-    vehicle_number: null,
-    container_number: null,
+    // Transport details are optional at raise time and captured again when the
+    // loading session is finalised. Keep whatever the caller supplied.
+    driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
+    driver_phone: typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
+    vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
+    container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     client_operation_id: input.operation_id,
     client_created_at: toDate(input.client_timestamp),
     device_uuid: deviceUuid,
@@ -641,10 +673,33 @@ async function applyDispatchOrderRaise(
     if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
 
+  // Freeze the packing list at raise time, because there is no approval step
+  // left to freeze it later.
+  const singleLocation = batch.shelf_location_id
+    ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1, description: 1 } })
+    : null;
+  await ctx.insert('packing_list_items', {
+    dispatch_order_id: orderId,
+    batch_id: batch.id,
+    batch_number: batch.parent_batch_number || batch.batch_number,
+    child_batch_number: batch.batch_number,
+    product_name: batch.product_name ?? null,
+    product_sku: batch.product_sku ?? null,
+    quantity: requestedQuantity,
+    uom: batch.uom ?? null,
+    location: singleLocation?.location_code || batch.storage_location || 'N/A',
+    location_code: singleLocation?.location_code ?? null,
+    location_description: singleLocation?.description ?? null,
+  });
+
+  // No approval step: the order is released for loading the moment it is
+  // raised, so the batch goes straight to DISPATCH_APPROVED.
+  await ctx.updateOne('batches', { id: batch.id }, { $set: { status: 'DISPATCH_APPROVED' } });
+
   await logActivity(
     ctx,
     user,
-    'DISPATCH_ORDER_RAISED',
+    'DISPATCH_ORDER_CREATED',
     `Dispatch order created for batch ${batch.batch_number} (${batch.product_name}); ${requestedQuantity} units allocated for loading`
   );
 
@@ -699,7 +754,7 @@ async function applyDispatchConfirm(
     });
   }
   if (batch.status === 'DISPATCH_ORDER_RAISED') {
-    throw new SyncConflictError('Dispatch order is still awaiting admin approval', {
+    throw new SyncConflictError('This batch is held by a dispatch order that is no longer active', {
       batch_id: batch.id,
       current_status: batch.status,
     });
@@ -833,7 +888,7 @@ async function applyDispatchConfirmBulk(
       });
     }
     if (batch.status === 'DISPATCH_ORDER_RAISED') {
-      throw new SyncConflictError('A dispatch order is still awaiting admin approval', {
+      throw new SyncConflictError('This batch is held by a dispatch order that is no longer active', {
         batch_id: batch.id,
         barcode_value: batch.barcode_value,
         current_status: batch.status,
@@ -994,8 +1049,6 @@ export async function applyOperation(
             410
           );
         case 'BATCH_CREATE_AUTO_PASS':
-        case 'QC_ORDER_APPROVE':
-        case 'QC_ORDER_REJECT':
         case 'LOADING_SESSION_START':
         case 'LOADING_SESSION_SCAN':
         case 'LOADING_SESSION_FINALISE':

@@ -20,7 +20,9 @@ import { createQrPdfBlob, downloadQrPdf, type QrJob, type QrLabel } from '../uti
 import { useAuth } from '../contexts/AuthContext';
 
 const statusBadgeStyle: Record<string, { bg: string; label: string }> = {
+  PENDING_QC: { bg: 'bg-amber-100 text-amber-900 border-amber-300', label: 'Waiting for QC' },
   QC_PASSED: { bg: 'bg-emerald-100 text-emerald-900 border-emerald-300', label: 'QC Passed (In Stock)' },
+  QC_FAILED: { bg: 'bg-rose-100 text-rose-900 border-rose-300', label: 'QC Failed' },
   DISPATCH_ORDER_RAISED: { bg: 'bg-purple-100 text-purple-900 border-purple-300', label: 'Order Raised' },
   DISPATCH_APPROVED: { bg: 'bg-blue-100 text-blue-900 border-blue-300', label: 'Ready for Loading' },
   LOADING: { bg: 'bg-indigo-100 text-indigo-900 border-indigo-300', label: 'Loading Truck' },
@@ -71,8 +73,9 @@ function isActiveMaster(row: any): boolean {
 
 export default function Batches() {
   const { user } = useAuth();
-  const canManageBatches = user?.role === 'QC';
-  const canDownloadQr = user?.role === 'ADMIN' || canManageBatches;
+  // Batch creation moved to Dispatch. QC decisions happen on the QC Review page.
+  const canManageBatches = false;
+  const canDownloadQr = user?.role === 'ADMIN';
   const [products, setProducts] = useState<Product[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [locations, setLocations] = useState<any[]>([]);

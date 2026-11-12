@@ -247,8 +247,9 @@ export async function stats(req: Request, res: Response): Promise<void> {
 
   const orderScope = personal ? 'AND raised_by = ?' : '';
   const orderParams = personal ? [user.userId] : [];
-  const pendingOrdersCount = await count(
-    `SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING' ${orderScope}`,
+  // Orders need no approval, so nothing sits in a pending queue any more.
+  const cancelledOrdersCount = await count(
+    `SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'CANCELLED' ${orderScope}`,
     orderParams
   );
   const approvedOrdersCount = await count(
@@ -270,15 +271,15 @@ export async function stats(req: Request, res: Response): Promise<void> {
        AND (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) = b.quantity
      ORDER BY b.updated_at ASC LIMIT 10`
   );
-  const pendingOrders = await query<RowDataPacket[]>(
+  const cancelledOrders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, p.name AS product_name, p.sku AS product_sku,
             u.name AS raised_by_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
      LEFT JOIN dispatch_users u ON d.raised_by = u.id
-     WHERE d.status = 'PENDING' ${orderScope}
-     ORDER BY d.created_at ASC LIMIT 10`,
+     WHERE d.status = 'CANCELLED' ${orderScope}
+     ORDER BY d.created_at DESC LIMIT 10`,
     orderParams
   );
   const approvedOrders = await query<RowDataPacket[]>(
@@ -321,12 +322,12 @@ export async function stats(req: Request, res: Response): Promise<void> {
     dispatchedToday,
     dispatchedThisWeek,
     readyToDispatch,
-    pendingOrders: pendingOrdersCount,
+    cancelledOrders: cancelledOrdersCount,
     approvedOrders: approvedOrdersCount,
     myDispatchedToday: dispatchedToday,
     myTotalDispatches: totalDispatches,
     readyBatches,
-    pendingOrdersList: pendingOrders,
+    cancelledOrdersList: cancelledOrders,
     approvedOrdersList: approvedOrders,
     recentRecords,
     todayRecords,

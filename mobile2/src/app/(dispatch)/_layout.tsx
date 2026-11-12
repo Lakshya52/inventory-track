@@ -11,9 +11,8 @@ export default function DispatchLayout() {
         screenOptions={{ headerShown: false }}
         tabBar={(props) => <RoleTabBar {...props} items={DISPATCH_TABS} />}>
         <Tabs.Screen name="home" />
-        <Tabs.Screen name="orders" />
         <Tabs.Screen name="scan-check" />
-        <Tabs.Screen name="history" />
+        {/* Settings is reachable from the header, but it is not a tab. */}
         <Tabs.Screen name="settings" />
       </Tabs>
     </RoleGuard>

@@ -15,7 +15,22 @@ type QrJobRow = QrJob & {
   label_count?: number;
   last_printed_at?: string | null;
   created_by_name?: string;
+  batch_number?: string | null;
+  batch_status?: string | null;
+  printed_count?: number;
+  labels_printed?: boolean;
+  qc_ready?: boolean;
+  can_print_initial?: boolean;
 };
+
+function batchStatusBadge(job: QrJobRow): { label: string; className: string } {
+  if (job.labels_printed) return { label: 'Printed', className: 'badge-success' };
+  const status = String(job.batch_status || 'PENDING_QC').toUpperCase();
+  if (job.qc_ready) return { label: 'QC passed', className: 'badge-success' };
+  if (status === 'QC_FAILED' || status === 'REJECTED') return { label: 'QC failed', className: 'badge-danger' };
+  if (status === 'PENDING_QC') return { label: 'Awaiting QC', className: 'badge-warning' };
+  return { label: status.replace(/_/g, ' '), className: 'badge-neutral' };
+}
 
 function formatDate(value?: string | null): string {
   if (!value) return '-';
@@ -26,8 +41,11 @@ function formatDate(value?: string | null): string {
 
 export default function QRLabels() {
   const { user } = useAuth();
-  const isQc = user?.role === 'QC';
-  const canReprint = user?.role === 'ADMIN';
+  const isAdmin = user?.role === 'ADMIN';
+  const isDispatch = user?.role === 'DISPATCH';
+  const canPrintInitial = isAdmin || isDispatch;
+  // Only Dispatch raises reprint requests; an administrator approves them.
+  const canRequestReprint = isDispatch;
   const [jobs, setJobs] = useState<QrJobRow[]>([]);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 300);
@@ -41,6 +59,7 @@ export default function QRLabels() {
   const [reprintQty, setReprintQty] = useState('1');
   const [reprintLoading, setReprintLoading] = useState(false);
   const [reprinting, setReprinting] = useState(false);
+  const [initialPrintingId, setInitialPrintingId] = useState<EntityId | null>(null);
   const [reprintRequests, setReprintRequests] = useState<any[]>([]);
   const [fulfillingRequestId, setFulfillingRequestId] = useState<EntityId | null>(null);
   const [reviewingRequestId, setReviewingRequestId] = useState<EntityId | null>(null);
@@ -54,7 +73,7 @@ export default function QRLabels() {
     try {
       const jobRows = await api.qc.qrJobs.list(debouncedSearch || undefined);
       if (requestId === listRequest.current) setJobs(jobRows.items || []);
-      if ((user?.role === 'ADMIN' || user?.role === 'QC') && requestId === listRequest.current) setReprintRequests(await api.qc.qrJobs.reprintRequests('ALL'));
+      if (requestId === listRequest.current) setReprintRequests(await api.qc.qrJobs.reprintRequests('ALL'));
     } catch (err: any) {
       if (requestId === listRequest.current) setError(err.message || 'Could not load QR labels');
     } finally {
@@ -85,6 +104,7 @@ export default function QRLabels() {
     const requestId = ++detailRequest.current;
     setError('');
     setSuccess('');
+    if (!requestedIds?.length) setFulfillingRequestId(null);
     setReprintJob(job);
     setReprintLabels([]);
     setSelectedIds([]);
@@ -158,6 +178,30 @@ export default function QRLabels() {
       setError(err.message || 'Could not reprint QR labels');
     } finally {
       setReprinting(false);
+    }
+  };
+
+  const printInitialLabels = async (job: QrJobRow, mode: 'pdf' | 'print') => {
+    setError('');
+    setSuccess('');
+    setInitialPrintingId(job.id);
+    try {
+      const printerName = mode === 'print' ? await prepareDirectQrPrinter() : undefined;
+      const result = await api.qc.qrJobs.printInitial(job.id);
+      if (mode === 'pdf') {
+        await downloadQrPdf(result.labels, result.job);
+        setSuccess(`${result.labels.length} QR label${result.labels.length === 1 ? '' : 's'} downloaded to PDF.`);
+      } else {
+        let labelSize = { widthMm: 60, heightMm: 64 };
+        try { labelSize = await api.auth.printerLabelSize(); } catch { /* Use the default label size if settings cannot load. */ }
+        await printQrLabelsDirect(result.labels, result.job, labelSize, printerName!, (sent, total, status) => setSuccess(status || `Sending labels to ${printerName}: ${sent} / ${total} queued…`));
+        setSuccess(`${result.labels.length} QR label${result.labels.length === 1 ? '' : 's'} sent to the ${printerName} print queue.`);
+      }
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'Could not print QR labels');
+    } finally {
+      setInitialPrintingId(null);
     }
   };
 
@@ -245,8 +289,10 @@ export default function QRLabels() {
             <h1 className="page-title text-xl">QR Code Labels</h1>
           </div>
           <p className="page-subtitle ml-[52px]">
-            {isQc ? 'Initial batch labels print once. Request administrator approval for missing or damaged labels; QC cannot download or print replacements.' : 'Review QR print jobs and handle QC replacement requests.'}
-            {!isQc && ' Initial labels are generated with each batch.'}
+            {isDispatch
+              ? 'Print each batch’s QR labels once QC passes. Any reprint needs administrator approval.'
+              : 'Review QR print jobs and handle replacement requests.'}
+            {isAdmin && ' Initial labels are generated with each batch and printed by dispatch after QC passes.'}
           </p>
         </div>
         <button className="btn-secondary" onClick={() => load(true)} disabled={refreshing}>
@@ -329,6 +375,7 @@ export default function QRLabels() {
               <tr>
                 <th>Job Code</th>
                 <th>Product</th>
+                <th>Batch / Status</th>
                 <th>Labels</th>
                 <th>Prints</th>
                 <th>Created</th>
@@ -336,7 +383,9 @@ export default function QRLabels() {
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job) => (
+              {jobs.map((job) => {
+                const status = batchStatusBadge(job);
+                return (
                 <tr key={job.id}>
                   <td>
                     <div className="font-mono text-xs font-semibold bg-surface-100 px-2 py-1 rounded-lg inline-block text-surface-800">
@@ -349,28 +398,55 @@ export default function QRLabels() {
                     <div className="text-xs text-surface-400">{job.product_sku}</div>
                   </td>
                   <td>
+                    <div className="text-xs font-medium text-surface-700">{job.batch_number || '—'}</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <span className={`badge ${status.className}`}>{status.label}</span>
+                      {job.label_count ? <span className="badge badge-neutral">{job.printed_count ?? 0}/{job.label_count} printed</span> : null}
+                    </div>
+                  </td>
+                  <td>
                     <span className="badge badge-neutral">{job.label_count ?? job.quantity}</span>
                   </td>
                   <td className="text-surface-700">{job.total_prints ?? job.quantity}</td>
                   <td className="text-xs text-surface-400">{formatDate(job.created_at)}</td>
                   <td>
                     <div className="flex flex-wrap gap-1.5">
-                      {!isQc && <button className="btn-secondary btn-sm" onClick={() => downloadJob(job)}>
-                        <Download size={13} /> Download PDF
-                      </button>}
-                      {isQc && (
+                      {canPrintInitial && job.can_print_initial && (
+                        <>
+                          <button className="btn-primary btn-sm" disabled={initialPrintingId !== null} onClick={() => void printInitialLabels(job, 'print')}>
+                            {initialPrintingId === job.id ? <Loader2 size={13} className="animate-spin" /> : <Printer size={13} />} Print labels
+                          </button>
+                          {isAdmin && (
+                            <button className="btn-secondary btn-sm" disabled={initialPrintingId !== null} onClick={() => void printInitialLabels(job, 'pdf')}>
+                              <Download size={13} /> PDF
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {isAdmin && job.labels_printed && (
+                        <>
+                          <button className="btn-secondary btn-sm" onClick={() => downloadJob(job)}>
+                            <Download size={13} /> Download PDF
+                          </button>
+                          <button className="btn-primary btn-sm" onClick={() => openReprint(job)}><Printer size={13} /> Reprint</button>
+                        </>
+                      )}
+                      {canRequestReprint && job.labels_printed && (
                         <button className="btn-primary btn-sm" onClick={() => openReprint(job)}>
                           <Printer size={13} /> Request reprint
                         </button>
                       )}
-                      {canReprint && <button className="btn-primary btn-sm" onClick={() => openReprint(job)}><Printer size={13} /> Reprint</button>}
+                      {!job.labels_printed && (!job.can_print_initial || !canPrintInitial) && (
+                        <span className="text-xs text-surface-400">{job.qc_ready ? 'Waiting for dispatch to print' : 'Awaiting QC pass'}</span>
+                      )}
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {jobs.length === 0 && (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     <div className="empty-state">
                       <div className="empty-icon"><Package size={24} className="text-surface-400" /></div>
                       <div className="empty-title">
@@ -390,14 +466,14 @@ export default function QRLabels() {
         </div>
       </div>
 
-      {canReprint && <section className="card mt-6">
+      {isAdmin && <section className="card mt-6">
         <div className="card-header flex flex-wrap items-center justify-between gap-3">
-          <div><h2 className="section-title">QC reprint approvals</h2><p className="mt-1 text-sm text-surface-500">Review requests before a replacement label is printed.</p></div>
+          <div><h2 className="section-title">Reprint approvals</h2><p className="mt-1 text-sm text-surface-500">Approve QC or Dispatch requests before a replacement label is printed.</p></div>
           <div className="flex items-center gap-2"><span className="badge badge-warning">{reprintRequests.filter(row => row.status === 'PENDING').length} awaiting review</span><button className="btn-secondary btn-sm" onClick={() => load(true)} disabled={refreshing}><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh</button></div>
         </div>
         <div className="table-wrap"><table><thead><tr><th>Print job</th><th>Requested by</th><th>Labels</th><th>Requested</th><th>Status</th><th className="text-right">Action</th></tr></thead><tbody>
           {reprintRequests.map((request: any) => <tr key={request.id}>
-            <td><span className="font-mono text-xs">{request.job_code || request.qr_job_id}</span></td><td>{request.requested_by_name || 'QC user'}</td><td>{request.requested_count}</td><td className="text-xs text-surface-500">{formatDate(request.requested_at)}</td>
+            <td><span className="font-mono text-xs">{request.job_code || request.qr_job_id}</span></td><td>{request.requested_by_name || 'User'}</td><td>{request.requested_count}</td><td className="text-xs text-surface-500">{formatDate(request.requested_at)}</td>
             <td><span className={`badge ${request.status === 'PENDING' ? 'badge-warning' : request.status === 'APPROVED' ? 'badge-success' : request.status === 'REJECTED' ? 'badge-danger' : 'badge-neutral'}`}>{request.status}</span>{request.reviewed_by_name && <div className="mt-1 text-[11px] text-surface-400">Reviewed by {request.reviewed_by_name}{request.review_note ? ` · ${request.review_note}` : ''}</div>}</td>
             <td className="text-right"><div className="inline-flex flex-wrap justify-end gap-1.5">
               {request.status === 'PENDING' && <><button className="btn-primary btn-xs" disabled={reviewingRequestId !== null} onClick={() => void reviewRequest(request, 'APPROVED')}>{reviewingRequestId === request.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />} Approve</button><button className="btn-secondary btn-xs text-rose-600" disabled={reviewingRequestId !== null} onClick={() => void reviewRequest(request, 'REJECTED')}>Reject</button></>}
@@ -405,13 +481,13 @@ export default function QRLabels() {
               {request.status === 'FULFILLED' && <span className="text-xs text-surface-500">Printed {formatDate(request.fulfilled_at)}</span>}
             </div></td>
           </tr>)}
-          {reprintRequests.length === 0 && <tr><td colSpan={6}><div className="empty-state"><div className="empty-title">No reprint requests yet</div><div className="empty-desc">QC requests will appear here for review.</div></div></td></tr>}
+          {reprintRequests.length === 0 && <tr><td colSpan={6}><div className="empty-state"><div className="empty-title">No reprint requests yet</div><div className="empty-desc">QC and Dispatch requests will appear here for review.</div></div></td></tr>}
         </tbody></table></div>
       </section>}
 
-      {isQc && <section className="card mt-6">
+      {canRequestReprint && <section className="card mt-6">
         <div className="card-header flex flex-wrap items-center justify-between gap-3">
-          <div><h2 className="section-title">My reprint requests</h2><p className="mt-1 text-sm text-surface-500">Approved requests can be sent directly to the configured printer.</p></div>
+          <div><h2 className="section-title">My reprint requests</h2><p className="mt-1 text-sm text-surface-500">Approved requests can be printed here once an administrator approves them.</p></div>
           <button className="btn-secondary btn-sm" onClick={() => load(true)} disabled={refreshing}><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh</button>
         </div>
         <div className="table-wrap"><table><thead><tr><th>Print job</th><th>Labels</th><th>Requested</th><th>Status</th><th className="text-right">Action</th></tr></thead><tbody>
@@ -425,12 +501,12 @@ export default function QRLabels() {
       </section>}
 
       {/* ── Reprint Modal ──────────────────────────────────────────────────── */}
-      {(canReprint || isQc) && reprintJob && (
+      {(isAdmin || canRequestReprint) && reprintJob && (
         <div className="modal-overlay">
           <div className="modal-content max-w-3xl" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 className="text-base font-semibold text-surface-900">{isQc ? 'Request QR reprint' : 'Reprint QR labels'}</h2>
+                <h2 className="text-base font-semibold text-surface-900">{isAdmin ? 'Reprint QR labels' : 'Request QR reprint'}</h2>
                 <p className="text-xs text-surface-400 mt-0.5">{reprintJob.job_code} · {reprintJob.product_name}</p>
               </div>
               <button
@@ -491,28 +567,28 @@ export default function QRLabels() {
                       <div className="text-sm font-medium text-surface-800">
                         Label {label.serial_no} · {label.batch_number}
                       </div>
-                      {!isQc && <div className="text-[10px] text-surface-400 font-mono break-all">{label.qr_value}</div>}
+                      <div className="text-[10px] text-surface-400 font-mono break-all">{label.qr_value}</div>
                     </div>
                     <span className="badge badge-neutral">printed {label.print_count ?? 1}×</span>
                   </label>
                 ))}
               </div>
 
-              <p className="text-xs text-surface-400">{fulfillingRequestId ? 'Only the labels included in the approved request will be printed.' : isQc ? 'The selected label list will be sent to an administrator for reprinting.' : 'Only selected labels are included in the reprint.'}</p>
+              <p className="text-xs text-surface-400">{fulfillingRequestId ? 'Only the labels included in the approved request will be printed.' : !isAdmin ? 'The selected label list will be sent to an administrator for reprinting.' : 'Only selected labels are included in the reprint.'}</p>
             </div>
 
             <div className="modal-footer">
               <button className="btn-secondary" onClick={() => setReprintJob(null)} disabled={reprinting || reprintLoading}>
                 Cancel
               </button>
-              {canReprint && fulfillingRequestId === null && <button
+              {isAdmin && fulfillingRequestId === null && <button
                 className="btn-secondary"
                 onClick={() => runReprint('print')}
                 disabled={reprinting || selectedIds.length === 0}
               >
                 <Printer size={15} /> Print selected
               </button>}
-              {canReprint && <button
+              {isAdmin && <button
                 className="btn-primary"
                 onClick={() => runReprint('pdf')}
                 disabled={reprinting || selectedIds.length === 0}
@@ -520,8 +596,8 @@ export default function QRLabels() {
                 {reprinting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
                 {reprinting ? 'Preparing…' : 'Download Reprint PDF'}
               </button>}
-              {isQc && fulfillingRequestId !== null && <button className="btn-primary" onClick={() => void runReprint('print')} disabled={reprinting || reprintLoading || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} Print approved labels</button>}
-              {isQc && fulfillingRequestId === null && <button className="btn-primary" onClick={() => void requestReprint()} disabled={reprinting || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} Send reprint request</button>}
+              {canRequestReprint && fulfillingRequestId !== null && <button className="btn-primary" onClick={() => void runReprint('print')} disabled={reprinting || reprintLoading || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} Print approved labels</button>}
+              {canRequestReprint && fulfillingRequestId === null && <button className="btn-primary" onClick={() => void requestReprint()} disabled={reprinting || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} Send reprint request</button>}
             </div>
           </div>
         </div>

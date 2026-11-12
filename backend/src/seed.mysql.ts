@@ -61,7 +61,7 @@ async function seed() {
     expiry_date DATE,
     storage_location VARCHAR(200),
     notes TEXT,
-    status ENUM('CREATED','QC_PASSED','QC_FAILED','DISPATCHED') DEFAULT 'CREATED',
+    status VARCHAR(30) DEFAULT 'PENDING_QC',
     barcode_value VARCHAR(255) UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE

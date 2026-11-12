@@ -25,7 +25,7 @@ export default function OrdersScreen() {
   const { session } = useAuth();
   const { online, sync } = useSync();
   const role = session?.user.role;
-  const [segment, setSegment] = useState(role === 'DISPATCH' ? 'ready' : 'pending');
+  const [segment, setSegment] = useState(role === 'DISPATCH' ? 'ready' : 'all');
   const [orders, setOrders] = useState<any[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
@@ -40,6 +40,7 @@ export default function OrdersScreen() {
   const [remarks, setRemarks] = useState('');
   const [packing, setPacking] = useState<any>(null);
   const [loadError, setLoadError] = useState('');
+  const [cancellingId, setCancellingId] = useState<EntityId | null>(null);
 
   const load = useCallback(async () => {
     setLoadError('');
@@ -49,7 +50,7 @@ export default function OrdersScreen() {
     }
     if (role === 'ADMIN' && !online) {
       setOrders([]);
-      setLoadError('Admin approvals need an internet connection.');
+      setLoadError('Dispatch orders need an internet connection.');
       setLoading(false);
       setRefreshing(false);
       return;
@@ -65,7 +66,7 @@ export default function OrdersScreen() {
           setOrders(online ? listOf(await api.dispatchOrders.mine()) : await getDispatchOrders());
         }
       } else {
-        setOrders(listOf(segment === 'pending' ? await api.dispatchOrders.pending() : await api.dispatchOrders.all(segment === 'all' ? undefined : segment.toUpperCase())));
+        setOrders(listOf(await api.dispatchOrders.all(segment === 'all' ? undefined : segment.toUpperCase())));
       }
     } catch (error: any) {
       setLoadError(error?.message || 'Could not load orders. Check your connection and refresh.');
@@ -101,28 +102,26 @@ export default function OrdersScreen() {
       }
       setSelectedBatch(null); setSegment('mine');
       if (!online) await sync();
-      Alert.alert(online ? 'Request sent' : 'Saved on this device', online
-        ? 'The dispatch request is now waiting for approval.'
-        : 'The dispatch request is queued locally and will sync when your connection returns.');
+      Alert.alert(online ? 'Dispatch order created' : 'Saved on this device', online
+        ? 'The dispatch order is ready to load.'
+        : 'The dispatch order is queued locally and will sync when your connection returns.');
     } catch (error: any) { Alert.alert('Could not raise request', error?.message || 'Please try again.'); }
     finally { setBusyId(null); }
   };
 
-  const decide = async (order: any, approved: boolean) => {
+  const cancelOrder = async (order: any) => {
     const id = order.id ?? order._id;
-    const action = async () => {
-      setBusyId(id);
-      try {
-        if (approved) await api.dispatchOrders.approve(id, remarks.trim() || undefined);
-        else await api.dispatchOrders.reject(id, remarks.trim() || undefined);
-        setRemarks(''); await load();
-      } catch (error: any) { Alert.alert('Could not update request', error?.message || 'Please try again.'); }
-      finally { setBusyId(null); }
-    };
-    if (approved) { await action(); return; }
-    Alert.alert('Reject dispatch request?', `Request for ${order.batch_number || 'this batch'} will be returned to the dispatch team.`, [
-      { text: 'Keep request', style: 'cancel' }, { text: 'Reject', style: 'destructive', onPress: () => { void action(); } },
-    ]);
+    const reason = remarks.trim();
+    if (!reason) {
+      Alert.alert('Reason required', 'Add a reason before cancelling the order.');
+      return;
+    }
+    setBusyId(id);
+    try {
+      await api.dispatchOrders.cancel(id, reason);
+      setRemarks(''); setCancellingId(null); await load();
+    } catch (error: any) { Alert.alert('Could not cancel order', error?.message || 'Please try again.'); }
+    finally { setBusyId(null); }
   };
 
   const showPackingList = async (order: any) => {
@@ -165,15 +164,15 @@ export default function OrdersScreen() {
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.content} alwaysBounceVertical refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />}>
-        <SectionHeader title="Dispatch orders" subtitle={admin ? 'Review dispatch requests and update approvals.' : online ? 'Raise a dispatch request or track your requests.' : 'Offline requests stay on this device and sync automatically.'} />
+        <SectionHeader title="Dispatch orders" subtitle={admin ? 'Overview of all client shipments and loading status.' : online ? 'Raise a dispatch order or track your orders.' : 'Offline orders stay on this device and sync automatically.'} />
         {loadError ? <Text style={styles.offlineNotice}>{loadError}</Text> : null}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segments}>
-          {(admin ? [['pending', 'Pending'], ['all', 'All orders']] : [['ready', 'Ready to request'], ['mine', 'My requests']]).map(([key, label]) => (
+          {(admin ? [['all', 'All orders']] : [['ready', 'Ready to request'], ['mine', 'My orders']]).map(([key, label]) => (
             <Pressable key={key} accessibilityRole="tab" accessibilityState={{ selected: segment === key }} onPress={() => setSegment(key)} style={[styles.segment, segment === key && styles.segmentActive]}>
               <Text style={[styles.segmentText, segment === key && styles.segmentTextActive]}>{label}</Text>
             </Pressable>
           ))}
-          {admin && segment === 'all' ? ['pending', 'approved', 'rejected'].map((status) => <Pressable key={status} accessibilityRole="tab" accessibilityState={{ selected: segment === status }} onPress={() => setSegment(status)} style={[styles.segment, segment === status && styles.segmentActive]}><Text style={[styles.segmentText, segment === status && styles.segmentTextActive]}>{status}</Text></Pressable>) : null}
+          {admin ? ['approved', 'cancelled'].map((status) => <Pressable key={status} accessibilityRole="tab" accessibilityState={{ selected: segment === status }} onPress={() => setSegment(status)} style={[styles.segment, segment === status && styles.segmentActive]}><Text style={[styles.segmentText, segment === status && styles.segmentTextActive]}>{status}</Text></Pressable>) : null}
         </ScrollView>
 
         {role === 'DISPATCH' && segment === 'ready' ? (batches.length ? batches.map((batch) => (
@@ -201,14 +200,20 @@ export default function OrdersScreen() {
               {!!order.admin_remarks && <Text style={styles.detail}>Review note: {order.admin_remarks}</Text>}
             </View>
             <View style={styles.actions}>
-              {admin && order.status === 'PENDING' ? <>
-                <Button title="Approve" small onPress={() => void decide(order, true)} loading={busyId === id} style={{ flex: 1 }} />
-                <Button title="Reject" small variant="danger" onPress={() => void decide(order, false)} style={{ flex: 1 }} />
-              </> : null}
               {role === 'DISPATCH' && (order.status === 'APPROVED' || order.dispatched_at) ? <Button title="Packing list" small variant="secondary" disabled={!online} onPress={() => void showPackingList(order)} /> : null}
+              {role === 'DISPATCH' && order.status === 'APPROVED' && cancellingId !== id ? <Button title="Cancel order" small variant="danger" onPress={() => { setCancellingId(id); setRemarks(''); }} style={{ flex: 1 }} /> : null}
             </View>
+            {role === 'DISPATCH' && order.status === 'APPROVED' && cancellingId === id ? (
+              <View style={styles.cancelRow}>
+                <Field label="Reason for cancelling" value={remarks} onChangeText={setRemarks} placeholder="Why is this order cancelled?" />
+                <View style={styles.actions}>
+                  <Button title="Keep order" small variant="secondary" onPress={() => { setCancellingId(null); setRemarks(''); }} style={{ flex: 1 }} />
+                  <Button title="Confirm cancel" small variant="danger" onPress={() => void cancelOrder(order)} loading={busyId === id} style={{ flex: 1 }} />
+                </View>
+              </View>
+            ) : null}
           </Card>;
-        }) : <EmptyState title={loadError ? 'Orders unavailable' : segment === 'pending' ? 'No requests waiting' : 'No orders yet'} message={loadError || (online ? 'Pull down to refresh the latest server data.' : 'No saved dispatch requests are available on this device yet.')} />) : null}
+        }) : <EmptyState title={loadError ? 'Orders unavailable' : 'No orders yet'} message={loadError || (online ? 'Pull down to refresh the latest server data.' : 'No saved dispatch orders are available on this device yet.')} />) : null}
       </ScrollView>
 
       <Modal visible={!!selectedBatch} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSelectedBatch(null)}>
@@ -220,7 +225,7 @@ export default function OrdersScreen() {
             <Field label="Driver name" value={driver} onChangeText={setDriver} />
             <Field label="Vehicle number" value={vehicle} onChangeText={setVehicle} autoCapitalize="characters" />
             <Field label="Container number" value={container} onChangeText={setContainer} autoCapitalize="characters" />
-            <Button title={busyId ? 'Sending…' : 'Send for approval'} loading={!!busyId} onPress={() => void raise()} />
+            <Button title={busyId ? 'Sending…' : 'Create dispatch order'} loading={!!busyId} onPress={() => void raise()} />
           </ScrollView>
         </Screen>
       </Modal>
@@ -286,6 +291,7 @@ const styles = StyleSheet.create({
   detailGrid: { gap: 4, paddingTop: 5 },
   detail: { fontSize: 13, color: colors.textMuted, lineHeight: 18 },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: 4 },
+  cancelRow: { gap: spacing.sm, marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
   modal: { padding: spacing.lg, gap: spacing.md, paddingBottom: 48 },
   packingSummary: { gap: spacing.xs },
   packingIntro: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs },

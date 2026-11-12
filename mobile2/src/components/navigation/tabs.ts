@@ -2,12 +2,10 @@ import {
   ClipboardCheck,
   EllipsisVertical,
   Home,
-  History,
   LayoutGrid,
   Package,
   PieChart,
   ScanLine,
-  Truck,
   type LucideIcon,
 } from 'lucide-react-native';
 
@@ -30,17 +28,14 @@ export const ADMIN_TABS: NavItem[] = [
 export const QC_TABS: NavItem[] = [
   { name: 'home', label: 'Home', icon: Home },
   { name: 'batches', label: 'Batches', icon: ClipboardCheck },
-  { name: 'approvals', label: 'Approvals', icon: PieChart },
   { name: 'reports', label: 'Reports', icon: PieChart },
   { name: 'settings', label: 'Settings', icon: EllipsisVertical },
 ];
 
+// Dispatch only needs two screens: the dashboard and the scan-and-load desk.
 export const DISPATCH_TABS: NavItem[] = [
-  { name: 'home', label: 'Home', icon: Home },
-  { name: 'orders', label: 'Orders', icon: Truck },
-  { name: 'scan-check', label: 'Scan', icon: ScanLine },
-  { name: 'history', label: 'History', icon: History },
-  { name: 'settings', label: 'Settings', icon: EllipsisVertical },
+  { name: 'home', label: 'Dashboard', icon: Home },
+  { name: 'scan-check', label: 'Scan & Load', icon: ScanLine },
 ];
 
 export const tabsByRole: Record<Role, NavItem[]> = {

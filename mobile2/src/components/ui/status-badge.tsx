@@ -16,6 +16,8 @@ export type BadgeStatus =
   | 'DISPATCH_APPROVED'
   | 'rejected'
   | 'REJECTED'
+  | 'cancelled'
+  | 'CANCELLED'
   | 'loading'
   | 'LOADING'
   | 'dispatched'
@@ -42,7 +44,7 @@ function getPalette(status: string): { container: string; text: string } {
   if (s === 'PENDING' || s === 'DISPATCH_ORDER_RAISED') {
     return { container: 'bg-[#E3E9FF]', text: 'text-[#263A9A]' };
   }
-  if (s === 'REJECTED' || s === 'FAILED' || s === 'QC_FAILED' || s === 'NOT_DISPATCHED' || s === 'CLOSED_NOT_DISPATCHED') {
+  if (s === 'REJECTED' || s === 'CANCELLED' || s === 'FAILED' || s === 'QC_FAILED' || s === 'NOT_DISPATCHED' || s === 'CLOSED_NOT_DISPATCHED') {
     return { container: 'bg-[#FFE5E7]', text: 'text-[#E34B57]' };
   }
   return { container: 'bg-[#F1F5F9]', text: 'text-[#475569]' };

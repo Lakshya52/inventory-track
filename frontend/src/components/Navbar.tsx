@@ -23,7 +23,6 @@ const navSections: { title: string; items: NavItem[] }[] = [
       { label: 'Clients', path: '/clients', icon: '🏢', roles: ['ADMIN'] },
       { label: 'Vendors', path: '/vendors', icon: '🏭', roles: ['ADMIN'] },
       { label: 'Users', path: '/users', icon: '👥', roles: ['ADMIN'] },
-      { label: 'Products', path: '/products', icon: '📦', roles: ['ADMIN'] },
       { label: 'Shelf Locations', path: '/shelf-locations', icon: '📍', roles: ['ADMIN'] },
       { label: 'Batches', path: '/batches', icon: '🏷', roles: ['ADMIN', 'QC'] },
     ],

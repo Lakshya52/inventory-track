@@ -1,7 +1,14 @@
 import { Request, Response } from 'express';
-import { randomBytes } from 'crypto';
 import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { contains, EntityId, mapByIds } from '../services/queryService';
+
+const QC_PASSED_STATUSES = new Set([
+  'QC_PASSED',
+  'DISPATCH_ORDER_RAISED',
+  'DISPATCH_APPROVED',
+  'LOADING',
+  'DISPATCHED',
+]);
 
 async function jobStats(
   ctx: DbContext,
@@ -47,12 +54,51 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
   );
   const stats = await jobStats(ctx, jobs.map((job) => job.id));
 
+  const jobIds = jobs.map((job) => job.id);
+  const firstLabels = jobIds.length
+    ? await ctx.aggregate('qr_labels', [
+        { $match: { print_job_id: { $in: jobIds } } },
+        { $sort: { serial_no: 1 } },
+        {
+          $group: {
+            _id: '$print_job_id',
+            batch_id: { $first: '$batch_id' },
+            printed_count: {
+              $sum: { $cond: [{ $gt: [{ $ifNull: ['$print_count', 0] }, 0] }, 1, 0] },
+            },
+          },
+        },
+      ])
+    : [];
+  const batches = await mapByIds<Record<string, any>>(
+    ctx,
+    'batches',
+    firstLabels.map((row) => row.batch_id)
+  );
+  const groupKeys = [...new Set(
+    [...batches.values()]
+      .map((batch) => batch.batch_group_id)
+      .filter((key) => key !== null && key !== undefined && key !== '')
+  )];
+  const groupRows = groupKeys.length
+    ? await ctx.find('batch_groups', { group_key: { $in: groupKeys } }, {
+        projection: { _id: 0, group_key: 1, batch_number: 1, status: 1 },
+      })
+    : [];
+  const groupsByKey = new Map(groupRows.map((group) => [String(group.group_key), group]));
+  const labelInfoByJob = new Map(firstLabels.map((row) => [idKey(row._id), row]));
+
   return jobs.map((job) => {
     const product = products.get(idKey(job.product_id));
     const creator = job.created_by_role === 'ADMIN'
       ? adminCreators.get(idKey(job.created_by))
       : qcCreators.get(idKey(job.created_by));
     const jobStat = stats.get(idKey(job.id));
+    const labelInfo = labelInfoByJob.get(idKey(job.id));
+    const batch = labelInfo ? batches.get(idKey(labelInfo.batch_id)) : undefined;
+    const group = batch?.batch_group_id ? groupsByKey.get(String(batch.batch_group_id)) : undefined;
+    const batchStatus = String(group?.status || batch?.status || '').toUpperCase();
+    const printedCount = Number(labelInfo?.printed_count || 0);
     return {
       ...job,
       product_name: product?.name ?? null,
@@ -61,13 +107,25 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
       total_prints: jobStat?.total_prints ?? 0,
       label_count: jobStat?.label_count ?? 0,
       last_printed_at: jobStat?.last_printed_at ?? null,
+      batch_group_id: batch?.batch_group_id ?? null,
+      batch_number: group?.batch_number ?? batch?.parent_batch_number ?? batch?.batch_number ?? null,
+      batch_status: batchStatus || null,
+      printed_count: printedCount,
+      labels_printed: printedCount > 0,
+      qc_ready: QC_PASSED_STATUSES.has(batchStatus),
+      can_print_initial: printedCount === 0 && QC_PASSED_STATUSES.has(batchStatus),
     };
   });
 }
 
-async function jobDetail(id: EntityId): Promise<{ job: Record<string, any>; labels: Record<string, any>[] } | null> {
+async function jobDetail(
+  id: EntityId,
+  tenantId?: EntityId
+): Promise<{ job: Record<string, any>; labels: Record<string, any>[] } | null> {
   const ctx = await getContext();
-  const job = await ctx.findOne('qr_print_jobs', { id }, { projection: { _id: 0 } });
+  const jobFilter: Record<string, any> = { id };
+  if (tenantId !== undefined && tenantId !== null) jobFilter.tenant_id = tenantId;
+  const job = await ctx.findOne('qr_print_jobs', jobFilter, { projection: { _id: 0 } });
   if (!job) return null;
 
   const [enrichedJob] = await enrichJobs(ctx, [job]);
@@ -115,86 +173,97 @@ async function jobDetail(id: EntityId): Promise<{ job: Record<string, any>; labe
   };
 }
 
-export async function create(req: Request, res: Response): Promise<void> {
-  const productId = req.body.product_id as EntityId;
-  const quantity = Number(req.body.quantity);
-  const batchId = req.body.batch_id ? (req.body.batch_id as EntityId) : null;
-
-  if (!isValidId(productId)) {
-    res.status(400).json({ error: 'Select a valid product' });
-    return;
-  }
-  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10_000) {
-    res.status(400).json({ error: 'Quantity must be a whole number between 1 and 10,000' });
-    return;
-  }
-  if (batchId !== null && !isValidId(batchId)) {
-    res.status(400).json({ error: 'Invalid batch id' });
-    return;
-  }
-
-  const ctx = await getContext();
-  const product = await ctx.findOne('products', { id: productId }, {
-    projection: { _id: 0, id: 1, name: 1, sku: 1 },
+export async function create(_req: Request, res: Response): Promise<void> {
+  res.status(410).json({
+    error: 'QR labels are generated with each batch. Dispatch prints them after QC passes.',
   });
-  if (!product) {
-    res.status(404).json({ error: 'Product not found' });
+}
+
+export async function printInitial(req: Request, res: Response): Promise<void> {
+  const id = req.params.id;
+  if (!isValidId(id)) {
+    res.status(400).json({ error: 'Invalid QR label job id' });
     return;
   }
 
-  const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
-  const result = await withTransaction(async (tx: DbContext) => {
-    const jobId = await tx.insert('qr_print_jobs', {
-      job_code: jobCode,
-      product_id: productId,
-      quantity,
-      batch_id: batchId,
-      created_by: req.user!.userId,
-      created_by_role: req.user!.role,
+  const result = await withTransaction(async (ctx: DbContext) => {
+    const job = await ctx.findOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId }, { projection: { _id: 0 } });
+    if (!job) return null;
+
+    const labels = await ctx.find('qr_labels', { print_job_id: id }, {
+      sort: { serial_no: 1 },
+      projection: { _id: 0 },
     });
-    const labelDocuments = Array.from({ length: quantity }, (_, index) => ({
-      print_job_id: jobId,
-      batch_id: batchId,
-      // Printed QR payload: job code + unit serial, e.g. QRJ-20261103-07BDD3-0001.
-      qr_value: `${jobCode}-${String(index + 1).padStart(4, '0')}`,
-      serial_no: index + 1,
-      print_count: 1,
-      last_printed_at: now(),
-    }));
-    const labelIds = await tx.insertMany('qr_labels', labelDocuments);
-    await tx.insert('activity_logs', {
+    if (labels.length === 0) return { empty: true as const };
+    if (labels.some((label) => Number(label.print_count || 0) > 0)) {
+      return { alreadyPrinted: true as const };
+    }
+
+    const firstBatch = labels[0].batch_id
+      ? await ctx.findOne('batches', { id: labels[0].batch_id }, { projection: { _id: 0 } })
+      : null;
+    const group = firstBatch?.batch_group_id
+      ? await ctx.findOne('batch_groups', { group_key: firstBatch.batch_group_id }, {
+          projection: { _id: 0, group_key: 1, batch_number: 1, status: 1 },
+        })
+      : null;
+    const batchStatus = String(group?.status || firstBatch?.status || '').toUpperCase();
+    if (!QC_PASSED_STATUSES.has(batchStatus)) {
+      return { notReady: true as const, status: batchStatus || 'PENDING_QC' };
+    }
+
+    for (const label of labels) {
+      await ctx.updateOne('qr_labels', { id: label.id }, {
+        $set: { print_count: 1, last_printed_at: now() },
+      });
+    }
+
+    // Mark the batches as "QR printed" so a dispatch order can only be raised
+    // for stock whose labels have physically been printed.
+    const printedAt = now();
+    const printedBatchIds = [...new Set(
+      labels.map((label) => label.batch_id).filter((batchId) => batchId !== null && batchId !== undefined)
+    )];
+    for (const batchId of printedBatchIds) {
+      await ctx.updateOne('batches', { id: batchId }, {
+        $set: { qr_printed_at: printedAt },
+      });
+    }
+
+    await ctx.insert('activity_logs', {
       user_id: req.user!.userId,
       user_name: req.user!.name,
       user_role: req.user!.role,
-      action: 'QR_JOB_CREATED',
-      description: `${quantity} QR label${quantity === 1 ? '' : 's'} created for ${product.name}`,
+      action: 'QR_LABELS_PRINTED',
+      description: `${labels.length} QR label${labels.length === 1 ? '' : 's'} printed for ${job.job_code} after QC passed`,
     });
-    return {
-      jobId,
-      labels: labelDocuments.map((label, index) => ({
-        id: labelIds[index],
-        qr_value: label.qr_value,
-        serial_no: label.serial_no,
-        batch_id: label.batch_id,
-        print_count: label.print_count,
-        last_printed_at: label.last_printed_at,
-      })),
-    };
+
+    return { jobId: id, selectedIds: labels.map((label) => label.id as EntityId) };
   });
 
-  res.status(201).json({
-    job: {
-      id: result.jobId,
-      job_code: jobCode,
-      product_id: productId,
-      product_name: product.name,
-      product_sku: product.sku,
-      quantity,
-      batch_id: batchId,
-      created_by: req.user!.userId,
-      created_by_role: req.user!.role,
-    },
-    labels: result.labels,
+  if (!result) {
+    res.status(404).json({ error: 'QR label job not found' });
+    return;
+  }
+  if ('notReady' in result) {
+    res.status(409).json({ error: 'QR labels can be printed only after QC passes this batch.' });
+    return;
+  }
+  if ('alreadyPrinted' in result) {
+    res.status(409).json({ error: 'These labels were already printed. Request a reprint for another copy.' });
+    return;
+  }
+  if ('empty' in result) {
+    res.status(400).json({ error: 'This job has no QR labels to print' });
+    return;
+  }
+
+  const detail = await jobDetail(result.jobId);
+  const selectedIdSet = new Set(result.selectedIds.map(idKey));
+  res.json({
+    ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(idKey(label.id))) } : {}),
+    selected_ids: result.selectedIds,
+    selected_count: result.selectedIds.length,
   });
 }
 
@@ -202,7 +271,8 @@ export async function list(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
   const ctx = await getContext();
 
-  const filter: Record<string, any> = {};
+  // Print jobs are tenant-scoped: a workspace never sees another one's jobs.
+  const filter: Record<string, any> = { tenant_id: req.user!.tenantId };
   if (q) {
     // Only job codes and label QR values are searchable. Product names are
     // intentionally excluded: one product can own thousands of QR labels, so a
@@ -236,7 +306,7 @@ export async function getById(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Invalid QR label job id' });
     return;
   }
-  const detail = await jobDetail(req.params.id);
+  const detail = await jobDetail(req.params.id, req.user!.tenantId);
   if (!detail) {
     res.status(404).json({ error: 'QR label job not found' });
     return;
@@ -259,7 +329,8 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     ? req.body.label_ids.filter((value: any) => isValidId(value))
     : [];
   const approvedRequestId = req.body.approved_request_id ? String(req.body.approved_request_id) : '';
-  if (req.user?.role === 'QC' && !approvedRequestId) {
+  const isAdmin = req.user?.role === 'ADMIN';
+  if (!isAdmin && !approvedRequestId) {
     res.status(403).json({ error: 'An administrator-approved reprint request is required.' });
     return;
   }
@@ -272,11 +343,11 @@ export async function reprint(req: Request, res: Response): Promise<void> {
         tenant_id: req.user!.tenantId,
         qr_job_id: id,
         status: 'APPROVED',
-        ...(req.user?.role === 'QC' ? { requested_by: req.user.userId } : {}),
+        ...(isAdmin ? {} : { requested_by: req.user!.userId }),
       });
       if (!approvedRequest) return { forbidden: true as const };
     }
-    const job = await ctx.findOne('qr_print_jobs', { id }, { projection: { _id: 0 } });
+    const job = await ctx.findOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId }, { projection: { _id: 0 } });
     if (!job) return null;
 
     let labels: Record<string, any>[];
@@ -313,6 +384,30 @@ export async function reprint(req: Request, res: Response): Promise<void> {
         $inc: { print_count: 1 },
         $set: { last_printed_at: now() },
       });
+    } else {
+      // An approved reprint request is single use: the print itself consumes
+      // the approval, so it can never be replayed for a second copy.
+      for (const label of labels) {
+        await ctx.updateOne('qr_labels', { id: label.id }, {
+          $inc: { print_count: 1 },
+          $set: { last_printed_at: now() },
+        });
+      }
+      const consumed = await ctx.updateOne(
+        'qr_reprint_requests',
+        { id: approvedRequest.id, status: 'APPROVED' },
+        {
+          $set: {
+            status: 'FULFILLED',
+            fulfilled_by: req.user!.userId,
+            fulfilled_by_name: req.user!.name,
+            fulfilled_at: now(),
+          },
+        }
+      );
+      if (consumed.matchedCount !== 1) {
+        return { forbidden: true as const };
+      }
     }
 
     await ctx.insert('activity_logs', {

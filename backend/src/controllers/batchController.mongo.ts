@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { getContext, idKey, isValidId, now, parseDateValue, withTransaction } from '../config/database';
-import { batchQrStats, contains, EntityId, mapByIds } from '../services/queryService';
-import { buildBatchNumbers } from '../utils/batchNumbers';
+import { batchPrintStats, batchQrStats, contains, EntityId, mapByIds } from '../services/queryService';
+import { buildBatchNumbers, skuFromBatchNumber } from '../utils/batchNumbers';
 
 type StoredQrLabel = {
   id: EntityId;
@@ -343,14 +343,19 @@ export async function list(_req: Request, res: Response): Promise<void> {
   const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', batches.map((batch) => batch.vendor_id));
   const grades = await mapByIds<Record<string, any>>(ctx, 'grades', batches.map((batch) => batch.grade_id));
   const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', batches.map((batch) => batch.bag_quantity_id));
+  const printStats = await batchPrintStats(ctx, batches.map((batch) => batch.id));
   res.json(batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
     const location = locations.get(idKey(batch.shelf_location_id));
     const stats = qr.get(idKey(batch.id));
+    const printed = printStats.get(idKey(batch.id));
+    // Legacy batches can outlive their product row. The SKU still lives in the
+    // batch number, so the stock stays identifiable instead of showing blank.
+    const fallbackSku = skuFromBatchNumber(batch.batch_number);
     return {
       ...batch,
       product_name: product?.name ?? null,
-      product_sku: product?.sku ?? null,
+      product_sku: product?.sku ?? fallbackSku,
       vendor_name: vendors.get(idKey(batch.vendor_id))?.name ?? null,
       grade_name: grades.get(idKey(batch.grade_id))?.name ?? product?.grade ?? null,
       bag_quantity_name: bagQuantities.get(idKey(batch.bag_quantity_id))?.name ?? null,
@@ -361,6 +366,8 @@ export async function list(_req: Request, res: Response): Promise<void> {
       warehouse_name: location?.warehouse ?? null,
       qr_count: stats?.count ?? 0,
       qr_job_id: stats?.jobId ?? null,
+      printed_label_count: printed?.printed ?? 0,
+      qr_printed: Boolean(printed && printed.total > 0 && printed.printed >= printed.total),
       reserved_quantity: reservedByBatch.get(idKey(batch.id)) || 0,
       recalled_quantity: recalledByBatch.get(idKey(batch.id)) || 0,
       available_quantity: Math.max(0, Number(batch.quantity) - (reservedByBatch.get(idKey(batch.id)) || 0) - (recalledByBatch.get(idKey(batch.id)) || 0)),

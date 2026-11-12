@@ -3,16 +3,16 @@ import type { Href } from "expo-router";
 import { useRouter } from "expo-router";
 import {
 	CircleCheck,
-	EllipsisVertical,
 	FileClock,
-	History,
 	Package,
 	Play,
+	Plus,
 	ScanLine,
 	Truck,
 } from "lucide-react-native";
 import { Pressable, RefreshControl, ScrollView, View } from "react-native";
 
+import { RaiseOrderSheet } from "@/components/dispatch/raise-order-sheet";
 import { AppText } from "@/components/ui/app-text";
 import { BrandHeader } from "@/components/ui/brand";
 import { QuickLink } from "@/components/ui/cards";
@@ -32,7 +32,7 @@ export default function DispatchHomeScreen() {
 		dispatchedToday: 0,
 		dispatchedThisWeek: 0,
 		readyToDispatch: 0,
-		pendingOrders: 0,
+		cancelledOrders: 0,
 		approvedOrders: 0,
 	});
 	const [activeSession, setActiveSession] = useState<LoadingSession | null>(
@@ -40,6 +40,7 @@ export default function DispatchHomeScreen() {
 	);
 	const [recentOrders, setRecentOrders] = useState<DispatchOrder[]>([]);
 	const [refreshing, setRefreshing] = useState(false);
+	const [raiseVisible, setRaiseVisible] = useState(false);
 
 	const go = (href: Href) => router.push(href);
 
@@ -124,22 +125,22 @@ export default function DispatchHomeScreen() {
 					/>
 
 					<Pressable
-						onPress={() => go("/(dispatch)/orders")}
+						onPress={() => go("/(dispatch)/scan-check")}
 						className="mt-5 overflow-hidden rounded-[26px] bg-navy p-5"
 						style={({ pressed }) => pressed ? { opacity: 0.9 } : undefined}
 					>
 						<View className="flex-row items-start justify-between">
 							<View className="flex-1 pr-3">
-								<AppText className="text-[11px] font-manrope-bold uppercase tracking-[1.5px] text-blue-200">Dispatch desk</AppText>
-								<AppText className="mt-2 text-[22px] leading-[28px] font-manrope-extrabold text-white">Keep every shipment moving.</AppText>
-								<AppText className="mt-2 text-[12px] leading-[18px] text-blue-100">Review requests, prepare loads, and track what has left the warehouse.</AppText>
+								<AppText className="text-[11px] font-manrope-bold uppercase tracking-[1.5px] text-blue-200">Scan &amp; Load</AppText>
+								<AppText className="mt-2 text-[22px] leading-[28px] font-manrope-extrabold text-white">Scan the truck.</AppText>
+								<AppText className="mt-2 text-[12px] leading-[18px] text-blue-100">Open one of your dispatch orders and scan its QR labels, or recall a label you no longer want on the truck.</AppText>
 							</View>
 							<View className="h-12 w-12 items-center justify-center rounded-2xl bg-white/15">
-								<Truck size={24} color="#FFFFFF" />
+								<ScanLine size={24} color="#FFFFFF" />
 							</View>
 						</View>
 						<View className="mt-4 self-start rounded-full bg-white px-4 py-2">
-							<AppText className="text-[12px] font-manrope-bold text-navy">Open orders</AppText>
+							<AppText className="text-[12px] font-manrope-bold text-navy">Open Scan &amp; Load</AppText>
 						</View>
 					</Pressable>
 
@@ -204,17 +205,17 @@ export default function DispatchHomeScreen() {
 					{/* METRIC STAT CARDS */}
 					<View className="mt-5 flex-row flex-wrap justify-between gap-y-3">
 						<StatCard
-							icon={FileClock}
-							value={String(stats.pendingOrders ?? 0)}
-							label="Pending Requests"
-							tone="peach"
+							icon={CircleCheck}
+							value={String(stats.approvedOrders ?? 0)}
+							label="Ready to Load"
+							tone="mint"
 							className="w-[48.2%]"
 						/>
 						<StatCard
-							icon={CircleCheck}
-							value={String(stats.approvedOrders ?? 0)}
-							label="Approved to Load"
-							tone="mint"
+							icon={Package}
+							value={String(stats.readyToDispatch ?? 0)}
+							label="Ready Batches"
+							tone="purple"
 							className="w-[48.2%]"
 						/>
 						<StatCard
@@ -225,43 +226,29 @@ export default function DispatchHomeScreen() {
 							className="w-[48.2%]"
 						/>
 						<StatCard
-							icon={Package}
-							value={String(stats.readyToDispatch ?? 0)}
-							label="Ready Batches"
-							tone="purple"
+							icon={FileClock}
+							value={String(stats.cancelledOrders ?? 0)}
+							label="Cancelled"
+							tone="peach"
 							className="w-[48.2%]"
 						/>
 					</View>
 
-					{/* QUICK LINKS */}
-					<SectionLabel className="mt-6">Quick Links</SectionLabel>
+					{/* QUICK ACTIONS */}
+					<SectionLabel className="mt-6">Quick Actions</SectionLabel>
 					<View className="mt-3 gap-2">
 						<View className="flex-row gap-2">
-							<QuickLink
-								icon={Truck}
-								label="Orders & Requests"
-								tone="mint"
-								onPress={() => go("/(dispatch)/orders")}
-							/>
 							<QuickLink
 								icon={ScanLine}
 								label="Scan & Load"
 								tone="blue"
 								onPress={() => go("/(dispatch)/scan-check")}
 							/>
-						</View>
-						<View className="flex-row gap-2">
 							<QuickLink
-								icon={History}
-								label="Dispatch History"
-								tone="purple"
-								onPress={() => go("/(dispatch)/history")}
-							/>
-							<QuickLink
-								icon={EllipsisVertical}
-								label="Settings"
-								tone="peach"
-								onPress={() => go("/(dispatch)/settings")}
+								icon={Plus}
+								label="New Dispatch Order"
+								tone="mint"
+								onPress={() => setRaiseVisible(true)}
 							/>
 						</View>
 					</View>
@@ -269,10 +256,10 @@ export default function DispatchHomeScreen() {
 					{/* RECENT ORDERS FEED */}
 					<View className="mt-6">
 						<View className="flex-row items-center justify-between mb-3">
-							<SectionLabel>Recent Dispatch Orders</SectionLabel>
-							<Pressable onPress={() => go("/(dispatch)/orders")}>
+							<SectionLabel>Your Recent Dispatch Orders</SectionLabel>
+							<Pressable onPress={() => go("/(dispatch)/scan-check")}>
 								<AppText className="text-[11.5px] font-manrope-bold text-navy">
-									View All
+									Scan &amp; Load
 								</AppText>
 							</Pressable>
 						</View>
@@ -283,8 +270,7 @@ export default function DispatchHomeScreen() {
 									variant="caption"
 									className="text-[11px]"
 								>
-									No dispatch orders yet. Tap Orders to
-									create a request.
+									No dispatch orders yet. Use New Dispatch Order to create one.
 								</AppText>
 							</View>
 						) : (
@@ -297,7 +283,7 @@ export default function DispatchHomeScreen() {
 										<Pressable
 											key={order.id}
 											onPress={() =>
-												go("/(dispatch)/orders")
+												go("/(dispatch)/scan-check")
 											}
 											className="rounded-xl border border-line bg-white p-3.5"
 											style={({ pressed }) =>
@@ -328,22 +314,17 @@ export default function DispatchHomeScreen() {
 												<StatusBadge
 													status={s}
 													label={
-														s === "PENDING"
-															? "Pending QC"
+														s === "APPROVED" ||
+														s === "DISPATCH_APPROVED"
+															? "Ready to Load"
 															: s ===
-																		"APPROVED" ||
-																  s ===
-																		"DISPATCH_APPROVED"
-																? "Approved"
-																: s ===
-																			"CLOSED_DISPATCHED" ||
-																	  s ===
-																			"DISPATCHED"
-																	? "Dispatched"
-																	: s ===
-																		  "REJECTED"
-																		? "Rejected"
-																		: s
+															  "CLOSED_DISPATCHED" ||
+															  s === "DISPATCHED"
+																? "Dispatched"
+																: s === "CANCELLED" ||
+															    s === "REJECTED"
+																	? "Cancelled"
+																	: s
 													}
 												/>
 											</View>
@@ -355,6 +336,13 @@ export default function DispatchHomeScreen() {
 					</View>
 				</View>
 			</ScrollView>
+
+			<RaiseOrderSheet
+				key={raiseVisible ? 'raise-open' : 'raise-closed'}
+				visible={raiseVisible}
+				onClose={() => setRaiseVisible(false)}
+				onRaised={() => void loadData()}
+			/>
 		</View>
 	);
 }

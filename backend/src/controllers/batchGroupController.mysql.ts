@@ -25,6 +25,34 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   if (items.reduce((sum, item) => sum + item.quantity, 0) > 10_000) { res.status(400).json({ error: 'A single batch can contain no more than 10,000 QR-labelled units' }); return; }
   if (new Set(items.map((item) => item.product_id)).size !== items.length) { res.status(400).json({ error: 'Each product can appear only once in a batch' }); return; }
   const products = new Map<number, any>();
+  // Idempotency: a retried submission with the same client_operation_id
+  // returns the batch that was already created instead of a duplicate.
+  const operationId = typeof req.body?.client_operation_id === 'string'
+    ? req.body.client_operation_id.trim().slice(0, 64)
+    : '';
+  if (operationId) {
+    const existing = await query<RowDataPacket[]>('SELECT * FROM batch_groups WHERE client_operation_id = ? AND tenant_id = ? LIMIT 1', [operationId, req.user!.tenantId]);
+    if (existing[0]) {
+      const existingBatches = await query<RowDataPacket[]>('SELECT * FROM batches WHERE batch_group_id = ? ORDER BY batch_number ASC', [existing[0].group_key]);
+      const batchIds = existingBatches.map((batch: any) => Number(batch.id));
+      const existingLabels = batchIds.length
+        ? await query<RowDataPacket[]>('SELECT * FROM qr_labels WHERE batch_id IN (?) ORDER BY serial_no ASC', [batchIds])
+        : [];
+      res.status(200).json({
+        id: existing[0].group_key,
+        batch_group_id: existing[0].group_key,
+        batch_number: existing[0].batch_number,
+        product_count: existing[0].product_count,
+        total_quantity: existing[0].total_quantity,
+        status: existing[0].status,
+        duplicate: true,
+        batches: existingBatches,
+        labels: existingLabels,
+        message: `Batch ${existing[0].batch_number} was already created.`,
+      });
+      return;
+    }
+  }
   for (const item of items) {
     const rows = await query<RowDataPacket[]>('SELECT id, name, sku, price FROM products WHERE id = ?', [item.product_id]);
     if (!rows[0]) { res.status(404).json({ error: `Product ${item.product_id} was not found` }); return; }
@@ -103,7 +131,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
           throw Object.assign(new Error(`${warehouse.name} has only ${Math.max(0, Number(warehouse.capacity) - current)} units of capacity remaining.`), { statusCode: 409 });
         }
       }
-      await conn.execute('INSERT INTO batch_groups (group_key, batch_number, tenant_id, created_by, product_count, total_quantity, status) VALUES (?, ?, ?, ?, ?, ?, \'QC_PASSED\')', [groupId, batchNumber, req.user!.tenantId, req.user!.userId, items.length, items.reduce((sum, item) => sum + item.quantity, 0)]);
+      await conn.execute('INSERT INTO batch_groups (group_key, batch_number, tenant_id, created_by, product_count, total_quantity, status, client_operation_id) VALUES (?, ?, ?, ?, ?, ?, \'PENDING_QC\', ?)', [groupId, batchNumber, req.user!.tenantId, req.user!.userId, items.length, items.reduce((sum, item) => sum + item.quantity, 0), operationId || null]);
       const lines: any[] = [];
       const allLabels: any[] = [];
       for (const [index, item] of items.entries()) {
@@ -111,13 +139,13 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         const childNumbers = (locationsByProduct.get(item.product_id) || []).map((_, serial) =>
           `${String(product.sku).slice(0, 30)}-${dateStamp}-${groupId.slice(0, 6)}-${String(index + 1).padStart(2, '0')}-${String(serial + 1).padStart(4, '0')}`);
         const jobCode = `QRJ-${dateStamp}-${randomBytes(3).toString('hex').toUpperCase()}`;
-        const [jobInsert] = await conn.execute<any>('INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role) VALUES (?, ?, ?, ?, ?)', [jobCode, item.product_id, item.quantity, req.user!.userId, req.user!.role]);
+        const [jobInsert] = await conn.execute<any>('INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role, tenant_id) VALUES (?, ?, ?, ?, ?, ?)', [jobCode, item.product_id, item.quantity, req.user!.userId, req.user!.role, req.user!.tenantId]);
         const jobId = Number(jobInsert.insertId);
         const labels: any[] = [];
         for (const [serial, location] of (locationsByProduct.get(item.product_id) || []).entries()) {
           const [batchInsert] = await conn.execute<any>(
             `INSERT INTO batches (product_id, batch_number, batch_group_id, parent_batch_number, tenant_id, quantity, package_quantity, uom, avg_standard_quantity, unit_price, shelf_location_id, storage_location, status, barcode_value)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'QC_PASSED', ?)`,
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'PENDING_QC', ?)`,
             [item.product_id, childNumbers[serial], groupId, batchNumber, req.user!.tenantId, item.package_quantity, item.uom, item.avg_standard_quantity ?? null, item.unit_price || Number(product.price) || 0, location.shelf_location_id, location.location_code, `QC:${randomUUID()}`],
           );
           const batchId = Number(batchInsert.insertId);
@@ -127,7 +155,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
             serial_no: serial + 1,
           });
         }
-        const values = labels.map(() => '(?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))').join(', ');
+        const values = labels.map(() => '(?, ?, ?, ?, 0, NULL)').join(', ');
         await conn.execute(`INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at) VALUES ${values}`, labels.flatMap((label) => [jobId, label.batch_id, label.qr_value, label.serial_no]));
         const [stored] = await conn.execute<RowDataPacket[]>('SELECT id, qr_value, serial_no FROM qr_labels WHERE print_job_id = ? ORDER BY serial_no', [jobId]);
         const resultLabels = stored.map((label, labelIndex) => {
@@ -138,13 +166,9 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
             product_name: product.name, product_sku: product.sku,
             package_quantity: item.package_quantity, uom: item.uom, quantity: item.quantity,
             warehouse_name: product.warehouse_name, storage_location_id: String(location.shelf_location_id),
-            storage_location: location.location_code, print_count: 1,
+            storage_location: location.location_code, print_count: 0,
           };
         });
-        for (const label of labels) {
-          await conn.execute(`INSERT INTO qc_records (batch_id, tester_id, result, method, remarks) VALUES (?, ?, 'PASS', 'AUTO_PASS', ?)`, [label.batch_id, req.user!.userId, `Created in ${batchNumber}`]);
-        }
-        await conn.execute('UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ?', [item.quantity, item.product_id]);
         lines.push(...labels.map((label, serial) => {
           const location = (locationsByProduct.get(item.product_id) || [])[serial];
           return {
@@ -159,10 +183,10 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         }));
         allLabels.push(...resultLabels);
       }
-      await conn.execute(`INSERT INTO activity_logs (user_id, user_name, user_role, action, description) VALUES (?, ?, ?, 'BATCH_CREATED', ?)`, [req.user!.userId, req.user!.name, req.user!.role, `Batch ${batchNumber} created with ${items.length} products and ${allLabels.length} QR labels`]);
+      await conn.execute(`INSERT INTO activity_logs (user_id, user_name, user_role, action, description) VALUES (?, ?, ?, 'BATCH_CREATED', ?)`, [req.user!.userId, req.user!.name, req.user!.role, `Batch ${batchNumber} created with ${items.length} products and ${allLabels.length} units; waiting for QC review`]);
       return { lines, allLabels };
     });
-    res.status(201).json({ id: groupId, batch_group_id: groupId, batch_number: batchNumber, product_count: items.length, total_quantity: created.allLabels.length, batches: created.lines, labels: created.allLabels, message: `Batch ${batchNumber} created with ${items.length} products.` });
+    res.status(201).json({ id: groupId, batch_group_id: groupId, batch_number: batchNumber, product_count: items.length, total_quantity: created.allLabels.length, batches: created.lines, labels: created.allLabels, status: 'PENDING_QC', message: `Batch ${batchNumber} created with ${items.length} products and sent to QC for review.` });
   } catch (error: any) {
     console.error('Could not create product batch group', error);
     res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not create the batch' });

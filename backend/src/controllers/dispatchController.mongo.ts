@@ -281,7 +281,8 @@ export async function stats(req: Request, res: Response): Promise<void> {
   const readyToDispatch = dispatchReadyBatches.length;
 
   const orderFilter: Record<string, any> = personal ? { raised_by: user.userId } : {};
-  const pendingOrdersCount = await ctx.count('dispatch_orders', { ...orderFilter, status: 'PENDING' });
+  // Orders need no approval, so nothing sits in a pending queue any more.
+  const cancelledOrdersCount = await ctx.count('dispatch_orders', { ...orderFilter, status: 'CANCELLED' });
 
   const approvedBatches = await ctx.find('batches', { status: 'DISPATCH_APPROVED' }, { projection: { id: 1 } });
   const approvedFilter: Record<string, any> = {
@@ -293,8 +294,8 @@ export async function stats(req: Request, res: Response): Promise<void> {
   const approvedOrdersCount = await ctx.count('dispatch_orders', approvedFilter);
 
   const readyBatchesRaw = dispatchReadyBatches.slice(0, 10);
-  const pendingOrdersRaw = await ctx.find('dispatch_orders', { ...orderFilter, status: 'PENDING' }, {
-    sort: { created_at: 1 },
+  const cancelledOrdersRaw = await ctx.find('dispatch_orders', { ...orderFilter, status: 'CANCELLED' }, {
+    sort: { created_at: -1 },
     limit: 10,
     projection: { _id: 0 },
   });
@@ -316,9 +317,9 @@ export async function stats(req: Request, res: Response): Promise<void> {
     projection: { _id: 0 },
   });
 
-  const [readyBatchList, pendingOrdersList, approvedOrdersList, recentRecords, todayRecords] = await Promise.all([
+  const [readyBatchList, cancelledOrdersList, approvedOrdersList, recentRecords, todayRecords] = await Promise.all([
     enrichReadyBatches(ctx, readyBatchesRaw),
-    enrichOrders(ctx, pendingOrdersRaw),
+    enrichOrders(ctx, cancelledOrdersRaw),
     enrichOrders(ctx, approvedOrdersRaw),
     enrichDispatchRecords(ctx, recentRecordsRaw, { withDispatcherName: true }),
     enrichDispatchRecords(ctx, todayRecordsRaw, { withDispatcherName: true }),
@@ -330,12 +331,12 @@ export async function stats(req: Request, res: Response): Promise<void> {
     dispatchedToday,
     dispatchedThisWeek,
     readyToDispatch,
-    pendingOrders: pendingOrdersCount,
+    cancelledOrders: cancelledOrdersCount,
     approvedOrders: approvedOrdersCount,
     myDispatchedToday: dispatchedToday,
     myTotalDispatches: totalDispatches,
     readyBatches: readyBatchList,
-    pendingOrdersList,
+    cancelledOrdersList,
     approvedOrdersList,
     recentRecords,
     todayRecords,

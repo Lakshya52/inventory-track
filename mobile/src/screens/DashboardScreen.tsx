@@ -84,7 +84,7 @@ export default function DashboardScreen() {
             currentStats = {
               ...localStats,
               ready: serverStats.readyToDispatch ?? localStats.ready,
-              pendingOrders: serverStats.pendingOrders ?? localStats.pendingOrders,
+              cancelledOrders: serverStats.cancelledOrders ?? localStats.cancelledOrders,
               approvedOrders: serverStats.approvedOrders ?? localStats.approvedOrders,
               dispatchedToday: serverStats.dispatchedToday ?? localStats.dispatchedToday,
               totalDispatches: serverStats.myTotalDispatches ?? localStats.totalDispatches,
@@ -134,8 +134,8 @@ export default function DashboardScreen() {
   ];
 
   const dispatchCards = [
-    { label: 'Approved', value: stats?.approvedOrders ?? 0, icon: 'shield-checkmark-outline' as const, accent: colors.info, soft: colors.infoSoft },
-    { label: 'Awaiting Approval', value: stats?.pendingOrders ?? 0, icon: 'hourglass-outline' as const, accent: colors.warning, soft: colors.warningSoft },
+    { label: 'Ready to Load', value: stats?.approvedOrders ?? 0, icon: 'shield-checkmark-outline' as const, accent: colors.info, soft: colors.infoSoft },
+    { label: 'Cancelled', value: stats?.cancelledOrders ?? 0, icon: 'hourglass-outline' as const, accent: colors.warning, soft: colors.warningSoft },
     { label: 'Ready to Raise', value: stats?.ready ?? 0, icon: 'cube-outline' as const, accent: colors.purple, soft: colors.purpleSoft },
     { label: 'Dispatched Today', value: stats?.dispatchedToday ?? 0, icon: 'car-outline' as const, accent: colors.success, soft: colors.successSoft },
   ];

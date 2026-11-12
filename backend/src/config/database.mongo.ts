@@ -196,6 +196,13 @@ function normalizeIdCondition(field: string, value: unknown): unknown {
         continue;
       }
       if (key === '$eq' || key === '$ne') {
+        // A null comparison is not an id candidate: keep it verbatim so
+        // `$ne: null` means "the field is set to something other than null"
+        // instead of collapsing into an empty `$nin` that matches everything.
+        if (inner === null || inner === undefined) {
+          normalized[key] = inner;
+          continue;
+        }
         const candidates = dedupeCandidates(candidatesForId(inner));
         const positive = key === '$eq';
         if (candidates.length === 1) {

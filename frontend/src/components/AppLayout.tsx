@@ -6,11 +6,13 @@ import {
   LayoutDashboard,
   LayoutGrid,
   Package,
+  PackagePlus,
   Boxes,
   Users,
   BarChart3,
   Camera,
   ClipboardList,
+  ClipboardCheck,
   FileText,
   FileBarChart,
   LogOut,
@@ -75,12 +77,6 @@ const navSections: { title: string; items: NavItem[] }[] = [
     title: "Management",
     items: [
       {
-        label: "Products",
-        path: "/products",
-        icon: <Package size={20} />,
-        roles: ["ADMIN"],
-      },
-      {
         label: "Masters",
         path: "/masters",
         icon: <SlidersHorizontal size={20} />,
@@ -92,6 +88,11 @@ const navSections: { title: string; items: NavItem[] }[] = [
         roles: ["ADMIN"],
         subItems: [
           { label: "Batches", path: "/batches", icon: <Boxes size={18} /> },
+          {
+            label: "Create Batch",
+            path: "/dispatch/batches",
+            icon: <PackagePlus size={18} />,
+          },
           {
             label: "Dispatch Orders",
             path: "/dispatch-orders",
@@ -131,24 +132,18 @@ const navSections: { title: string; items: NavItem[] }[] = [
         label: "Inventory",
         path: "/inventory",
         icon: <Package size={20} />,
-        roles: ["ADMIN", "QC", "DISPATCH"],
+        roles: ["ADMIN"],
       },
       {
         label: "Warehouse Management",
         path: "/storage",
         icon: <Warehouse size={20} />,
-        roles: ["ADMIN", "QC", "DISPATCH"],
-      },
-      {
-        label: "Settings",
-        icon: <UserCircle size={18} />,
-        path: "/settings",
         roles: ["ADMIN"],
       },
     ],
   },
   {
-    title: "Operations",
+    title: "Quality Control",
     items: [
       {
         label: "QC Dashboard",
@@ -156,31 +151,23 @@ const navSections: { title: string; items: NavItem[] }[] = [
         icon: <BarChart3 size={20} />,
         roles: ["QC"],
       },
-      // {
-      //   label: "Live Loading",
-      //   path: "/loading-monitor",
-      //   icon: <Activity size={20} />,
-      //   roles: ["QC"],
-      //   badge: "LIVE",
-      // },
-      // {
-      //   label: "Products",
-      //   path: "/products",
-      //   icon: <Package size={20} />,
-      //   roles: ["QC"],
-      // },
       {
-        label: "Batches",
+        label: "Mark QC",
         path: "/batches",
-        icon: <Boxes size={20} />,
+        icon: <ClipboardCheck size={20} />,
         roles: ["QC"],
       },
       {
-        label: "Print Requests",
-        path: "/qc/qr-codes",
-        icon: <QrCode size={20} />,
+        label: "Settings",
+        path: "/settings",
+        icon: <UserCircle size={20} />,
         roles: ["QC"],
       },
+    ],
+  },
+  {
+    title: "Dispatch",
+    items: [
       {
         label: "Dispatch Dashboard",
         path: "/dispatch-dashboard",
@@ -188,9 +175,9 @@ const navSections: { title: string; items: NavItem[] }[] = [
         roles: ["DISPATCH"],
       },
       {
-        label: "Loading & Scan",
-        path: "/dispatch",
-        icon: <Camera size={20} />,
+        label: "Create Batch",
+        path: "/dispatch/batches",
+        icon: <PackagePlus size={20} />,
         roles: ["DISPATCH"],
       },
       {
@@ -200,16 +187,33 @@ const navSections: { title: string; items: NavItem[] }[] = [
         roles: ["DISPATCH"],
       },
       {
+        label: "Loading & Scan",
+        path: "/dispatch",
+        icon: <Camera size={20} />,
+        roles: ["DISPATCH"],
+      },
+      {
+        label: "QR Labels",
+        path: "/dispatch/qr-labels",
+        icon: <QrCode size={20} />,
+        roles: ["DISPATCH"],
+      },
+      {
         label: "Packaging Lists",
         path: "/packing-list",
         icon: <FileText size={20} />,
         roles: ["DISPATCH"],
       },
+    ],
+  },
+  {
+    title: "Account",
+    items: [
       {
         label: "Settings",
         path: "/settings",
         icon: <UserCircle size={20} />,
-        roles: ["QC", "DISPATCH"],
+        roles: ["ADMIN", "DISPATCH"],
       },
     ],
   },

@@ -284,6 +284,15 @@ export async function start(req: Request, res: Response): Promise<void> {
         ? await ctx.findOne('products', { id: batch.product_id })
         : null;
 
+      // The batch is now physically on the truck: move it to LOADING.
+      for (const line of orderLines) {
+        await ctx.updateOne(
+          'batches',
+          { id: line.batch_id, status: 'DISPATCH_APPROVED' },
+          { $set: { status: 'LOADING' } }
+        );
+      }
+
       await logActivity(
         ctx,
         req.user!,
@@ -394,6 +403,18 @@ export async function scan(req: Request, res: Response): Promise<void> {
 
     if (label?.recall_status === 'RECALLED') {
       res.status(409).json({ error: 'This QR label has been recalled and cannot be loaded', code: 'QR_RECALLED', result: 'RECALLED', scanned: numeric(session.scanned), total: numeric(session.total) });
+      return;
+    }
+
+    // Only labels that were physically printed may be loaded onto a truck.
+    if (Number(label?.print_count || 0) < 1) {
+      res.status(409).json({
+        error: 'This QR label was never printed and cannot be loaded',
+        code: 'QR_NOT_PRINTED',
+        result: 'QR_NOT_PRINTED',
+        scanned: numeric(session.scanned),
+        total: numeric(session.total),
+      });
       return;
     }
 
@@ -747,7 +768,19 @@ export async function finalise(req: Request, res: Response): Promise<void> {
         }
       );
 
-      const batchStatus = batch.status;
+      // The order is closed, so every batch it held reaches its terminal
+      // status: shipped out, or returned to stock.
+      const finalBatchStatus = outcome === 'DISPATCHED' ? 'DISPATCHED' : 'NOT_DISPATCHED';
+      const finalBatchIds = Array.isArray(order.order_lines) && order.order_lines.length
+        ? order.order_lines.map((line: any) => line.batch_id).filter((batchId: any) => batchId !== undefined && batchId !== null)
+        : [batch.id];
+      for (const batchId of finalBatchIds) {
+        await ctx.updateOne(
+          'batches',
+          { id: batchId },
+          { $set: { status: finalBatchStatus } }
+        );
+      }
 
       const dispatchRecord: Record<string, any> = {
         batch_id: batch.id,
@@ -836,7 +869,7 @@ export async function finalise(req: Request, res: Response): Promise<void> {
       return {
         session: closedSession,
         order_status: orderStatus,
-        batch_status: batchStatus,
+        batch_status: finalBatchStatus,
         dispatch_record_id: dispatchRecordId,
         loaded_quantity: outcome === 'DISPATCHED' ? scanned : 0,
       };

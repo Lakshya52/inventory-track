@@ -28,13 +28,14 @@ function newOperationId(): string {
 }
 
 const statusBadgeStyle: Record<string, { bg: string; label: string }> = {
-  PENDING: { bg: 'bg-amber-100 text-amber-900 border-amber-300', label: 'Pending QC' },
+  PENDING: { bg: 'bg-amber-100 text-amber-900 border-amber-300', label: 'Awaiting Approval' },
   APPROVED: { bg: 'bg-blue-100 text-blue-900 border-blue-300', label: 'Ready for Loading' },
   DISPATCH_APPROVED: { bg: 'bg-blue-100 text-blue-900 border-blue-300', label: 'Ready for Loading' },
   LOADING: { bg: 'bg-indigo-100 text-indigo-900 border-indigo-300', label: 'Loading Truck' },
   DISPATCHED: { bg: 'bg-emerald-100 text-emerald-900 border-emerald-300', label: 'Dispatched' },
   CLOSED_DISPATCHED: { bg: 'bg-emerald-100 text-emerald-900 border-emerald-300', label: 'Dispatched' },
   REJECTED: { bg: 'bg-rose-100 text-rose-900 border-rose-300', label: 'Rejected' },
+  CANCELLED: { bg: 'bg-rose-100 text-rose-900 border-rose-300', label: 'Cancelled' },
   CLOSED_NOT_DISPATCHED: { bg: 'bg-slate-100 text-slate-800 border-slate-300', label: 'Not Dispatched' },
   NOT_DISPATCHED: { bg: 'bg-slate-100 text-slate-800 border-slate-300', label: 'Not Dispatched' },
 };
@@ -57,8 +58,6 @@ export default function DispatchOrders() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [orders, setOrders] = useState<any[]>([]);
-  const [pendingOrders, setPendingOrders] = useState<any[]>([]);
-  const [tab, setTab] = useState<'pending' | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState('');
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 250);
@@ -86,23 +85,13 @@ export default function DispatchOrders() {
   }, [searchParams, qcPassedBatches]);
 
   const isAdmin = user?.role === 'ADMIN';
-  const isQc = user?.role === 'QC';
   const isDispatch = user?.role === 'DISPATCH';
 
   const fetchData = useCallback(async () => {
     const requestId = ++fetchRequest.current;
     setLoading(true);
     try {
-      if (isQc) {
-        const [pending, all] = await Promise.all([
-          api.dispatchOrders.pending({ q: debouncedSearch || undefined }),
-          api.dispatchOrders.all({ q: debouncedSearch || undefined, status: statusFilter || undefined }),
-        ]);
-        if (requestId === fetchRequest.current) {
-          setPendingOrders(pending);
-          setOrders(all);
-        }
-      } else if (isDispatch) {
+      if (isDispatch) {
         const dispatchOrders = await api.dispatchOrders.mine({ q: debouncedSearch || undefined, status: statusFilter || undefined });
         if (requestId === fetchRequest.current) setOrders(dispatchOrders);
         const batches = await api.batches.list();
@@ -111,12 +100,9 @@ export default function DispatchOrders() {
           Number(batch.qr_count) === Number(batch.quantity) &&
           Number(batch.available_quantity ?? batch.quantity) > 0,
         ));
-      } else if (isAdmin) {
+      } else {
         const all = await api.dispatchOrders.all({ q: debouncedSearch || undefined, status: statusFilter || undefined });
-        if (requestId === fetchRequest.current) {
-          setOrders(all);
-          setPendingOrders([]);
-        }
+        if (requestId === fetchRequest.current) setOrders(all);
       }
     } catch (err: any) {
       if (requestId === fetchRequest.current) {
@@ -126,7 +112,7 @@ export default function DispatchOrders() {
     } finally {
       if (requestId === fetchRequest.current) setLoading(false);
     }
-  }, [isAdmin, isDispatch, isQc, debouncedSearch, statusFilter]);
+  }, [isDispatch, debouncedSearch, statusFilter]);
 
   useEffect(() => {
     void fetchData();
@@ -158,35 +144,20 @@ export default function DispatchOrders() {
     setMessageKind(kind);
   };
 
-  const handleApprove = async (id: EntityId) => {
-    setActionLoading(true);
-    try {
-      await api.dispatchOrders.approve(id, remarks.trim() || undefined);
-      showMessage('Dispatch order approved. The packing list is now ready and loading can begin.');
-      setSelectedOrder(null);
-      setRemarks('');
-      await fetchData();
-    } catch (err: any) {
-      showMessage(err.message || 'Could not approve order', 'error');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleReject = async (id: EntityId) => {
+  const handleCancel = async (id: EntityId) => {
     if (!remarks.trim()) {
-      showMessage('Please enter remarks explaining why this order is rejected.', 'error');
+      showMessage('Please enter a reason for cancelling this order.', 'error');
       return;
     }
     setActionLoading(true);
     try {
-      await api.dispatchOrders.reject(id, remarks.trim());
-      showMessage('Dispatch order rejected. The batch has been returned to stock.');
+      await api.dispatchOrders.cancel(id, remarks.trim());
+      showMessage('Dispatch order cancelled. The batch has been returned to stock.');
       setSelectedOrder(null);
       setRemarks('');
       await fetchData();
     } catch (err: any) {
-      showMessage(err.message || 'Could not reject order', 'error');
+      showMessage(err.message || 'Could not cancel order', 'error');
     } finally {
       setActionLoading(false);
     }
@@ -246,11 +217,11 @@ export default function DispatchOrders() {
     }
   };
 
-  const list = isQc && tab === 'pending' ? pendingOrders : orders;
+  const list = orders;
 
   const totalCount = orders.length;
-  const pendingCount = orders.filter((o) => o.status === 'PENDING').length;
   const approvedCount = orders.filter((o) => o.status === 'APPROVED' || o.status === 'DISPATCH_APPROVED').length;
+  const cancelledCount = orders.filter((o) => o.status === 'CANCELLED' || o.status === 'REJECTED').length;
   const dispatchedCount = orders.filter((o) => o.status === 'DISPATCHED' || o.status === 'CLOSED_DISPATCHED' || o.dispatched_at).length;
 
   return (
@@ -266,39 +237,12 @@ export default function DispatchOrders() {
               Dispatch Orders
             </h1>
             <p className="text-sm sm:text-base text-slate-500 mt-0.5">
-              {isQc
-                ? 'Review and approve shipments. Approved orders can proceed to truck loading.'
-                : isAdmin
+              {isAdmin
                 ? 'Overview of all client shipments, loading status, and packing lists.'
                 : 'Create dispatch orders, open packaging lists, and start loading.'}
             </p>
           </div>
         </div>
-
-        {isQc && (
-          <div className="flex flex-wrap gap-2 shrink-0">
-            <button
-              onClick={() => setTab('pending')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors inline-flex items-center gap-2 ${
-                tab === 'pending'
-                  ? 'bg-amber-600 text-white shadow-sm'
-                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
-            >
-              <Eye size={16} /> Pending ({pendingOrders.length})
-            </button>
-            <button
-              onClick={() => setTab('all')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors inline-flex items-center gap-2 ${
-                tab === 'all'
-                  ? 'bg-brand-600 text-white shadow-sm'
-                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
-            >
-              <ClipboardList size={16} /> All Orders
-            </button>
-          </div>
-        )}
       </div>
 
       {/* 2. STATS CARDS */}
@@ -306,13 +250,13 @@ export default function DispatchOrders() {
         {[
           { label: 'Total Orders', value: totalCount, icon: <ClipboardList size={20} />, bg: 'bg-blue-100 text-blue-700' },
           {
-            label: 'Pending Approval',
-            value: pendingCount,
+            label: 'Ready for Loading',
+            value: approvedCount,
             icon: <Clock size={20} />,
-            bg: pendingCount > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700',
-            highlight: pendingCount > 0,
+            bg: approvedCount > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700',
+            highlight: approvedCount > 0,
           },
-          { label: 'Ready for Loading', value: approvedCount, icon: <CheckCircle2 size={20} />, bg: 'bg-indigo-100 text-indigo-700' },
+          { label: 'Cancelled', value: cancelledCount, icon: <XCircle size={20} />, bg: 'bg-rose-100 text-rose-700' },
           { label: 'Dispatched', value: dispatchedCount, icon: <Truck size={20} />, bg: 'bg-emerald-100 text-emerald-700' },
         ].map((card) => (
           <div
@@ -522,10 +466,9 @@ export default function DispatchOrders() {
           onChange={(e) => setStatusFilter(e.target.value)}
         >
           <option value="">All Statuses</option>
-          <option value="PENDING">Pending QC</option>
           <option value="APPROVED">Ready for Loading</option>
           <option value="DISPATCHED">Dispatched (Completed)</option>
-          <option value="REJECTED">Rejected</option>
+          <option value="CANCELLED">Cancelled</option>
         </select>
       </div>
 
@@ -593,25 +536,25 @@ export default function DispatchOrders() {
 
                     <td className="px-5 py-4 text-right">
                       <div className="flex items-center justify-end gap-2 flex-wrap">
-                        {isQc && order.status === 'PENDING' && (
-                          <button
-                            onClick={() => {
-                              setSelectedOrder(order);
-                              setRemarks(order.admin_remarks || '');
-                              setMessage('');
-                            }}
-                            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-xs"
-                          >
-                            Review Order
-                          </button>
-                        )}
-
                         {isDispatch && order.status === 'APPROVED' && order.batch_status !== 'LOADING' && (
                           <button
                             onClick={() => navigate(`/dispatch?order=${order.id}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs"
                           >
                             <Truck size={14} /> Start Loading
+                          </button>
+                        )}
+
+                        {(isAdmin || isDispatch) && order.status === 'APPROVED' && order.batch_status !== 'LOADING' && (
+                          <button
+                            onClick={() => {
+                              setSelectedOrder(order);
+                              setRemarks(order.admin_remarks || '');
+                              setMessage('');
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200"
+                          >
+                            <XCircle size={14} /> Cancel Order
                           </button>
                         )}
 
@@ -655,13 +598,13 @@ export default function DispatchOrders() {
         </div>
       </div>
 
-      {/* 6. QC REVIEW MODAL */}
-      {selectedOrder && isQc && (
+      {/* 6. CANCEL ORDER MODAL */}
+      {selectedOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xl w-full max-w-xl overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">Review Dispatch Request</h2>
+                <h2 className="text-lg font-bold text-slate-900">Cancel Dispatch Order</h2>
                 <p className="text-xs text-slate-500 mt-0.5">Order #{selectedOrder.id} · {selectedOrder.product_name}</p>
               </div>
               <button
@@ -677,6 +620,10 @@ export default function DispatchOrders() {
             </div>
 
             <div className="p-6 space-y-4">
+              <p className="text-sm font-medium text-slate-600">
+                Cancelling frees the reserved QR labels and puts the stock back on
+                the shelf. It only works while loading has not started.
+              </p>
               <div className="grid grid-cols-2 gap-3.5 bg-slate-50 p-4 rounded-xl border border-slate-200 text-sm">
                 <div>
                   <span className="block text-xs font-bold text-slate-500 uppercase">Batch Number</span>
@@ -698,12 +645,12 @@ export default function DispatchOrders() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-                  QC Remarks <span className="font-normal text-slate-400">(Required to reject)</span>
+                  Reason <span className="font-normal text-slate-400">(required)</span>
                 </label>
                 <textarea
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   rows={3}
-                  placeholder="Enter approval note or reason for rejection..."
+                  placeholder="Why is this order being cancelled?"
                   value={remarks}
                   onChange={(e) => setRemarks(e.target.value)}
                   disabled={actionLoading}
@@ -720,23 +667,15 @@ export default function DispatchOrders() {
                   disabled={actionLoading}
                   className="px-4 py-2 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100"
                 >
-                  Cancel
+                  Keep Order
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleReject(selectedOrder.id)}
+                  onClick={() => handleCancel(selectedOrder.id)}
                   disabled={actionLoading || !remarks.trim()}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-sm font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-sm disabled:opacity-50"
                 >
-                  <XCircle size={16} /> Reject Order
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleApprove(selectedOrder.id)}
-                  disabled={actionLoading}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
-                >
-                  <CheckCircle size={16} /> {actionLoading ? 'Approving...' : 'Approve Order'}
+                  <XCircle size={16} /> {actionLoading ? 'Cancelling...' : 'Cancel Order'}
                 </button>
               </div>
             </div>

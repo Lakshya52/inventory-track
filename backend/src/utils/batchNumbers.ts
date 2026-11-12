@@ -1,3 +1,16 @@
+/**
+ * Unit batch numbers are built as `<SKU>-<YYYYMMDD>-<group>-<line>-<unit>`.
+ * When the product row behind a batch no longer exists (legacy batches whose
+ * product was deleted), the SKU is still recoverable from the batch number.
+ */
+export function skuFromBatchNumber(batchNumber: string | null | undefined): string | null {
+	if (!batchNumber) return null;
+	const parts = String(batchNumber).split('-');
+	const dateIndex = parts.findIndex((part) => /^\d{8}$/.test(part));
+	if (dateIndex <= 0) return null;
+	return parts.slice(0, dateIndex).join('-');
+}
+
 export function buildBatchNumbers(baseBatchNumber: string, batchCount: number): string[] {
   const match = /^(.*-)(\d+)$/.exec(baseBatchNumber);
   if (!match) {

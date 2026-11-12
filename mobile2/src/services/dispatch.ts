@@ -39,7 +39,7 @@ export type DispatchStats = {
   dispatchedToday: number;
   dispatchedThisWeek: number;
   readyToDispatch: number;
-  pendingOrders: number;
+  cancelledOrders: number;
   approvedOrders: number;
 };
 
@@ -51,6 +51,16 @@ export type RaiseOrderPayload = {
   vehicle_number: string;
   container_number: string;
   client_operation_id?: string;
+};
+
+/** Why a QR label is being pulled back out of a dispatch order. */
+export type RecallCondition = 'DAMAGED' | 'HOLD' | 'RETURN_TO_STOCK';
+
+export type RecallResult = {
+  message: string;
+  condition: RecallCondition;
+  order_id: string | number;
+  batch_id: string | number;
 };
 
 export type FinaliseSessionPayload = {
@@ -172,6 +182,35 @@ export const dispatchApi = {
       },
     }),
 
+  /**
+   * Recall a QR label out of the active loading session. The unit stops being
+   * counted towards this load.
+   */
+  recallSessionQr: (
+    sessionId: string,
+    qrValue: string,
+    condition: RecallCondition,
+    reason: string,
+  ) =>
+    apiRequest<RecallResult>(`/loading-sessions/${sessionId}/recall-qr`, {
+      method: 'POST',
+      body: { qr_value: qrValue, condition, reason },
+    }),
+
+  /**
+   * Recall a QR label out of one of your own open dispatch orders. Works with
+   * or without an active loading session.
+   */
+  recallQr: (
+    qrValue: string,
+    condition: RecallCondition,
+    reason: string,
+  ) =>
+    apiRequest<RecallResult>('/dispatch-orders/recall-qr', {
+      method: 'POST',
+      body: { qr_value: qrValue, condition, reason },
+    }),
+
   /** Cancel an active session that has no scans yet, freeing the order to load again */
   cancelLoadingSession: (sessionId: string) =>
     apiRequest<{
@@ -218,16 +257,12 @@ export const dispatchApi = {
       method: 'POST',
       body: { barcode_value: barcodeValue, remarks },
     }),
-  pendingOrders: () => apiRequest<DispatchOrderRecord[]>('/dispatch-orders/pending'),
   allOrders: () => apiRequest<DispatchOrderRecord[]>('/dispatch-orders/all'),
-  approve: (id: number | string, remarks?: string) =>
-    apiRequest(`/dispatch-orders/${id}/approve`, {
+  // Dispatch orders need no approval. A raised order can still be cancelled
+  // by the dispatcher who raised it while loading has not started.
+  cancelOrder: (id: number | string, remarks: string) =>
+    apiRequest(`/dispatch-orders/${id}/cancel`, {
       method: 'POST',
-      body: { admin_remarks: remarks },
-    }),
-  reject: (id: number | string, remarks?: string) =>
-    apiRequest(`/dispatch-orders/${id}/reject`, {
-      method: 'POST',
-      body: { admin_remarks: remarks },
+      body: { remarks },
     }),
 };

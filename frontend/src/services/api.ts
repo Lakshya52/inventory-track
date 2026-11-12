@@ -187,6 +187,23 @@ export const api = {
     list: () => request<any[]>('/products'),
     create: (data: any) =>
       request<any>('/products', { method: 'POST', body: JSON.stringify(data) }),
+    createFamily: (data: {
+      name: string;
+      description?: string;
+      manufacturer?: string;
+      grades: Array<{
+        grade: string;
+        sku?: string;
+        quantity?: number;
+        bag_quantity_id?: EntityId | null;
+      }>;
+    }) =>
+      request<{ products: any[]; message: string }>('/products/family', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    renameFamily: (data: { currentName: string; name: string; description?: string }) =>
+      request<any>('/products/family', { method: 'PUT', body: JSON.stringify(data) }),
     search: (q: string) => request<any[]>(`/products/search?q=${encodeURIComponent(q)}`),
     update: (id: EntityId, data: any) => request<any>(`/products/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: EntityId) => request<any>(`/products/${idPath(id)}`, { method: 'DELETE' }),
@@ -246,8 +263,8 @@ export const api = {
       message: string;
     }> =>
       request('/batches', { method: 'POST', body: JSON.stringify(data) }),
-    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; unit_price?: number; avg_standard_quantity?: number | null }> }) =>
-      request<{ id: string; batch_group_id: string; batch_number: string; product_count: number; total_quantity: number; batches: Array<any>; labels: Array<QrLabel>; message: string }>('/batches/group', { method: 'POST', body: JSON.stringify(data) }),
+    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; unit_price?: number; avg_standard_quantity?: number | null }>; client_operation_id?: string }) =>
+      request<{ id: string; batch_group_id: string; batch_number: string; product_count: number; total_quantity: number; batches: Array<any>; labels: Array<QrLabel>; status: string; message: string; duplicate?: boolean }>('/batches/group', { method: 'POST', body: JSON.stringify(data) }),
     finishGoods: (id: EntityId, data: { vendor_id: EntityId; grade_id: EntityId; bag_quantity_id: EntityId; shelf_location_id?: EntityId }) =>
       request<any>(`/batches/${idPath(id)}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
     getByBarcode: (barcode: string) =>
@@ -257,11 +274,23 @@ export const api = {
     search: (q: string) => request<any[]>(`/batches/search?q=${encodeURIComponent(q)}`),
   },
   qc: {
+    decideBatchGroup: (groupId: EntityId, data: { result: 'PASS' | 'FAIL'; remarks?: string }) =>
+      request<{ group_id: string; batch_number: string; status: string; result: string; unit_count: number; product_count: number; message: string }>(
+        `/qc/batch-groups/${idPath(groupId)}/decision`,
+        { method: 'POST', body: JSON.stringify(data) }
+      ),
+    decideBatchGroupsBulk: (groupIds: EntityId[], remarks?: string) =>
+      request<{ passed_count: number; skipped_count: number; passed_group_ids: string[]; skipped: Array<{ group_id: string; reason: string }>; message: string }>(
+        '/qc/batch-groups/decisions/bulk',
+        { method: 'POST', body: JSON.stringify({ group_ids: groupIds, remarks }) }
+      ),
     qrJobs: {
       list: (q?: string) => request<{ items: any[]; total: number }>(`/qc/qr-jobs${q ? `?q=${encodeURIComponent(q)}` : ''}`),
       create: (data: { product_id: EntityId; quantity: number }) =>
         request<any>('/qc/qr-jobs', { method: 'POST', body: JSON.stringify(data) }),
       get: (id: EntityId) => request<any>(`/qc/qr-jobs/${idPath(id)}`),
+      printInitial: (id: EntityId) =>
+        request<any>(`/qc/qr-jobs/${idPath(id)}/print`, { method: 'POST', body: '{}' }),
         reprint: (id: EntityId, data: { quantity?: number; label_ids?: EntityId[]; approved_request_id?: EntityId }) =>
         request<any>(`/qc/qr-jobs/${idPath(id)}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
     requestReprint: (id: EntityId, label_ids: EntityId[]) =>
@@ -318,13 +347,8 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number }>; client_operation_id?: string }) =>
+    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number }>; driver_name?: string; vehicle_number?: string; container_number?: string; client_operation_id?: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
-    pending: (params?: { q?: string }) => {
-      const qs = new URLSearchParams();
-      if (params?.q) qs.set('q', params.q);
-      return request<any[]>(`/dispatch-orders/pending${qs.toString() ? `?${qs}` : ''}`);
-    },
     all: (params?: { q?: string; status?: string }) => {
       const qs = new URLSearchParams();
       if (params?.q) qs.set('q', params.q);
@@ -337,10 +361,10 @@ export const api = {
       if (params?.status) qs.set('status', params.status);
       return request<any[]>(`/dispatch-orders/mine${qs.toString() ? `?${qs}` : ''}`);
     },
-    approve: (id: EntityId, remarks?: string) =>
-      request<any>(`/dispatch-orders/${idPath(id)}/approve`, { method: 'POST', body: JSON.stringify({ remarks }) }),
-    reject: (id: EntityId, remarks: string) =>
-      request<any>(`/dispatch-orders/${idPath(id)}/reject`, { method: 'POST', body: JSON.stringify({ remarks }) }),
+    // Dispatch orders need no approval. A raised order can still be cancelled
+    // by the dispatcher who raised it while loading has not started.
+    cancel: (id: EntityId, remarks: string) =>
+      request<any>(`/dispatch-orders/${idPath(id)}/cancel`, { method: 'POST', body: JSON.stringify({ remarks }) }),
     packingList: (id: EntityId) =>
       request<any>(`/dispatch-orders/${idPath(id)}/packing-list`),
     downloadPackingListPdf: async (id: EntityId, filename?: string) => {

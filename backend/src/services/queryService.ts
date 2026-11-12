@@ -97,6 +97,42 @@ export function pagination(page: number, limit: number, offset: number): { page:
   return { page, limit, offset };
 }
 
+/**
+ * Per-batch label print state.
+ *
+ * `printedCount` counts labels that were physically printed at least once
+ * (print_count > 0). A batch is only eligible for a dispatch order once every
+ * one of its labels has been printed, so a dispatcher can never ship bags
+ * whose QR stickers were never produced.
+ */
+export async function batchPrintStats(
+  ctx: DbContext,
+  batchIds: Array<EntityId | null | undefined>
+): Promise<Map<string, { total: number; printed: number }>> {
+  const unique = [...new Set(
+    batchIds
+      .filter((id): id is EntityId => id !== null && id !== undefined && String(id) !== '')
+      .map((id) => idKey(id))
+  )];
+  if (unique.length === 0) return new Map();
+  const rows = await ctx.aggregate('qr_labels', [
+    { $match: { batch_id: { $in: unique } } },
+    {
+      $group: {
+        _id: '$batch_id',
+        total: { $sum: 1 },
+        printed: {
+          $sum: { $cond: [{ $gt: [{ $ifNull: ['$print_count', 0] }, 0] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+  return new Map(rows.map((row) => [
+    idKey(row._id),
+    { total: Number(row.total || 0), printed: Number(row.printed || 0) },
+  ]));
+}
+
 /** Per-batch label count and the print job that produced the labels. */
 export async function batchQrStats(
   ctx: DbContext,

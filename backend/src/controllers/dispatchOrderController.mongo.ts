@@ -10,6 +10,7 @@ const ORDER_STATUS_FILTERS = [
   'PENDING',
   'APPROVED',
   'REJECTED',
+  'CANCELLED',
   'CLOSED_DISPATCHED',
   'CLOSED_NOT_DISPATCHED',
 ];
@@ -49,6 +50,11 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
     if (order.approved_by_role === 'QC') {
       const qc = await ctx.findOne('qc_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } });
       return [idKey(order.id), qc?.name ?? null] as const;
+    }
+    // Orders are released by the dispatcher who raised them.
+    if (order.approved_by_role === 'DISPATCH') {
+      const dispatcher = await ctx.findOne('dispatch_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } });
+      return [idKey(order.id), dispatcher?.name ?? null] as const;
     }
     const adminName = order.admin_id ? await ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } }) : null;
     return [idKey(order.id), adminName?.name ?? null] as const;
@@ -139,9 +145,11 @@ export async function raise(req: Request, res: Response): Promise<void> {
       quantity: req.body.quantity,
       items: items?.map((item: any) => ({ batch_id: item.batch_id, quantity: item.quantity })),
       client_id: req.body.client_id as EntityId,
-      driver_name: '',
-      vehicle_number: '',
-      container_number: '',
+      // Transport details are optional here and captured again when the
+      // loading session is finalised. Keep whatever the caller supplied.
+      driver_name: typeof req.body.driver_name === 'string' ? req.body.driver_name : '',
+      vehicle_number: typeof req.body.vehicle_number === 'string' ? req.body.vehicle_number : '',
+      container_number: typeof req.body.container_number === 'string' ? req.body.container_number : '',
     },
   };
 
@@ -168,22 +176,6 @@ export async function raise(req: Request, res: Response): Promise<void> {
   } catch (error) {
     errorResponse(res, error, 'Could not raise dispatch order');
   }
-}
-
-export async function listPending(req: Request, res: Response): Promise<void> {
-  const q = String(req.query.q || '').trim();
-  const status = String(req.query.status || '').toUpperCase();
-  const ctx = await getContext();
-  const base: Record<string, any> = {
-    status: ORDER_STATUS_FILTERS.includes(status) ? status : 'PENDING',
-  };
-  const filter = await orderFilterForSearch(ctx, q, base);
-  const orders = await ctx.find('dispatch_orders', filter, {
-    sort: { created_at: 1 },
-    limit: 100,
-    projection: { _id: 0 },
-  });
-  res.json(await enrichOrders(ctx, orders));
 }
 
 export async function listAll(req: Request, res: Response): Promise<void> {
@@ -216,166 +208,202 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   res.json(await enrichOrders(ctx, orders));
 }
 
-export async function approve(req: Request, res: Response): Promise<void> {
-  if (req.user!.role !== 'QC') {
-    res.status(403).json({ error: 'Only QC users can approve dispatch orders' });
-    return;
-  }
-  const id = req.params.id;
-  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid dispatch order id' }); return; }
-  const remarks = req.body.remarks ?? req.body.admin_remarks ?? null;
-  try {
-    const result = await withTransaction(async (ctx: DbContext) => {
-      const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
-      if (!order) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
-      if (order.status !== 'PENDING') {
-        throw new SyncConflictError(`Order is already ${order.status}`, { order_id: order.id, status: order.status });
-      }
-
-      const batch = await ctx.findOne('batches', { id: order.batch_id }, { projection: { _id: 0 } });
-      if (!batch) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
-      if (batch.status !== 'DISPATCH_ORDER_RAISED') {
-        throw new SyncConflictError(`Batch is not awaiting approval. Current status: ${batch.status}`, {
-          batch_id: order.batch_id,
-          current_status: batch.status,
-        });
-      }
-
-      const [product, location, grade, bagQuantity] = await Promise.all([
-        ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0, name: 1, sku: 1, grade: 1 } }),
-        batch.shelf_location_id
-          ? ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, {
-              projection: { _id: 0, location_code: 1, description: 1 },
-            })
-          : null,
-        batch.grade_id
-          ? ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } })
-          : null,
-        batch.bag_quantity_id
-          ? ctx.findOne('bag_quantities', { id: batch.bag_quantity_id }, {
-              projection: { _id: 0, name: 1, quantity: 1, unit: 1 },
-            })
-          : null,
-      ]);
-
-      const approvedAt = now();
-      const orderUpdate = await ctx.updateOne(
-        'dispatch_orders',
-        { id, status: 'PENDING' },
-        { $set: {
-          status: 'APPROVED',
-          approved_by_role: 'QC',
-          approved_by_id: req.user!.userId,
-          approved_at: approvedAt,
-          remarks: remarks ?? null,
-          admin_remarks: remarks ?? null,
-        } }
-      );
-      if (orderUpdate.matchedCount !== 1) {
-        throw new SyncConflictError('Dispatch order was changed by another user', { order_id: id });
-      }
-
-      const batchUpdate = await ctx.updateOne(
-        'batches',
-        { id: order.batch_id, status: 'DISPATCH_ORDER_RAISED' },
-        { $set: { status: 'DISPATCH_APPROVED' } }
-      );
-      if (batchUpdate.matchedCount !== 1) {
-        throw new SyncConflictError('Batch was changed by another user', { batch_id: order.batch_id });
-      }
-
-      // Freeze the packing list at approval time. Later batch edits must not
-      // change what was approved.
-      await ctx.deleteMany('packing_list_items', { dispatch_order_id: id });
-      await ctx.insert('packing_list_items', {
-        dispatch_order_id: id,
-        batch_id: order.batch_id,
-        product_name: product?.name ?? null,
-        sku: product?.sku ?? null,
-        batch_number: batch.batch_number ?? null,
-        quantity: batch.quantity ?? null,
-        uom: batch.uom ?? null,
-        grade: grade?.name ?? product?.grade ?? null,
-        bag_quantity: bagQuantity?.quantity ?? null,
-        bag_quantity_unit: bagQuantity?.unit ?? null,
-        location_code: location?.location_code ?? null,
-        location_description: location?.description ?? location?.location_code ?? batch.storage_location ?? null,
-      });
-
-      await ctx.insert('activity_logs', {
-        user_id: req.user!.userId,
-        user_name: req.user!.name,
-        user_role: req.user!.role,
-        action: 'DISPATCH_APPROVED',
-        description: `Dispatch order #${id} approved for batch #${order.batch_id}`,
-      });
-      return { message: 'Dispatch order approved', status: 'APPROVED', approved_at: approvedAt };
-    });
-    res.json(result);
-  } catch (error) {
-    errorResponse(res, error, 'Could not approve dispatch order');
-  }
-}
-
-export async function reject(req: Request, res: Response): Promise<void> {
-  if (req.user!.role !== 'QC') {
-    res.status(403).json({ error: 'Only QC users can reject dispatch orders' });
-    return;
-  }
+/**
+ * Dispatch orders need no approval: raising one releases it straight away.
+ * A raised order can still be cancelled by the dispatcher who raised it (or
+ * an administrator) as long as loading has not started yet. Cancelling frees
+ * the reserved QR labels and puts the stock back on the shelf.
+ */
+export async function cancel(req: Request, res: Response): Promise<void> {
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid dispatch order id' }); return; }
   const rawRemarks = req.body.remarks ?? req.body.admin_remarks;
   const remarks = rawRemarks === null || rawRemarks === undefined ? '' : String(rawRemarks).trim();
   if (!remarks) {
-    res.status(400).json({ error: 'Remarks are required to reject a dispatch order' });
+    res.status(400).json({ error: 'A reason is required to cancel a dispatch order' });
     return;
   }
   try {
     const result = await withTransaction(async (ctx: DbContext) => {
       const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
       if (!order) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
-      if (order.status !== 'PENDING') {
+      if (req.user!.role !== 'ADMIN' && idKey(order.raised_by) !== idKey(req.user!.userId)) {
+        throw new SyncError('You can only cancel a dispatch order you raised', 'FORBIDDEN', 403);
+      }
+      if (order.status !== 'APPROVED') {
         throw new SyncConflictError(`Order is already ${order.status}`, { order_id: order.id, status: order.status });
       }
 
-      const batch = await ctx.findOne('batches', { id: order.batch_id }, { projection: { _id: 0 } });
-      if (!batch) throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
+      const releasedBatchIds = Array.isArray(order.order_lines) && order.order_lines.length
+        ? order.order_lines.map((line: any) => line?.batch_id).filter((batchId: any) => batchId !== undefined && batchId !== null)
+        : [order.batch_id];
 
-      const rejectedAt = now();
+      // Loading must not have started: the batch is already on the truck.
+      const loadingBatch = await ctx.findOne(
+        'batches',
+        { id: { $in: releasedBatchIds }, status: { $nin: ['QC_PASSED', 'DISPATCH_APPROVED'] } },
+        { projection: { _id: 0, id: 1, batch_number: 1, status: 1 } }
+      );
+      if (loadingBatch) {
+        throw new SyncConflictError('Loading has already started for this order. It cannot be cancelled.', {
+          batch_id: loadingBatch.id,
+          current_status: loadingBatch.status,
+        });
+      }
+
+      const cancelledAt = now();
       const orderUpdate = await ctx.updateOne(
         'dispatch_orders',
-        { id, status: 'PENDING' },
+        { id, status: 'APPROVED' },
         { $set: {
-          status: 'REJECTED',
-          approved_by_role: 'QC',
-          approved_by_id: req.user!.userId,
-          approved_at: rejectedAt,
+          status: 'CANCELLED',
           remarks,
           admin_remarks: remarks,
+          dispatched_at: null,
         } }
       );
       if (orderUpdate.matchedCount !== 1) {
         throw new SyncConflictError('Dispatch order was changed by another user', { order_id: id });
       }
 
-      await ctx.updateOne(
-        'batches',
-        { id: order.batch_id },
-        { $set: { status: 'QC_PASSED' } }
+      // Release the reserved QR labels so the stock becomes orderable again.
+      await ctx.updateMany(
+        'qr_labels',
+        { batch_id: { $in: releasedBatchIds }, dispatch_order_id: id },
+        { $set: { dispatch_order_id: null } }
       );
+      for (const batchId of releasedBatchIds) {
+        await ctx.updateOne(
+          'batches',
+          { id: batchId, status: 'DISPATCH_APPROVED' },
+          { $set: { status: 'QC_PASSED' } }
+        );
+      }
+      await ctx.deleteMany('packing_list_items', { dispatch_order_id: id });
 
       await ctx.insert('activity_logs', {
         user_id: req.user!.userId,
         user_name: req.user!.name,
         user_role: req.user!.role,
-        action: 'DISPATCH_REJECTED',
-        description: `Dispatch order #${id} rejected for batch #${order.batch_id}: ${remarks.slice(0, 1000)}`,
+        action: 'DISPATCH_ORDER_CANCELLED',
+        description: `Dispatch order #${id} cancelled for batch #${order.batch_id}: ${remarks.slice(0, 1000)}`,
       });
-      return { message: 'Dispatch order rejected', status: 'REJECTED', remarks };
+      return { message: 'Dispatch order cancelled', status: 'CANCELLED', remarks };
     });
     res.json(result);
   } catch (error) {
-    errorResponse(res, error, 'Could not reject dispatch order');
+    errorResponse(res, error, 'Could not cancel dispatch order');
+  }
+}
+
+/**
+ * Standalone QR recall. Pulls a printed label out of one of the caller's own
+ * open dispatch orders, with or without an active loading session. The unit
+ * stops being expected on this order, so the order quantity drops by one.
+ *
+ * - DAMAGED / HOLD  the label stays with the order but is flagged as recalled
+ * - RETURN_TO_STOCK the label goes back to free stock and its batch returns to
+ *   the shelf
+ */
+export async function recallQr(req: Request, res: Response): Promise<void> {
+  const qrValue = String(req.body?.qr_value ?? '').trim();
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 1000);
+  const condition = String(req.body?.condition ?? '').trim().toUpperCase();
+  if (!qrValue || !reason || !['DAMAGED', 'HOLD', 'RETURN_TO_STOCK'].includes(condition)) {
+    res.status(400).json({ error: 'Provide a valid QR code, reason and condition', code: 'INVALID_RECALL_DETAILS' });
+    return;
+  }
+  try {
+    const result = await withTransaction(async (ctx: DbContext) => {
+      const label = await ctx.findOne('qr_labels', { qr_value: qrValue });
+      if (!label) throw new SyncError('QR label not found', 'QR_NOT_FOUND', 404);
+      if (!label.dispatch_order_id) {
+        throw new SyncError('This QR label is not assigned to a dispatch order', 'QR_NOT_IN_ORDER', 409);
+      }
+      const order = await ctx.findOne('dispatch_orders', { id: label.dispatch_order_id });
+      if (!order) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
+      if (req.user!.role !== 'ADMIN' && idKey(order.raised_by) !== idKey(req.user!.userId)) {
+        throw new SyncError('You can only recall labels on orders you raised', 'FORBIDDEN', 403);
+      }
+      if (order.status !== 'APPROVED') {
+        throw new SyncConflictError(`This order is already ${order.status}`, { order_id: order.id, status: order.status });
+      }
+      if (label.recall_status === 'RECALLED') {
+        throw new SyncConflictError('This QR label has already been recalled', { qr_value: qrValue, code: 'QR_ALREADY_RECALLED' });
+      }
+      const loadedEvent = await ctx.findOne('loading_scan_events', { qr_value: qrValue, result: 'OK' });
+      if (loadedEvent) {
+        throw new SyncConflictError('This QR code has already been loaded and cannot be recalled', { qr_value: qrValue, code: 'QR_ALREADY_LOADED' });
+      }
+
+      // The unit leaves this order: drop its line and lower the order quantity.
+      const orderLines = Array.isArray(order.order_lines) ? order.order_lines : [];
+      const remainingLines = orderLines.filter(
+        (line: any) => idKey(line?.batch_id) !== idKey(label.batch_id),
+      );
+      await ctx.updateOne('dispatch_orders', { id: order.id }, {
+        $set: {
+          order_lines: remainingLines,
+          quantity: Math.max(0, Number(order.quantity || 0) - 1),
+          remarks: reason,
+          admin_remarks: reason,
+        },
+      });
+
+      // An open loading session must stop counting the recalled unit.
+      const activeSession = await ctx.findOne('loading_sessions', {
+        dispatch_order_id: order.id,
+        status: 'ACTIVE',
+      });
+      if (activeSession) {
+        await ctx.updateOne(
+          'loading_sessions',
+          { id: activeSession.id, status: 'ACTIVE' },
+          { $inc: { total: -1 } },
+        );
+      }
+
+      if (condition === 'RETURN_TO_STOCK') {
+        // The label goes back to free stock and its batch returns to the shelf.
+        await ctx.updateOne('qr_labels', { id: label.id }, { $set: {
+          dispatch_order_id: null,
+          recall_status: null,
+          recall_condition: null,
+          recall_reason: null,
+          recalled_by: null,
+          recalled_at: null,
+        } });
+        await ctx.updateOne('batches', { id: label.batch_id, status: 'DISPATCH_APPROVED' }, { $set: { status: 'QC_PASSED' } });
+      } else {
+        await ctx.updateOne('qr_labels', { id: label.id, recall_status: { $ne: 'RECALLED' } }, { $set: {
+          recall_status: 'RECALLED',
+          recall_condition: condition,
+          recall_reason: reason,
+          recalled_by: req.user!.userId,
+          recalled_at: now(),
+        } });
+      }
+
+      await ctx.insert('activity_logs', {
+        user_id: req.user!.userId,
+        user_name: req.user!.name,
+        user_role: req.user!.role,
+        action: 'DISPATCH_QR_RECALLED',
+        description: `QR ${qrValue} recalled from dispatch order ${order.id}; condition ${condition}; reason: ${reason}`,
+      });
+
+      return {
+        message: condition === 'RETURN_TO_STOCK'
+          ? 'QR label recalled and returned to stock'
+          : 'QR label recalled and excluded from loading',
+        condition,
+        order_id: order.id,
+        batch_id: label.batch_id,
+      };
+    });
+    res.json(result);
+  } catch (error) {
+    errorResponse(res, error, 'Could not recall QR label');
   }
 }
 
@@ -435,9 +463,11 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
     ctx.findOne('dispatch_users', { id: order.raised_by }, { projection: { _id: 0, name: 1 } }),
     order.approved_by_role === 'QC'
       ? ctx.findOne('qc_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } })
-      : order.admin_id
-        ? ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } })
-        : null,
+      : order.approved_by_role === 'DISPATCH'
+        ? ctx.findOne('dispatch_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } })
+        : order.admin_id
+          ? ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } })
+          : null,
     dispatchRecord[0]
       ? ctx.findOne('dispatch_users', { id: dispatchRecord[0].dispatcher_id }, { projection: { _id: 0, name: 1 } })
       : null,

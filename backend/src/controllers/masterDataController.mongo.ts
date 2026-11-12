@@ -129,9 +129,35 @@ export async function update(req: Request, res: Response): Promise<void> {
 export async function remove(req: Request, res: Response): Promise<void> {
   const collection = collectionName(req.params.kind);
   if (!collection) { res.status(404).json({ error: 'Master type not found' }); return; }
+  const kind = req.params.kind as MasterKind;
   const id = parseId(req.params.id);
   if (!id) { res.status(400).json({ error: 'Invalid master value ID' }); return; }
   const ctx = await getContext();
+  if (kind === 'uoms') {
+    const products = await ctx.find('products', {}, {
+      projection: { _id: 0, id: 1, name: 1, grade: 1, bag_quantity_id: 1 },
+    });
+    const inUse = products.filter(
+      (product) =>
+        product.bag_quantity_id !== null &&
+        product.bag_quantity_id !== undefined &&
+        idKey(product.bag_quantity_id) === idKey(id)
+    );
+    if (inUse.length > 0) {
+      const sample = inUse
+        .slice(0, 3)
+        .map((product) => String(product.grade || product.name || 'grade'))
+        .join(', ');
+      res.status(409).json({
+        error: `This UOM is used by ${inUse.length} product grade${inUse.length === 1 ? '' : 's'} (${sample}${inUse.length > 3 ? ', ...' : ''}). Change those grades to another UOM before deleting.`,
+      });
+      return;
+    }
+    const deleted = await ctx.deleteOne(collection, { id });
+    if (deleted.deletedCount === 0) { res.status(404).json({ error: 'UOM not found' }); return; }
+    res.json({ message: 'UOM deleted' });
+    return;
+  }
   const result = await ctx.updateOne(collection, { id }, { $set: { is_active: 0 } });
   if (result.matchedCount === 0) { res.status(404).json({ error: 'Master value not found' }); return; }
   res.json({ message: 'Master value deactivated' });

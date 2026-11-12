@@ -1,9 +1,11 @@
 export type Role = 'ADMIN' | 'QC' | 'DISPATCH';
 
-export type BatchStatus = 'QC_PASSED' | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED'
-  | 'LOADING' | 'DISPATCHED' | 'NOT_DISPATCHED';
+export type BatchStatus = 'PENDING_QC' | 'QC_PASSED' | 'QC_FAILED'
+  | 'DISPATCH_ORDER_RAISED' | 'DISPATCH_APPROVED' | 'LOADING' | 'DISPATCHED' | 'NOT_DISPATCHED';
 
-export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
+// Dispatch orders need no approval step: raising one releases it straight
+// away. 'PENDING' and 'REJECTED' only exist on legacy rows.
+export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
   | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
 
 export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED' | 'CANCELLED';
@@ -161,8 +163,6 @@ export type SyncOperationType =
   | 'DISPATCH_CONFIRM'
   | 'DISPATCH_CONFIRM_BULK'
   | 'BATCH_CREATE_AUTO_PASS'
-  | 'QC_ORDER_APPROVE'
-  | 'QC_ORDER_REJECT'
   | 'LOADING_SESSION_START'
   | 'LOADING_SESSION_SCAN'
   | 'LOADING_SESSION_FINALISE';

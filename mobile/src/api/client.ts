@@ -506,11 +506,11 @@ export const api = {
 
   dispatchOrders: {
     raise: (data: any) => request<any>("/api/dispatch-orders", { method: "POST", body: JSON.stringify(data) }),
-    pending: () => request<any[]>("/api/dispatch-orders/pending"),
     all: (status?: string) => request<any[]>(`/api/dispatch-orders/all${status ? `?status=${encodeURIComponent(status)}` : ""}`),
     mine: (status?: string) => request<any[]>(`/api/dispatch-orders/mine${status ? `?status=${encodeURIComponent(status)}` : ""}`),
-    approve: (id: EntityId, remarks?: string) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/approve`, { method: "POST", body: JSON.stringify({ admin_remarks: remarks }) }),
-    reject: (id: EntityId, remarks?: string) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/reject`, { method: "POST", body: JSON.stringify({ admin_remarks: remarks }) }),
+    // Dispatch orders need no approval. A raised order can still be cancelled
+    // by the dispatcher who raised it while loading has not started.
+    cancel: (id: EntityId, remarks: string) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/cancel`, { method: "POST", body: JSON.stringify({ remarks }) }),
     packingList: (id: EntityId) => request<any>(`/api/dispatch-orders/${encodeURIComponent(String(id))}/packing-list`),
   },
 

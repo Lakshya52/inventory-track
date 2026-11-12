@@ -451,32 +451,37 @@ function CellDetails({ cell }: { cell: StorageCell | null }) {
 						</div>
 						{cell.batches.map((batch) => {
 							const details = batch.product_details;
-							const specifications: Array<[string, unknown]> = [
-								["Description", details?.description],
-								["Grade", details?.grade],
-								["Physical state", details?.physical_state],
-								["CAS number", details?.cas_number],
+							const specifications: Array<[string, string]> = (
 								[
-									"Molecular formula",
-									details?.molecular_formula,
-								],
-								["Purity", details?.purity],
-								["Manufacturer", details?.manufacturer],
-								[
-									"Storage conditions",
-									details?.storage_conditions,
-								],
-								[
-									"Hazard classification",
-									details?.hazard_classification,
-								],
-								["HSN code", details?.hsn_code],
-								[
-									"Manufactured",
-									formatDate(batch.manufacturing_date),
-								],
-								["Expires", formatDate(batch.expiry_date)],
-							].filter(([, value]) => formatValue(value));
+									["Description", details?.description],
+									["Grade", details?.grade],
+									["Physical state", details?.physical_state],
+									["CAS number", details?.cas_number],
+									[
+										"Molecular formula",
+										details?.molecular_formula,
+									],
+									["Purity", details?.purity],
+									["Manufacturer", details?.manufacturer],
+									[
+										"Storage conditions",
+										details?.storage_conditions,
+									],
+									[
+										"Hazard classification",
+										details?.hazard_classification,
+									],
+									["HSN code", details?.hsn_code],
+									[
+										"Manufactured",
+										formatDate(batch.manufacturing_date),
+									],
+									["Expires", formatDate(batch.expiry_date)],
+								] as Array<[string, string | null | undefined]>
+							).filter(
+								(entry): entry is [string, string] =>
+									formatValue(entry[1]) !== null,
+							);
 							return (
 								<article
 									key={batch.id}
@@ -494,10 +499,7 @@ function CellDetails({ cell }: { cell: StorageCell | null }) {
 											</p>
 											{batch.status && (
 												<span className="mt-2 inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-emerald-700">
-													{batch.status.replaceAll(
-														"_",
-														" ",
-													)}
+													{batch.status.replace(/_/g, " ")}
 												</span>
 											)}
 										</div>

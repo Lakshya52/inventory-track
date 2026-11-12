@@ -28,10 +28,10 @@ This is a **self-contained, normative specification**. If you are implementing f
 ### 1.1 Purpose
 Specify the target end-to-end workflow of the ProductScanning system:
 
-> **Admin adds products → QC creates batches (automatically QC-passed, no failed QC batches ever recorded) → Dispatch views batches and requests a dispatch order → QC approves the dispatch order → Dispatch downloads the packing list → Dispatch scans and loads the truck with a live loading preview visible to Admins (e.g. 10/100) → Dispatch enters a seal number and marks the batch DISPATCHED or NOT DISPATCHED.**
+> **Admin adds products → QC creates batches (automatically QC-passed, no failed QC batches ever recorded) → Dispatch views batches and raises a dispatch order (released for loading immediately, no approval step) → Dispatch downloads the packing list → Dispatch scans and loads the truck with a live loading preview visible to Admins (e.g. 10/100) → Dispatch enters a seal number and marks the batch DISPATCHED or NOT DISPATCHED.**
 
 ### 1.2 Scope
-**In scope:** product master data; QC batch creation with auto-pass; dispatch order raise; QC approval; packing-list download; scan-based loading with live admin monitoring; seal number + final dispatched/not-dispatched marking; the data model and API for all of the above.
+**In scope:** product master data; QC batch creation with auto-pass; dispatch order raise; dispatch order cancellation; packing-list download; scan-based loading with live admin monitoring; seal number + final dispatched/not-dispatched marking; the data model and API for all of the above.
 
 **Out of scope:** invoicing/GST billing, transportation/goods management beyond vehicle/driver/container fields, client-facing portal, accounting integrations.
 
@@ -41,9 +41,9 @@ Specify the target end-to-end workflow of the ProductScanning system:
 |---|---|
 | **Batch** | A production lot of one product. Holds quantity, UoM, dates, shelf location, vendor, grade, bag quantity, and a unique `barcode_value`. |
 | **QR label** | One printed sticker per unit/pack inside a batch (`qr_print_jobs` → `qr_labels`, unique `qr_value`). Scanned during loading. |
-| **Dispatch order** | A request raised by DISPATCH for one batch: client, driver name, vehicle number, container number. |
-| **Packing list** | Auto-generated, frozen line items for an approved dispatch order (product, batch, quantity, UoM, shelf location). |
-| **Loading session** | A scan-driven loading run for one approved dispatch order. Tracks `scanned` vs `total` and drives the Admin live preview. |
+| **Dispatch order** | A request raised by DISPATCH for one batch: client, driver name, vehicle number, container number. Released for loading as soon as it is raised. |
+| **Packing list** | Auto-generated, frozen line items for a dispatch order (product, batch, quantity, UoM, shelf location), frozen at raise time. |
+| **Loading session** | A scan-driven loading run for one dispatch order. Tracks `scanned` vs `total` and drives the Admin live preview. |
 | **Seal number** | Tamper-evidence number that DISPATCH must enter when finishing loading. |
 | **UoM** | Unit of measure (kg, bags, litres, …). |
 | **Roles** | `ADMIN`, `QC`, `DISPATCH` (JWT `role` claim; three user tables: `admins`, `qc_users`, `dispatch_users`). |
@@ -69,8 +69,8 @@ Specify the target end-to-end workflow of the ProductScanning system:
 |---|---|---|
 | 1 | Admin manages products/master data | **Unchanged** (FR-01, FR-02) |
 | 2 | Batch created in `CREATED`; QC later records PASS/FAIL; failed QC batches exist and can be reopened | **QC creates the batch directly in `QC_PASSED`.** The system MUST NOT record failed QC batches anywhere. An `AUTO_PASS` QC record is written for audit only. Endpoints for manual FAIL submit, bulk FAIL submit, and reopen-failed-batch are **removed**. |
-| 3 | Dispatch order approved by ADMIN or QC | Approval/rejection is a **QC-only** action. Admin has read-only visibility of orders. |
-| 4 | Packing list viewable on a web page | Dispatch MUST be able to **download** the packing list (PDF/print-ready) for approved orders. |
+| 3 | Dispatch order approved by ADMIN or QC | **No approval step at all.** A dispatch order is released for loading the moment DISPATCH raises it. A raised order can only be *cancelled* — by the dispatcher who raised it, or an ADMIN — while loading has not started. |
+| 4 | Packing list viewable on a web page | Dispatch MUST be able to **download** the packing list (PDF/print-ready) for the orders it raised. |
 | 5 | Dispatch confirms dispatch per scan; no load tracking | Dispatch **starts a Loading Session**, scans unit QR codes with a live `scanned/total` counter, and Admin sees a **live preview** of every active session (e.g. **10/100**). |
 | 6 | No seal number, no explicit "not dispatched" outcome | Dispatch **MUST** enter a **seal number** and mark the outcome **DISPATCHED** or **NOT DISPATCHED** (with remarks) to close the session; this updates order, batch, and dispatch-record state. |
 | 7 | Backend runs in dual DB mode (MySQL or Mongo adapters) | **Single-database mode.** One of MongoDB or MySQL is chosen as the *only* datastore; the other adapter code path is retired. Schema design for both is provided in §6. |
@@ -79,9 +79,9 @@ Specify the target end-to-end workflow of the ProductScanning system:
 
 | Role | Platforms | Capability summary |
 |---|---|---|
-| ADMIN | Web (+ mobile) | Products & masters, users, live loading monitor, reports/audit. **No order approval.** |
-| QC | Mobile + web | Create auto-passed batches, print/reprint QR labels, approve/reject dispatch orders. |
-| DISPATCH | Mobile + web | View QC-passed batches, raise dispatch orders, download packing lists, scan-load with counter, seal & finalise. |
+| ADMIN | Web (+ mobile) | Products & masters, users, live loading monitor, reports/audit. **Read-only on dispatch orders** (may cancel one). |
+| QC | Mobile + web | Create auto-passed batches, print/reprint QR labels, review batch quality. **Not involved in dispatch orders.** |
+| DISPATCH | Mobile + web | View QC-passed batches, raise dispatch orders, cancel them before loading, download packing lists, scan-load with counter, seal & finalise. |
 
 ---
 
@@ -93,24 +93,24 @@ Specify the target end-to-end workflow of the ProductScanning system:
 3. **Users:** create/administer QC and DISPATCH accounts (type = `admins` | `qc` | `dispatch`), activate/deactivate, reset passwords.
 4. **Monitoring:**
    - All batches and current inventory state (read).
-   - All dispatch orders and their statuses (read-only — MUST NOT approve/reject).
+   - All dispatch orders and their statuses (read-only — no approval action exists; Admin may cancel an order that has not started loading).
    - **Live loading preview:** every active loading session with `scanned/total` (e.g. **10/100**), % progress, last scan event + timestamp, duplicate/wrong-batch warnings; refresh latency ≤ 3 s (polling) or near-real-time (SSE).
    - Completed sessions: seal number, outcome (DISPATCHED / NOT DISPATCHED), remarks.
 5. **Reports & audit:** dashboards, activity logs, QC history (PASS-only), dispatch history.
 
-### 3.2 QC — "creator of good batches and approver of orders"
+### 3.2 QC — "creator of good batches"
 1. **Batch creation (auto-pass):** create batches against Admin-defined products. The batch MUST be created with status **`QC_PASSED`** and the system MUST simultaneously write one QC audit record (`result = PASS`, `method = AUTO_PASS`, tester = creating QC user). The system MUST NOT provide any UI or API to record a QC FAIL. If material is bad, QC simply does not create the batch (or deactivates/edits it before dispatch) — no failed-QC trace is retained.
 2. **Labels:** generate QR print jobs per batch (quantity of unit labels), print and reprint labels.
 3. **Batch upkeep:** edit batch details, finish-goods completion, assign shelf location, deactivate.
-4. **Dispatch order approval:** review the PENDING queue of dispatch orders; each decision is **Approve** (order → `APPROVED`, batch → `DISPATCH_APPROVED`, packing list frozen) or **Reject** (order → `REJECTED` with remarks, batch returns to `QC_PASSED`).
+4. **QC dashboard:** per-QC-person performance KPIs (reviewed today, total reviewed, passed, failed, pass rate) over the batch quality record.
 5. Optionally view QC statistics.
 
 ### 3.3 DISPATCH — "hands that move the goods"
-1. **View batches:** list of batches with status `QC_PASSED` / `DISPATCH_ORDER_RAISED` (product, quantity, UoM, shelf location).
-2. **Raise dispatch order:** pick a batch + client, enter driver name, vehicle number, container number → order `PENDING`; batch → `DISPATCH_ORDER_RAISED`.
-3. **Track own orders:** `/mine` list with status (`PENDING`/`APPROVED`/`REJECTED`) and QC remarks.
-4. **Download packing list:** for approved orders download/print PDF (client, driver, vehicle, product, batch number, quantity, UoM, shelf location).
-5. **Load by scan:** start a Loading Session on an approved order (`total` = order/batch quantity); scan each unit's QR (`scanned` increments); duplicates warned, foreign-batch scans flagged; every scan recorded as an event.
+1. **View batches:** list of batches with status `QC_PASSED` / `DISPATCH_APPROVED` (product, quantity, UoM, shelf location).
+2. **Raise dispatch order:** pick a batch + client, enter driver name, vehicle number, container number → order `APPROVED` (released immediately); batch → `DISPATCH_APPROVED`; packing list frozen at raise time.
+3. **Track own orders:** `/mine` list with status (`APPROVED`/`CANCELLED`/`CLOSED_DISPATCHED`/`CLOSED_NOT_DISPATCHED`); cancel an order that has not started loading.
+4. **Download packing list:** for its own orders download/print PDF (client, driver, vehicle, product, batch number, quantity, UoM, shelf location).
+5. **Load by scan:** start a Loading Session on a raised order (`total` = order/batch quantity); scan each unit's QR (`scanned` increments); duplicates warned, foreign-batch scans flagged; every scan recorded as an event.
 6. **Seal & finalise:** when done enter a non-empty **seal number**, mark the outcome **DISPATCHED** or **NOT DISPATCHED** (+ optional remarks). Session closes; order and batch reach their final status.
 
 ---
@@ -137,16 +137,12 @@ Batches visible (QC_PASSED) ◄────────────────�
 DISPATCH
   │  browses QC_PASSED batches
   │  picks batch + client + driver + vehicle (+ container)
-  │  ──► raises DISPATCH ORDER  (status = PENDING)
-  ▼
-QC
-  │  reviews PENDING dispatch orders
-  │  ├── Approve ──► order = APPROVED, batch = DISPATCH_APPROVED,
-  │  │                packing list frozen
-  │  └── Reject  ──► order = REJECTED (+ remarks), batch stays QC_PASSED
+  │  ──► raises DISPATCH ORDER  (status = APPROVED, released immediately;
+  │        batch = DISPATCH_APPROVED, packing list frozen)
+  │      (may cancel it later, while loading has not started)
   ▼
 DISPATCH
-  │  sees APPROVED orders
+  │  sees its own orders
   │  downloads / prints PACKING LIST
   │  starts LOADING SESSION  (total = order/batch quantity)
   │  scans unit QR codes one by one
@@ -184,7 +180,6 @@ flowchart TD
         direction TB
         Q_Batch["Create Batch<br/>status = QC_PASSED (automatic)<br/>AUTO_PASS audit record only<br/>(no failed-QC batches recorded)"]
         Q_QR["Generate / Print QR Labels"]
-        Q_Approve{"Approve<br/>Dispatch Order?"}
         Q_Batch --> Q_QR
     end
 
@@ -192,25 +187,22 @@ flowchart TD
     subgraph DISPATCH["Dispatch (Mobile + Web)"]
         direction TB
         D_View["View QC_PASSED batches"]
-        D_Raise["Request Dispatch Order<br/>client + driver + vehicle + container"]
-        D_Wait["Order status: PENDING"]
-        D_Approved["See APPROVED orders"]
+        D_Raise["Raise Dispatch Order<br/>client + driver + vehicle + container<br/>order = APPROVED (released at once)"]
+        D_Cancel{"Cancel before<br/>loading starts?"}
         D_PDF["Download / Print Packing List"]
         D_Load["Start Loading Session →<br/>scan unit QR codes<br/>live counter scanned/total"]
         D_Seal["Enter Seal Number"]
         D_Mark{"Mark<br/>Dispatched?"}
         D_Done["Session closed<br/>order + batch = DISPATCHED"]
         D_NotDone["Session closed<br/>order + batch = NOT DISPATCHED<br/>(with remarks)"]
-        D_View --> D_Raise --> D_Wait
-        D_Approved --> D_PDF --> D_Load --> D_Seal --> D_Mark
+        D_View --> D_Raise --> D_Cancel
+        D_Cancel -- "No" --> D_PDF --> D_Load --> D_Seal --> D_Mark
+        D_Cancel -- "Yes (reason)" --> D_View
         D_Mark -- Yes --> D_Done
         D_Mark -- No --> D_NotDone
     end
 
     %% ============ CROSS-LANE ============
-    D_Wait -.->|"PENDING order for review"| Q_Approve
-    Q_Approve -- "Approve" --> D_Approved
-    Q_Approve -- "Reject (remarks)" --> D_Wait
     D_Load -.->|"live scan events (SSE / polling)"| A_Live
     D_Done -.->|"status feed"| A_Reports
     D_NotDone -.->|"status feed"| A_Reports
@@ -221,20 +213,21 @@ flowchart TD
 
 **Batch status**
 ```
-QC_PASSED ──(dispatch order raised)────────► DISPATCH_ORDER_RAISED
-           ──(QC approves)────────────────► DISPATCH_APPROVED
+QC_PASSED ──(dispatch order raised)────────► DISPATCH_APPROVED
            ──(loading session started)────► LOADING
            ──(finalised, outcome=DISPATCHED)──────► DISPATCHED        [terminal]
            ──(finalised, outcome=NOT_DISPATCHED)─► NOT_DISPATCHED     [terminal]
+DISPATCH_APPROVED ──(order cancelled before loading)──► QC_PASSED
 ```
-Removed legacy states: `CREATED`, `QC_FAILED`, `DISPATCH_REJECTED`.
+Removed legacy states: `CREATED`, `QC_FAILED`, `DISPATCH_REJECTED`, `DISPATCH_ORDER_RAISED`.
 
 **Dispatch order status**
 ```
-PENDING ──(QC approve)──► APPROVED ──(session finalised w/ outcome=DISPATCHED)───► CLOSED_DISPATCHED
-                             └──(session finalised w/ outcome=NOT_DISPATCHED)──► CLOSED_NOT_DISPATCHED
-PENDING ──(QC reject with remarks)──► REJECTED                                  [terminal]
+APPROVED ──(session finalised w/ outcome=DISPATCHED)────► CLOSED_DISPATCHED
+         ├──(session finalised w/ outcome=NOT_DISPATCHED)─► CLOSED_NOT_DISPATCHED
+         └──(cancelled with reason, before loading)────────► CANCELLED        [terminal]
 ```
+Removed legacy states: `PENDING`, `REJECTED`.
 
 **Loading session status**
 ```
@@ -276,27 +269,27 @@ A session MUST NOT be re-opened after `CLOSED`.
 - QC creates QR print jobs (`POST /api/qc/qr-jobs`) generating `qr_labels` rows (unique `qr_value`, serial_no per job); list/get/reprint endpoints unchanged.
 - *Accept:* job with quantity 100 produces 100 label rows; reprint increments print_count; label values unique across the database.
 
-### 5.3 Dispatch orders (DISPATCH raises, QC approves)
+### 5.3 Dispatch orders (DISPATCH raises and loads — no approval step)
 
 **FR-05 Batch visibility for DISPATCH**
-- DISPATCH MUST be able to list batches filtered by `status IN ('QC_PASSED','DISPATCH_ORDER_RAISED')` with product metadata.
+- DISPATCH MUST be able to list batches filtered by `status IN ('QC_PASSED','DISPATCH_APPROVED')` with product metadata.
 - *Accept:* batches in `LOADING`/`DISPATCHED`/`NOT_DISPATCHED` never appear in this list.
 
 **FR-06 Raise dispatch order**
-- `POST /api/dispatch-orders` (DISPATCH) with either `batch_id` or `barcode_value` + `client_id`, `driver_name`, `vehicle_number`, `container_number` → creates order `PENDING`, sets batch `DISPATCH_ORDER_RAISED`.
+- `POST /api/dispatch-orders` (DISPATCH) with either `batch_id` or `barcode_value` + `client_id`, `driver_name`, `vehicle_number`, `container_number` → creates order `APPROVED` (released immediately, there is no approval queue), sets batch `DISPATCH_APPROVED`, and freezes the packing-list snapshot (product/batch/quantity/UoM/location) at raise time.
 - Idempotent via `client_operation_id` (duplicate → 200 + `duplicate:true`, no second order).
-- *Accept:* order appears in QC's pending queue; batch status changed; retrying the same `client_operation_id` does not create a second order.
-- *Errors:* batch not in `QC_PASSED`/`DISPATCH_ORDER_RAISED` → 409 `code:'INVALID_BATCH_STATE'`; already has an open order → 409 `code:'OPEN_ORDER_EXISTS'`; unknown barcode → 404.
+- *Accept:* the order is immediately loadable (FR-09) and downloadable (FR-08); retrying the same `client_operation_id` does not create a second order.
+- *Errors:* batch not in `QC_PASSED` → 409 `code:'INVALID_BATCH_STATE'`; already has an open order → 409 `code:'OPEN_ORDER_EXISTS'`; unknown barcode → 404.
 
-**FR-07 QC approval (core change)**
-- `POST /api/dispatch-orders/:id/approve` and `.../reject` MUST be `authorize('QC')` **only**.
-  - Approve → order `APPROVED`, `approved_by_id` = QC user, `approved_at` set; batch → `DISPATCH_APPROVED`; packing-list items frozen (snapshot of product/batch/quantity/UoM/location at approval time).
-  - Reject → order `REJECTED` + required `remarks`; batch → back to `QC_PASSED`; if another order is later raised, it repeats the cycle.
-- *Accept:* ADMIN calling `/approve` → 403; QC approve on non-PENDING order → 409; approved order immediately downloadable (FR-08) with frozen values (later batch edits do not alter the packing list snapshot).
+**FR-07 Cancel dispatch order**
+- There is **no approval step**. A raised order can still be withdrawn by the dispatcher who raised it (or an ADMIN) via `POST /api/dispatch-orders/:id/cancel` with a required reason.
+  - Cancel → order `CANCELLED`; reserved QR labels released; batch → back to `QC_PASSED`; packing-list snapshot discarded.
+  - A dispatch user cancelling someone else's order → 403. Cancelling an order whose loading has already started → 409.
+- *Accept:* after cancelling, the batch is orderable again and its QR labels can be reserved by a new order.
 
 **FR-08 Packing list download**
-- `GET /api/dispatch-orders/:id/packing-list` returns JSON (existing behaviour, now additionally `QC` allowed) and `GET /api/dispatch-orders/:id/packing-list.pdf` returns a print-ready PDF generated server-side — accessible to **QC and DISPATCH** (and ADMIN).
-- *Accept:* DISPATCH downloads the PDF for an APPROVED order and it contains client, driver, vehicle, container, product, batch number, quantity, UoM, shelf location, frozen at approval.
+- `GET /api/dispatch-orders/:id/packing-list` returns JSON and `GET /api/dispatch-orders/:id/packing-list.pdf` returns a print-ready PDF generated server-side — accessible to **DISPATCH** (and ADMIN).
+- *Accept:* DISPATCH downloads the PDF for a raised order and it contains client, driver, vehicle, container, product, batch number, quantity, UoM, shelf location, frozen at raise time.
 
 ### 5.4 Loading & live preview (DISPATCH scans, ADMIN watches)
 
@@ -336,20 +329,20 @@ A session MUST NOT be re-opened after `CLOSED`.
 - *Accept:* replaying the same scan operation twice keeps `scanned` unchanged and returns the first event.
 
 **FR-14 Audit trail**
-- Product edits, batch creation, order raise/approve/reject, session start/finalise, and notable anomalies MUST appear in `activity_logs` with user id/name/role/action/timestamp.
+- Product edits, batch creation, order raise/cancel, session start/finalise, and notable anomalies MUST appear in `activity_logs` with user id/name/role/action/timestamp.
 
 ### 5.6 Business rules summary (BR)
 
 | BR-ID | Rule |
 |---|---|
 | BR-1 | Batch is born `QC_PASSED`; `QC_FAILED` must not exist in the system. |
-| BR-2 | Only QC approves/rejects dispatch orders. Admin is read-only on orders. |
+| BR-2 | Dispatch orders need no approval. A raised order is released at once; only the dispatcher who raised it (or an ADMIN) may cancel it, and only before loading starts. |
 | BR-3 | A batch has at most one open (non-terminal) dispatch order. |
 | BR-4 | Loading requires an APPROVED order; one ACTIVE session per order (and per batch). |
 | BR-5 | `scanned` never exceeds `total`; non-OK scans do not increment. |
 | BR-6 | A session cannot close without a non-empty seal number. |
 | BR-7 | Outcome is binary: `DISPATCHED` or `NOT_DISPATCHED`; both order and batch reflect it. |
-| BR-8 | Packing lists are an immutable snapshot taken at approval time. |
+| BR-8 | Packing lists are an immutable snapshot taken at raise time. |
 | BR-9 | All state transitions are role-guarded and logged. |
 | BR-10 | Every write endpoint is idempotent for mobile clients via `client_operation_id`. |
 
@@ -411,19 +404,19 @@ qr_labels { _id, id, print_job_id, batch_id, qr_value (unique), serial_no,
 clients { _id, id, name, contact_person, email, phone, address, gst_number,
   is_active, created_at, updated_at }
 
-// ---------- dispatch_orders (QC approves) ----------
+// ---------- dispatch_orders (no approval step) ----------
 dispatch_orders { _id, id, batch_id, raised_by,
-  status: "PENDING"|"APPROVED"|"REJECTED"|"CLOSED_DISPATCHED"|"CLOSED_NOT_DISPATCHED",
+  status: "APPROVED"|"CANCELLED"|"CLOSED_DISPATCHED"|"CLOSED_NOT_DISPATCHED",
   client_id, driver_name, vehicle_number, container_number,
-  approved_by_role:"QC", approved_by_id, approved_at, remarks,
+  approved_by_role:"DISPATCH", approved_by_id, approved_at, remarks,
   seal_number, dispatched_at,
   client_operation_id (sparse unique), client_created_at, device_uuid,
   created_at, updated_at }
 // indexes: (client_operation_id sparse unique), (status, created_at -1),
 //          (raised_by, created_at -1), (batch_id, status), (updated_at)
-// partial unique: { batch_id: 1 } where status ∈ {PENDING, APPROVED}  (BR-3)
+// partial unique: { batch_id: 1 } where status = 'APPROVED'  (BR-3)
 
-// ---------- packing_list_items (frozen at approval) ----------
+// ---------- packing_list_items (frozen at raise) ----------
 packing_list_items { _id, id, dispatch_order_id, batch_id, product_name,
   batch_number, quantity, uom, location_code, location_description, created_at }
 // indexes: (dispatch_order_id), (batch_id)
@@ -512,18 +505,18 @@ CREATE TABLE IF NOT EXISTS qc_records (
   FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
 );
 
--- ---------- dispatch_orders (QC approves) ----------
+-- ---------- dispatch_orders (no approval step) ----------
 CREATE TABLE IF NOT EXISTS dispatch_orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
   batch_id INT NOT NULL,
   raised_by INT NOT NULL,
-  status ENUM('PENDING','APPROVED','REJECTED',
-              'CLOSED_DISPATCHED','CLOSED_NOT_DISPATCHED') NOT NULL DEFAULT 'PENDING',
+  status ENUM('APPROVED','CANCELLED',
+              'CLOSED_DISPATCHED','CLOSED_NOT_DISPATCHED') NOT NULL DEFAULT 'APPROVED',
   client_id INT NULL,
   driver_name VARCHAR(150) NULL,
   vehicle_number VARCHAR(50) NULL,
   container_number VARCHAR(100) NULL,
-  approved_by_role VARCHAR(20) NULL DEFAULT 'QC',
+  approved_by_role VARCHAR(20) NULL DEFAULT 'DISPATCH',
   approved_by_id INT NULL,
   approved_at DATETIME(3) NULL,
   remarks TEXT NULL,
@@ -662,15 +655,14 @@ POST   /api/qc/qr-jobs/:id/reprint       ADMIN, QC
 POST   /api/dispatch-orders              DISPATCH
         { batch_id | barcode_value, client_id, driver_name, vehicle_number,
           container_number, client_operation_id }
-        → 201 { order, batch_status:'DISPATCH_ORDER_RAISED' }
+        → 201 { order, batch_status:'DISPATCH_APPROVED' }   (no approval step)
         409 codes: INVALID_BATCH_STATE | OPEN_ORDER_EXISTS
 GET    /api/dispatch-orders/mine         DISPATCH own orders (+status filter)
-GET    /api/dispatch-orders/pending      QC       review queue
-GET    /api/dispatch-orders/all          ADMIN(read-only), QC
-POST   /api/dispatch-orders/:id/approve  QC ONLY  (+remarks?) → APPROVED; 403 for ADMIN
-POST   /api/dispatch-orders/:id/reject   QC ONLY  remarks REQUIRED → REJECTED
-GET    /api/dispatch-orders/:id/packing-list      QC, DISPATCH, ADMIN → JSON
-GET    /api/dispatch-orders/:id/packing-list.pdf  QC, DISPATCH, ADMIN → PDF
+GET    /api/dispatch-orders/all          ADMIN(read-only)
+POST   /api/dispatch-orders/:id/cancel   DISPATCH (own order), ADMIN
+        remarks REQUIRED → CANCELLED; labels released; batch → QC_PASSED
+GET    /api/dispatch-orders/:id/packing-list      DISPATCH, ADMIN → JSON
+GET    /api/dispatch-orders/:id/packing-list.pdf  DISPATCH, ADMIN → PDF
 
 -- Loading sessions (FR-09..12) — NEW module -------------------------
 POST   /api/loading-sessions             DISPATCH(, ADMIN)
@@ -702,8 +694,7 @@ GET    /api/sync/pull                    includes loading_sessions + events curs
 ```
 
 **Frontend touchpoints** (for whoever builds the UI):
-- `DispatchOrders.tsx`: remove admin approve action → read-only for ADMIN.
-- QC gains an Approve/Reject worklist (PENDING queue + remarks dialog).
+- `DispatchOrders.tsx`: read-only for ADMIN; DISPATCH raises, loads and cancels its own orders.
 - New admin page **LoadingMonitor**: polls `/loading-sessions/active` every 2 s (or SSE), renders `scanned/total` progress per session — the "10/100" view.
 - `DispatchScan.tsx` / mobile scan tab: start-session → scan (with OK/DUPLICATE/WRONG_BATCH feedback) → finalise sheet (seal number + DISPATCHED/NOT DISPATCHED + remarks).
 - QC batch-creation screen becomes the entry point for batches; old QC pass/fail screen removed.
@@ -713,7 +704,6 @@ GET    /api/sync/pull                    includes loading_sessions + events curs
 type SyncOperationType =
   | 'BATCH_CREATE_AUTO_PASS'
   | 'DISPATCH_ORDER_RAISE'
-  | 'QC_ORDER_APPROVE' | 'QC_ORDER_REJECT'
   | 'LOADING_SESSION_START' | 'LOADING_SESSION_SCAN' | 'LOADING_SESSION_FINALISE';
 ```
 Each payload mirrors its REST body (§6.5); the server resolves `barcode_value`→`batch_id`, validates state, applies idempotently, and records the operation in `sync_operations` with statuses `APPLIED | DUPLICATE | CONFLICT | FAILED` (unchanged semantics).
@@ -725,7 +715,7 @@ Each payload mirrors its REST body (§6.5); the server resolves `barcode_value`�
 2. Data migration: legacy `CREATED` batches → archive or promote to `QC_PASSED` (with AUTO_PASS record); `QC_FAILED` → `NOT_DISPATCHED` (archived, invisible to dispatch lists); `DISPATCH_REJECTED` → `QC_PASSED`.
 3. Backfill `qc_records.method='AUTO_PASS'` where missing.
 4. Create `loading_sessions` + `loading_scan_events` (Mongo collections or SQL tables + indexes) and the partial/generated unique constraints (BR-3, BR-4).
-5. Deploy backend changes first (QC-only approval; new loading module; retire fail/reopen endpoints), then web, then mobile.
+5. Deploy backend changes first (no approval step; new loading module; retire fail/reopen endpoints), then web, then mobile.
 6. Optional feature flag `QC_AUTO_PASS_ENABLED` during the transition window; disable the legacy QC fail screen after go-live.
 
 ---

@@ -548,9 +548,19 @@ async function applyDispatchOrderRaise(
       seen.add(batchId);
       const quantity = Number(line.quantity);
       if (!Number.isInteger(quantity) || quantity < 1) throw new SyncError('Each product line needs a whole-number quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
-      assertStatus(batch, ['QC_PASSED', 'DISPATCH_APPROVED', 'DISPATCH_REJECTED'], `Batch ${batch.batch_number} is not available for dispatch`);
+      assertStatus(batch, ['QC_PASSED'], `Batch ${batch.batch_number} is not available for dispatch`);
       const [[counts]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS total, SUM(dispatch_order_id IS NOT NULL) AS reserved, SUM(recall_status = \'RECALLED\') AS recalled FROM qr_labels WHERE batch_id = ?', [batchId]);
       if (Number(counts.total) !== Number(batch.quantity)) throw new SyncConflictError(`QR labels are incomplete for ${batch.batch_number}`);
+      // Every QR label must have been printed before the batch goes on a truck.
+      const [[printed]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS printed FROM qr_labels WHERE batch_id = ? AND print_count > 0', [batchId]);
+      if (Number(printed.printed) < Number(counts.total)) {
+        throw new SyncConflictError(`Print the QR labels for ${batch.batch_number} before raising a dispatch order`, {
+          batch_id: batchId,
+          expected: Number(counts.total),
+          printed: Number(printed.printed),
+          code: 'QR_NOT_PRINTED',
+        });
+      }
       const available = Math.max(0, Number(batch.quantity) - Number(counts.reserved || 0) - Number(counts.recalled || 0));
       if (quantity > available) throw new SyncConflictError(`Only ${available} units remain for ${batch.product_name}`, { batch_id: batchId, available_quantity: available, requested_quantity: quantity });
       const [labels] = await conn.execute<RowDataPacket[]>('SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL ORDER BY serial_no ASC LIMIT ? FOR UPDATE', [batchId, quantity]);
@@ -561,12 +571,25 @@ async function applyDispatchOrderRaise(
       assignments.push({ batchId, labelIds: labels.map((label) => Number(label.id)) });
     }
     const total = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?)`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid]);
+    // Transport details are optional at raise time and captured again when the
+    // loading session is finalised. Keep whatever the caller supplied.
+    const transport = {
+      driver_name: typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
+      driver_phone: typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
+      vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
+      container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
+    };
+    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, approved_by_role, approved_by_id) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?)`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, user.userId]);
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, labelId]);
       if (updated.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.');
     }
-    await logActivity(conn, user, 'DISPATCH_ORDER_RAISED', `Dispatch order #${insert.insertId} created with ${lines.length} product lines and ${total} units`);
+    // No approval step: the order is released for loading the moment it is
+    // raised, so the batch goes straight to DISPATCH_APPROVED.
+    for (const line of lines) {
+      await conn.execute('UPDATE batches SET status = \'DISPATCH_APPROVED\', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?', [line.batch_id]);
+    }
+    await logActivity(conn, user, 'DISPATCH_ORDER_CREATED', `Dispatch order #${insert.insertId} created with ${lines.length} product lines and ${total} units, ready for loading`);
     return { entityType: 'dispatch_order', entityId: Number(insert.insertId), data: { id: Number(insert.insertId), batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : 'Multi-product order', product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
   }
   const batch = await getBatchForUpdate(conn, input.payload);
@@ -581,8 +604,8 @@ async function applyDispatchOrderRaise(
   }
   assertStatus(
     batch,
-    ['QC_PASSED', 'DISPATCH_APPROVED', 'DISPATCH_REJECTED'],
-    `Dispatch order can only be raised for QC_PASSED or DISPATCH_REJECTED batches. Current status: ${batch.status}`
+    ['QC_PASSED'],
+    `Dispatch order can only be raised for QC_PASSED batches. Current status: ${batch.status}`
   );
   if (!batch.fg_details_completed_at) {
     const [labels] = await conn.execute<RowDataPacket[]>(
@@ -610,6 +633,20 @@ async function applyDispatchOrderRaise(
       });
     }
   }
+  // Every QR label of the batch must have been printed before it can be
+  // assigned to a dispatch order.
+  const [[labelTotals]] = await conn.execute<RowDataPacket[]>(
+    'SELECT COUNT(*) AS total, SUM(CASE WHEN print_count > 0 THEN 1 ELSE 0 END) AS printed FROM qr_labels WHERE batch_id = ?',
+    [batch.id]
+  );
+  if (Number(labelTotals.printed || 0) < Number(labelTotals.total || 0)) {
+    throw new SyncConflictError(`Print the QR labels for ${batch.batch_number} before raising a dispatch order`, {
+      batch_id: batch.id,
+      expected: Number(labelTotals.total || 0),
+      printed: Number(labelTotals.printed || 0),
+      code: 'QR_NOT_PRINTED',
+    });
+  }
 
   const [[reservation]] = await conn.execute<RowDataPacket[]>(
     'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND dispatch_order_id IS NOT NULL', [batch.id]
@@ -628,8 +665,10 @@ async function applyDispatchOrderRaise(
   const [insert] = await conn.execute<ResultSetHeader>(
     `INSERT INTO dispatch_orders
       (batch_id, raised_by, status, client_id, quantity,
-       client_operation_id, client_created_at, device_uuid)
-     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?)`,
+       client_operation_id, client_created_at, device_uuid,
+       driver_name, driver_phone, vehicle_number, container_number,
+       approved_by_role, approved_by_id)
+     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?)`,
     [
       batch.id,
       user.userId,
@@ -638,6 +677,13 @@ async function applyDispatchOrderRaise(
       input.operation_id,
       toDate(input.client_timestamp),
       deviceUuid,
+      // Transport details are optional at raise time and captured again when
+      // the loading session is finalised. Keep whatever the caller supplied.
+      typeof input.payload.driver_name === 'string' ? input.payload.driver_name.trim().slice(0, 150) || null : null,
+      typeof input.payload.driver_phone === 'string' ? input.payload.driver_phone.trim().slice(0, 32) || null : null,
+      typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
+      typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
+      user.userId,
     ]
   );
 
@@ -645,10 +691,17 @@ async function applyDispatchOrderRaise(
     const [assigned] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, label.id]);
     if (assigned.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
+
+  // No approval step: the order is released for loading the moment it is
+  // raised, so the batch goes straight to DISPATCH_APPROVED.
+  await conn.execute(
+    "UPDATE batches SET status = 'DISPATCH_APPROVED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+    [batch.id]
+  );
   await logActivity(
     conn,
     user,
-    'DISPATCH_ORDER_RAISED',
+    'DISPATCH_ORDER_CREATED',
     `Dispatch order created for batch ${batch.batch_number} (${batch.product_name}); ${requestedQuantity} units allocated for loading`
   );
 
@@ -703,7 +756,7 @@ async function applyDispatchConfirm(
     });
   }
   if (batch.status === 'DISPATCH_ORDER_RAISED') {
-    throw new SyncConflictError('Dispatch order is still awaiting admin approval', {
+    throw new SyncConflictError('This batch is held by a dispatch order that is no longer active', {
       batch_id: batch.id,
       current_status: batch.status,
     });
@@ -850,7 +903,7 @@ async function applyDispatchConfirmBulk(
       });
     }
     if (batch.status === 'DISPATCH_ORDER_RAISED') {
-      throw new SyncConflictError('A dispatch order is still awaiting admin approval', {
+      throw new SyncConflictError('This batch is held by a dispatch order that is no longer active', {
         batch_id: batch.id,
         barcode_value: batch.barcode_value,
         current_status: batch.status,

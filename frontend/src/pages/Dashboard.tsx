@@ -25,6 +25,7 @@ const statusBadge: Record<string, { bg: string; text: string; label: string }> =
   DISPATCHED: { bg: 'bg-emerald-100 border-emerald-300 text-emerald-900', text: 'text-emerald-800', label: 'Dispatched (Completed)' },
   CLOSED_DISPATCHED: { bg: 'bg-emerald-100 border-emerald-300 text-emerald-900', text: 'text-emerald-800', label: 'Dispatched (Completed)' },
   REJECTED: { bg: 'bg-rose-100 border-rose-300 text-rose-900', text: 'text-rose-800', label: 'Rejected' },
+  CANCELLED: { bg: 'bg-rose-100 border-rose-300 text-rose-900', text: 'text-rose-800', label: 'Cancelled' },
   CLOSED_NOT_DISPATCHED: { bg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-700', label: 'Cancelled' },
   NOT_DISPATCHED: { bg: 'bg-slate-100 border-slate-300 text-slate-800', text: 'text-slate-700', label: 'Not Dispatched' },
 };

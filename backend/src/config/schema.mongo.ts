@@ -40,6 +40,7 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('batches').createIndex({ batch_group_id: 1 }),
     ctx.collection('batch_groups').createIndex({ group_key: 1 }, unique),
     ctx.collection('batch_groups').createIndex({ batch_number: 1 }, unique),
+    ctx.collection('batch_groups').createIndex({ client_operation_id: 1 }, sparseUnique),
     ctx.collection('batches').createIndex({ status: 1, updated_at: 1 }),
     ctx.collection('batches').createIndex({ updated_at: 1 }),
     ctx.collection('batches').createIndex({ shelf_location_id: 1 }),
@@ -142,11 +143,32 @@ export async function ensureAdminSchema(): Promise<void> {
     } catch (error) { if (!isDuplicateKey(error)) throw error; legacyTenant = await ctx.findOne('tenants', { slug: 'legacy-workspace' }, { projection: { _id: 0, id: 1 } }); }
   }
   if (legacyTenant) {
-    for (const collection of ['admins', 'qc_users', 'dispatch_users', 'products', 'batches', 'qc_records', 'dispatch_records', 'dispatch_orders', 'clients', 'vendors', 'shelf_locations', 'activity_logs']) {
+    for (const collection of ['admins', 'qc_users', 'dispatch_users', 'products', 'batches', 'qc_records', 'dispatch_records', 'dispatch_orders', 'clients', 'vendors', 'shelf_locations', 'activity_logs', 'qr_print_jobs']) {
       await ctx.updateMany(collection, { tenant_id: { $exists: false } }, { $set: { tenant_id: legacyTenant.id } });
       await ctx.updateMany(collection, { tenant_id: null }, { $set: { tenant_id: legacyTenant.id } });
     }
   }
+
+  // Existing print jobs belong to the workspace of the batch they printed.
+  // Backfill so tenant-scoped print-job queries keep returning the old stock.
+  await ctx.collection('qr_print_jobs').aggregate([
+    { $lookup: { from: 'qr_labels', localField: '_id', foreignField: 'print_job_id', as: 'labels' } },
+    { $match: { 'labels.0': { $exists: true } } },
+    { $lookup: { from: 'batches', localField: 'labels.batch_id', foreignField: '_id', as: 'batches' } },
+    { $match: { 'batches.0': { $exists: true } } },
+    { $set: { tenant_id: { $ifNull: [{ $first: '$batches.tenant_id' }, '$tenant_id'] } } },
+    { $merge: { into: 'qr_print_jobs', whenMatched: 'replace', whenNotMatched: 'discard' } },
+  ]).toArray();
+
+  // Existing batches whose labels were already printed count as printed, so
+  // current stock stays orderable after the print gate was introduced.
+  await ctx.collection('batches').aggregate([
+    { $lookup: { from: 'qr_labels', localField: '_id', foreignField: 'batch_id', as: 'labels' } },
+    { $match: { 'labels.0': { $exists: true }, qr_printed_at: { $exists: false } } },
+    { $set: { qr_printed_at: { $max: '$labels.last_printed_at' } } },
+    { $unset: 'labels' },
+    { $merge: { into: 'batches', whenMatched: 'replace', whenNotMatched: 'discard' } },
+  ]).toArray();
   for (const collection of ['grades', 'bag_quantities', 'vendors', 'shelf_locations']) {
     await ctx.updateMany(
       collection,

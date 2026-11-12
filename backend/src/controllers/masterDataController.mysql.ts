@@ -134,6 +134,23 @@ export async function remove(req: Request, res: Response): Promise<void> {
   if (!table) { res.status(404).json({ error: 'Master type not found' }); return; }
   const id = parseId(req.params.id);
   if (!id) { res.status(400).json({ error: 'Invalid master value ID' }); return; }
+  if (req.params.kind === 'uoms') {
+    const used = await query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS total FROM products WHERE bag_quantity_id = ?',
+      [id]
+    );
+    const total = Number(used[0]?.total || 0);
+    if (total > 0) {
+      res.status(409).json({
+        error: `This UOM is used by ${total} product grade${total === 1 ? '' : 's'}. Change those grades to another UOM before deleting.`,
+      });
+      return;
+    }
+    const deleted = await execute('DELETE FROM uoms WHERE id = ?', [id]);
+    if (deleted.affectedRows === 0) { res.status(404).json({ error: 'UOM not found' }); return; }
+    res.json({ message: 'UOM deleted' });
+    return;
+  }
   const result = await execute(`UPDATE ${table} SET is_active = 0 WHERE id = ? AND is_active <> 0`, [id]);
   if (result.affectedRows === 0) {
     const rows = await query<RowDataPacket[]>(`SELECT id FROM ${table} WHERE id = ?`, [id]);
