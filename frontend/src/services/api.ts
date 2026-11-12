@@ -347,7 +347,7 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number }>; driver_name?: string; driver_phone?: string; vehicle_number?: string; container_number?: string; client_operation_id?: string }) =>
+    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number }>; driver_name?: string; driver_phone?: string; vehicle_number?: string; container_number?: string; scheduled_dispatch_at?: string; client_operation_id?: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
     all: (params?: { q?: string; status?: string }) => {
       const qs = new URLSearchParams();

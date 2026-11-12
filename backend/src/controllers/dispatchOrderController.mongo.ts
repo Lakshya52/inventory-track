@@ -173,6 +173,7 @@ export async function raise(req: Request, res: Response): Promise<void> {
       driver_phone: transport.driver_phone,
       vehicle_number: transport.vehicle_number,
       container_number: transport.container_number,
+      scheduled_dispatch_at: req.body.scheduled_dispatch_at || undefined,
     },
   };
 
