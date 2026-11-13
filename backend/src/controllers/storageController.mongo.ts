@@ -85,13 +85,17 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
     tenant_id: tenantId,
     status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
   }, { sort: { created_at: -1 } });
-  const [products, locations, racks, warehouses] = await Promise.all([
+  const [products, grades, bagQuantities, locations, racks, warehouses] = await Promise.all([
     ctx.find('products', { tenant_id: tenantId }),
+    ctx.find('grades', {}),
+    ctx.find('bag_quantities', {}),
     ctx.find('shelf_locations', { tenant_id: tenantId }),
     ctx.find('storage_racks', { tenant_id: tenantId }),
     ctx.find('warehouses', { tenant_id: tenantId }),
   ]);
   const productsById = new Map(products.map((row: any) => [String(row.id), row]));
+  const gradesById = new Map(grades.map((row: any) => [String(row.id), row]));
+  const bagQuantitiesById = new Map(bagQuantities.map((row: any) => [String(row.id), row]));
   const locationsById = new Map(locations.map((row: any) => [String(row.id), row]));
   const warehousesById = new Map(warehouses.map((row: any) => [String(row.id), row.name]));
   const rackByLocation = new Map<string, { rack_id: string; warehouse_id: string; rack_code: string; warehouse_name: string }>();
@@ -109,11 +113,19 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
     const product = productsById.get(String(batch.product_id));
     const location = locationsById.get(String(batch.shelf_location_id));
     const rack = rackByLocation.get(String(batch.shelf_location_id));
+    const bagQuantity = bagQuantitiesById.get(String(batch.bag_quantity_id));
     return {
       id: batch.id,
+      product_id: batch.product_id,
       batch_number: batch.parent_batch_number || batch.batch_number,
       product_name: batch.product_name || product?.name || 'Unknown product',
       product_sku: batch.product_sku || product?.sku || null,
+      product_grade: product?.grade || null,
+      grade_name: gradesById.get(String(batch.grade_id))?.name || null,
+      package_quantity: batch.package_quantity ?? null,
+      bag_quantity_name: bagQuantity?.name ?? null,
+      bag_quantity: bagQuantity?.quantity ?? null,
+      bag_quantity_unit: bagQuantity?.unit ?? null,
       quantity: batch.quantity,
       remaining_quantity: Math.max(0, Number(batch.quantity || 0) - Number(batch.dispatched_quantity || 0) - Number(batch.recalled_quantity || 0)),
       uom: batch.uom || 'units',

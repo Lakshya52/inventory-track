@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Boxes, Loader2, MapPin, Package, X } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { api } from "../services/api";
+import { formatDateOnly } from "../utils/dateFormat";
 
 type StoredBatch = {
 	id: string | number;
@@ -380,7 +381,7 @@ function CellDetails({ cell }: { cell: StorageCell | null }) {
 		);
 	}
 	const formatDate = (value?: string | null) =>
-		value ? new Date(value).toLocaleDateString() : null;
+		value ? formatDateOnly(value) : null;
 	const formatValue = (value: unknown) =>
 		value === null || value === undefined || value === ""
 			? null

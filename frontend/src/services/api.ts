@@ -6,6 +6,10 @@ import type { Tenant } from '../types';
 
 const API_ORIGIN = (import.meta.env.API_URL || '').replace(/\/+$/, '').replace(/\/api$/i, '');
 const BASE_URL = `${API_ORIGIN}/api`;
+const ACCESS_TOKEN_KEY = 'token';
+const REFRESH_TOKEN_KEY = 'refreshToken';
+
+let refreshInFlight: Promise<string> | null = null;
 
 function apiOrigin(): string {
   return API_ORIGIN;
@@ -28,17 +32,95 @@ export function resolveUploadUrl(url: string | null | undefined): string {
 }
 
 function token(): string | null {
-  return localStorage.getItem('token');
+  return localStorage.getItem(ACCESS_TOKEN_KEY);
+}
+
+function persistSessionTokens(session: { token?: unknown; refreshToken?: unknown }): void {
+  if (typeof session.token !== 'string' || typeof session.refreshToken !== 'string') {
+    throw new Error('The server returned an invalid session.');
+  }
+  localStorage.setItem(ACCESS_TOKEN_KEY, session.token);
+  localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
+}
+
+function clearSessionTokens(): void {
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+async function performSessionRefresh(): Promise<string> {
+  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+  if (!refreshToken) throw new Error('Session expired. Please sign in again.');
+
+  const response = await fetch(`${BASE_URL}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) {
+      const currentRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+      const currentAccessToken = token();
+      if (currentRefreshToken && currentRefreshToken !== refreshToken && currentAccessToken) {
+        return currentAccessToken;
+      }
+      clearSessionTokens();
+    }
+    throw new Error(body.error || 'Could not refresh session.');
+  }
+
+  persistSessionTokens(body);
+  return body.token;
+}
+
+function refreshSession(): Promise<string> {
+  if (!refreshInFlight) {
+    refreshInFlight = performSessionRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+async function fetchWithSession(path: string, options: RequestInit = {}): Promise<Response> {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const headers: Record<string, string> = {
+    ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
+    ...((options.headers as Record<string, string>) || {}),
+  };
+  const isPublicAuthRequest = ['/auth/login', '/auth/register', '/auth/refresh'].includes(path);
+  const sentToken = isPublicAuthRequest ? null : token();
+  if (sentToken) headers.Authorization = `Bearer ${sentToken}`;
+  else delete headers.Authorization;
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  if (res.status !== 401 || isPublicAuthRequest) return res;
+
+  const retryOptions = (): RequestInit => {
+    if (path !== '/auth/logout' || typeof options.body !== 'string') return options;
+    const body = JSON.parse(options.body);
+    if (body && typeof body === 'object' && 'refreshToken' in body) {
+      body.refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+      return { ...options, body: JSON.stringify(body) };
+    }
+    return options;
+  };
+
+  const currentToken = token();
+  if (sentToken && currentToken && currentToken !== sentToken) {
+    headers.Authorization = `Bearer ${currentToken}`;
+    return fetch(`${BASE_URL}${path}`, { ...retryOptions(), headers });
+  }
+
+  if (!localStorage.getItem(REFRESH_TOKEN_KEY)) return res;
+  const refreshedToken = await refreshSession();
+  headers.Authorization = `Bearer ${refreshedToken}`;
+  return fetch(`${BASE_URL}${path}`, { ...retryOptions(), headers });
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
-  };
-  const t = token();
-  if (t) headers['Authorization'] = `Bearer ${t}`;
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const res = await fetchWithSession(path, options);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || 'Request failed');
@@ -49,10 +131,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   printer: {
     certificate: async (): Promise<string> => {
-      const headers: Record<string, string> = {};
-      const authToken = token();
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const response = await fetch(`${BASE_URL}/printer/certificate`, { headers, cache: 'no-store' });
+      const response = await fetchWithSession('/printer/certificate', { cache: 'no-store' });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.error || 'Direct printer signing is unavailable.');
@@ -60,12 +139,8 @@ export const api = {
       return response.text();
     },
     sign: async (request: string): Promise<string> => {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      const authToken = token();
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const response = await fetch(`${BASE_URL}/printer/sign`, {
+      const response = await fetchWithSession('/printer/sign', {
         method: 'POST',
-        headers,
         body: JSON.stringify({ request }),
         cache: 'no-store',
       });
@@ -78,14 +153,11 @@ export const api = {
   },
   auth: {
     register: (data: { name: string; companyName: string; mobile: string; email: string; password: string }) =>
-      request<{ token: string; user: any; tenant: any }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+      request<{ token: string; refreshToken: string; refreshExpiresAt: string; user: any; tenant: any }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
     uploadLogo: async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const headers: Record<string, string> = {};
-      const authToken = token();
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const response = await fetch(`${BASE_URL}/tenant-logo`, { method: 'POST', body: form, headers });
+      const response = await fetchWithSession('/tenant-logo', { method: 'POST', body: form });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Logo upload failed');
       if (typeof data.logoUrl !== 'string' || !/^\/api\/tenants\/[^/]+\/logo$/.test(data.logoUrl)) {
@@ -94,10 +166,12 @@ export const api = {
       return data.logoUrl;
     },
     login: (email: string, password: string) =>
-      request<{ token: string; user: any }>('/auth/login', {
+      request<{ token: string; refreshToken: string; refreshExpiresAt: string; user: any }>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       }),
+    persistSession: persistSessionTokens,
+    clearSession: clearSessionTokens,
     me: () => request<any>('/auth/me'),
     tenant: () => request<Tenant>('/auth/tenant'),
     updateTenant: (data: Pick<Tenant, 'name' | 'email' | 'phone' | 'logoUrl'>) =>
@@ -105,8 +179,11 @@ export const api = {
     printerLabelSize: () => request<{ widthMm: number; heightMm: number }>('/auth/tenant/printer-label-size'),
     updatePrinterLabelSize: (data: { widthMm: number; heightMm: number }) =>
       request<{ widthMm: number; heightMm: number }>('/auth/tenant/printer-label-size', { method: 'PUT', body: JSON.stringify(data) }),
-    refresh: (refreshToken: string) =>
-      request<any>('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
+    refresh: async (refreshToken: string) => {
+      const session = await request<any>('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) });
+      persistSessionTokens(session);
+      return session;
+    },
     logout: (refreshToken?: string) =>
       request<any>('/auth/logout', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
   },
@@ -210,19 +287,13 @@ export const api = {
     importExcel: (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
-      const headers: Record<string, string> = {};
-      const t = token();
-      if (t) headers['Authorization'] = `Bearer ${t}`;
-      return fetch(`${BASE_URL}/products/import`, { method: 'POST', body: formData, headers }).then(async res => {
+      return fetchWithSession('/products/import', { method: 'POST', body: formData }).then(async res => {
         if (!res.ok) { const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || 'Import failed'); }
         return res.json();
       });
     },
     downloadSample: () => {
-      const headers: Record<string, string> = {};
-      const t = token();
-      if (t) headers['Authorization'] = `Bearer ${t}`;
-      return fetch(`${BASE_URL}/products/import/sample`, { headers }).then(async res => {
+      return fetchWithSession('/products/import/sample').then(async res => {
         if (!res.ok) throw new Error('Download failed');
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
@@ -263,7 +334,7 @@ export const api = {
       message: string;
     }> =>
       request('/batches', { method: 'POST', body: JSON.stringify(data) }),
-    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; unit_price?: number; avg_standard_quantity?: number | null }>; client_operation_id?: string }) =>
+    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string }>; client_operation_id?: string }) =>
       request<{ id: string; batch_group_id: string; batch_number: string; product_count: number; total_quantity: number; batches: Array<any>; labels: Array<QrLabel>; status: string; message: string; duplicate?: boolean }>('/batches/group', { method: 'POST', body: JSON.stringify(data) }),
     finishGoods: (id: EntityId, data: { vendor_id: EntityId; grade_id: EntityId; bag_quantity_id: EntityId; shelf_location_id?: EntityId }) =>
       request<any>(`/batches/${idPath(id)}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
@@ -368,10 +439,7 @@ export const api = {
     packingList: (id: EntityId) =>
       request<any>(`/dispatch-orders/${idPath(id)}/packing-list`),
     downloadPackingListPdf: async (id: EntityId, filename?: string) => {
-      const headers: Record<string, string> = {};
-      const t = token();
-      if (t) headers['Authorization'] = `Bearer ${t}`;
-      const res = await fetch(`${BASE_URL}/dispatch-orders/${idPath(id)}/packing-list.pdf`, { headers });
+      const res = await fetchWithSession(`/dispatch-orders/${idPath(id)}/packing-list.pdf`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(err.error || 'Could not download packing list');

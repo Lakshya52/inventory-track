@@ -21,6 +21,7 @@ import {
 	ShoppingCart,
 	Truck,
 	Users,
+	X,
 	XCircle,
 } from "lucide-react";
 import { api } from "../services/api";
@@ -425,17 +426,33 @@ export default function DispatchWorkspaceOrders() {
 			{error && (
 				<div
 					role="alert"
-					className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700"
+					className="flex items-start justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700"
 				>
-					{error}
+					<span>{error}</span>
+					<button
+						type="button"
+						aria-label="Dismiss error"
+						className="shrink-0 rounded-md p-1 text-rose-500 transition hover:bg-rose-100 hover:text-rose-700"
+						onClick={() => setError("")}
+					>
+						<X size={16} />
+					</button>
 				</div>
 			)}
 			{message && (
 				<div
 					role="status"
-					className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
+					className="flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
 				>
-					{message}
+					<span>{message}</span>
+					<button
+						type="button"
+						aria-label="Dismiss message"
+						className="shrink-0 rounded-md p-1 text-emerald-600 transition hover:bg-emerald-100 hover:text-emerald-800"
+						onClick={() => setMessage("")}
+					>
+						<X size={16} />
+					</button>
 				</div>
 			)}
 
@@ -689,14 +706,17 @@ export default function DispatchWorkspaceOrders() {
 																		</button>
 																		<div className="min-w-0 flex-1">
 																			<p className="truncate text-sm font-semibold text-surface-900">
-																				{label}
+																				{line.grade}
 																			</p>
 																			<p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-surface-500">
-																				{line.grade && (
+																				{/* {line.grade && (
 																					<span className="font-medium text-surface-600">
 																						{line.grade}
 																					</span>
-																				)}
+																				)} */}
+																				<span className="font-medium text-surface-600">
+																						{label}
+																					</span>
 																				{line.sku && (
 																					<span className="font-mono text-surface-500">
 																						{line.sku}
@@ -979,7 +999,19 @@ export default function DispatchWorkspaceOrders() {
 						</div>
 						<div className="space-y-4 p-5 sm:p-6">
 							{createdOrderId ? (
-								<div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
+								<div className="relative rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
+									<button
+										type="button"
+										aria-label="Dismiss order confirmation"
+										className="absolute right-3 top-3 rounded-md p-1 text-emerald-600 transition hover:bg-emerald-100 hover:text-emerald-800"
+										onClick={() => {
+											setCreatedOrderId(null);
+											setMessage("");
+											setStep(1);
+										}}
+									>
+										<X size={16} />
+									</button>
 									<CheckCircle2 size={28} className="mx-auto text-emerald-600" />
 									<p className="mt-3 text-sm font-semibold text-emerald-800">
 										Order #{createdOrderId} is ready to load.

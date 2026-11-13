@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../services/api';
+import { formatDateTime as formatIsoDateTime } from '../utils/dateFormat';
 import {
   Activity,
   AlertTriangle,
@@ -73,12 +74,7 @@ function formatTime(value?: string | null): string {
 }
 
 function formatDateTime(value?: string | null): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleString(undefined, {
-    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
-  });
+  return formatIsoDateTime(value);
 }
 
 function progressPercent(scanned: number, total: number): number {

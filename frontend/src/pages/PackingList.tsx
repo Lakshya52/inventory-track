@@ -4,13 +4,42 @@ import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Printer, Package, Eye, AlertTriangle, Download, FileText, CheckCircle2, Truck, X, MapPin } from 'lucide-react';
 import type { EntityId } from '../types';
+import { createPackingListPdfBlob } from '../utils/packingListPdf';
+import { formatDate } from '../utils/dateFormat';
 
 function itemLocation(item: any): string {
   return item.location || item.location_code || item.location_description || '-';
 }
 
+function itemQrIds(item: any): string[] {
+  if (Array.isArray(item.qr_values) && item.qr_values.length) {
+    return item.qr_values.map((value: unknown) => String(value));
+  }
+  if (item.qr_value) return [String(item.qr_value)];
+  return [];
+}
+
+function formatQrIds(ids: string[]): string {
+  const shown = ids.slice(0, 5);
+  const suffix = ids.length > 5 ? ` +${ids.length - 5} more` : '';
+  return `QR ID: ${shown.join(', ')}${suffix}`;
+}
+
 function itemBarcode(item: any, packingData: any): string {
+  const ids = itemQrIds(item);
+  if (ids.length > 0) return formatQrIds(ids);
   return item.barcode || packingData.barcode || '-';
+}
+
+function itemGradeName(item: any, packingData: any): string {
+  return item.grade_name || item.grade || packingData.grade || '-';
+}
+
+function packingGradeNames(packingData: any): string {
+  const names = (packingData.items || [])
+    .map((item: any) => itemGradeName(item, packingData))
+    .filter((name: string) => name && name !== '-');
+  return [...new Set(names)].join(', ') || packingData.grade || '-';
 }
 
 function getPackingStatus(status: string | null | undefined): { label: string; bg: string } {
@@ -50,6 +79,7 @@ export default function PackingList() {
   const handleViewPacking = useCallback(async (orderId: EntityId) => {
     setLoading(true);
     setError('');
+    setPackingData(null);
     try {
       setPackingData(await api.dispatchOrders.packingList(orderId));
     } catch (err: any) {
@@ -59,17 +89,24 @@ export default function PackingList() {
     }
   }, []);
 
-  const handleDownloadPdf = useCallback(async (order: any) => {
-    setDownloadingId(String(order.id));
+  const handleDownloadPdf = useCallback(async () => {
+    if (!packingData) return;
+    setDownloadingId(String(packingData.order_id));
     setError('');
     try {
-      await api.dispatchOrders.downloadPackingListPdf(order.id, `packing-list-${order.batch_number || order.id}.pdf`);
+      const blob = createPackingListPdfBlob(packingData);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `packing-list-${packingData.batch_number || packingData.order_id}.pdf`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err: any) {
       setError(err.message || 'Could not download packing list PDF');
     } finally {
       setDownloadingId(null);
     }
-  }, []);
+  }, [packingData]);
 
   useEffect(() => {
     const loader = user?.role === 'DISPATCH' ? api.dispatchOrders.mine() : api.dispatchOrders.all();
@@ -97,54 +134,79 @@ export default function PackingList() {
     if (orderId) void handleViewPacking(orderId);
   }, [searchParams, handleViewPacking]);
 
+  useEffect(() => {
+    if (!packingData) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPackingData(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [packingData]);
+
   const handlePrint = () => {
     if (!packingData) return;
     const win = window.open('', '_blank');
-    if (!win) return;
+    if (!win) {
+      setError('The print window was blocked. Allow pop-ups for this site and try again.');
+      return;
+    }
     win.document.write(`
       <!DOCTYPE html><html><head><title>Packing List - Order #${escapeHtml(packingData.order_id)}</title>
       <style>
-        body { font-family: system-ui, -apple-system, sans-serif; padding: 28px; color: #1e293b; }
-        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px; }
-        .title { font-size: 22px; font-weight: bold; color: #0f172a; }
-        .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; background: #f8fafc; border: 1px solid #cbd5e1; padding: 14px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        th { background: #f1f5f9; padding: 10px; text-align: left; font-size: 11px; text-transform: uppercase; border-bottom: 2px solid #cbd5e1; }
-        td { padding: 9px 10px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
-        .footer { margin-top: 32px; font-size: 11px; color: #94a3b8; text-align: center; }
+        @page { size: A4 landscape; margin: 12mm; }
+        * { box-sizing: border-box; }
+        body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px; }
+        .title { font-size: 21px; font-weight: 700; letter-spacing: .04em; }
+        .subtitle { margin-top: 4px; color: #475569; }
+        .order { text-align: right; font-size: 11px; line-height: 1.6; }
+        .meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 16px; background: #f8fafc; border: 1px solid #cbd5e1; padding: 12px; margin-bottom: 14px; }
+        .meta-item { min-width: 0; overflow-wrap: anywhere; }
+        .label { display: block; margin-bottom: 3px; color: #64748b; font-size: 8px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+        table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+        th { background: #e2e8f0; padding: 7px 6px; text-align: left; font-size: 8px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #94a3b8; }
+        td { padding: 7px 6px; border-bottom: 1px solid #e2e8f0; font-size: 9px; vertical-align: top; overflow-wrap: anywhere; }
+        th:nth-child(1) { width: 4%; }
+        th:nth-child(2) { width: 23%; }
+        th:nth-child(3) { width: 12%; }
+        th:nth-child(4) { width: 15%; }
+        th:nth-child(5) { width: 9%; }
+        th:nth-child(6) { width: 17%; }
+        th:nth-child(7) { width: 20%; }
+        tbody tr { break-inside: avoid; page-break-inside: avoid; }
+        .mono { font-family: monospace; }
+        .footer { margin-top: 14px; padding-top: 7px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 8px; text-align: center; }
       </style></head><body>
       <div class="header">
-        <div><div class="title">PACKING LIST</div><div>Aceone Manufacturing System</div></div>
-        <div style="text-align:right;"><strong>Order #${escapeHtml(packingData.order_id)}</strong><div>Date: ${new Date().toLocaleDateString()}</div></div>
+        <div><div class="title">PACKING LIST</div><div class="subtitle">Aceone Inventory &amp; Product Scanning System</div></div>
+        <div class="order"><strong>Order #${escapeHtml(packingData.order_id)}</strong><div>Generated: ${formatDate(new Date())}</div></div>
       </div>
       <div class="meta">
-        <div><strong>Product:</strong> ${escapeHtml(packingData.product_name || '-')}</div>
-        <div><strong>Batch Number:</strong> ${escapeHtml(packingData.batch_number || '-')}</div>
-        <div><strong>Client:</strong> ${escapeHtml(packingData.client_name || '-')}</div>
-        <div><strong>Transporter:</strong> ${escapeHtml(packingData.driver_name || '-')}</div>
-        <div><strong>Transporter mobile:</strong> ${escapeHtml(packingData.driver_phone || '-')}</div>
-        <div><strong>Vehicle:</strong> ${escapeHtml(packingData.vehicle_number || '-')}</div>
-        <div><strong>Container:</strong> ${escapeHtml(packingData.container_number || '-')}</div>
+        <div class="meta-item"><span class="label">Client</span>${escapeHtml(packingData.client_name || '-')}</div>
+        <div class="meta-item"><span class="label">Grade</span>${escapeHtml(packingGradeNames(packingData))}</div>
+        <div class="meta-item"><span class="label">Batch Number</span>${escapeHtml(packingData.batch_number || '-')}</div>
+        <div class="meta-item"><span class="label">Transporter</span>${escapeHtml(packingData.driver_name || '-')}</div>
+        <div class="meta-item"><span class="label">Transporter Mobile</span>${escapeHtml(packingData.driver_phone || '-')}</div>
+        <div class="meta-item"><span class="label">Vehicle</span>${escapeHtml(packingData.vehicle_number || '-')}</div>
+        <div class="meta-item"><span class="label">Container / Seal</span>${escapeHtml(packingData.container_number || '-')} / ${escapeHtml(packingData.seal_number || 'Awaiting Loading')}</div>
       </div>
       <table>
-        <thead><tr><th>#</th><th>Product</th><th>Grade</th><th>SKU</th><th>Batch</th><th>Qty</th><th>Packaging</th><th>Location</th><th>QR Barcode</th></tr></thead>
+        <thead><tr><th>#</th><th>Grade</th><th>SKU</th><th>Batch Number</th><th>Bags to Pick</th><th>Storage Location</th><th>QR Barcode</th></tr></thead>
         <tbody>
-          ${packingData.items.map((item: any, i: number) => `
+          ${(packingData.items || []).map((item: any, i: number) => `
             <tr>
               <td>${i + 1}</td>
-              <td>${escapeHtml(item.product_name || '-')}</td>
-              <td>${escapeHtml(item.grade || packingData.grade || '-')}</td>
+              <td>${escapeHtml(itemGradeName(item, packingData))}</td>
               <td>${escapeHtml(item.sku || '-')}</td>
-              <td style="font-family:monospace;">${escapeHtml(item.batch_number || packingData.batch_number || '-')}</td>
-              <td><strong>${escapeHtml(item.quantity)} bags</strong></td>
-              <td>${escapeHtml([item.bag_quantity, item.bag_quantity_unit].filter(Boolean).join(' ') || '-')}</td>
+              <td class="mono">${escapeHtml(item.batch_number || packingData.batch_number || '-')}</td>
+              <td><strong>${escapeHtml(item.quantity ?? '-')}</strong></td>
               <td>${escapeHtml(itemLocation(item))}</td>
-              <td style="font-family:monospace;font-size:11px;">${escapeHtml(itemBarcode(item, packingData))}</td>
+              <td class="mono">${escapeHtml(itemBarcode(item, packingData))}</td>
             </tr>`).join('')}
         </tbody>
       </table>
       <div class="footer">Generated by Aceone Inventory &amp; Product Scanning System</div>
-      <script>window.onload = function() { setTimeout(function() { window.print(); }, 500); };<\/script>
+      <script>window.onload = function() { setTimeout(function() { window.print(); }, 300); };<\/script>
       </body></html>
     `);
     win.document.close();
@@ -218,8 +280,7 @@ export default function PackingList() {
                     className={`transition-colors ${isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50/80'}`}
                   >
                     <td className="px-5 py-4">
-                      <div className="font-bold text-slate-900 text-base">{order.product_name}</div>
-                      <div className="text-xs text-slate-500 font-medium mt-0.5">
+                      <div className="font-bold text-slate-900 text-base">
                         {order.grade_name || order.product_grade || 'Standard Grade'}
                       </div>
                     </td>
@@ -236,7 +297,7 @@ export default function PackingList() {
                     <td className="px-5 py-4">
                       <div className="font-bold text-slate-800">{order.client_name || 'Standard Client'}</div>
                       <div className="text-xs text-slate-400 mt-0.5">
-                        {order.created_at ? new Date(order.created_at).toLocaleDateString() : '-'}
+                        {formatDate(order.created_at)}
                       </div>
                     </td>
 
@@ -264,14 +325,6 @@ export default function PackingList() {
                         >
                           <Eye size={14} /> View List
                         </button>
-                        <button
-                          onClick={() => handleDownloadPdf(order)}
-                          disabled={downloadingId === String(order.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 transition-colors"
-                        >
-                          <Download size={14} />
-                          {downloadingId === String(order.id) ? 'Downloading...' : 'PDF'}
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -294,87 +347,108 @@ export default function PackingList() {
         </div>
       </div>
 
-      {/* 3. PACKING LIST DETAIL PANEL (When an order is selected) */}
+      {/* 3. PACKING LIST PREVIEW */}
       {packingData && (
-        <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50/50">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900">
-                Packing List Details — Order #{packingData.order_id}
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">Batch: {packingData.batch_number} · Client: {packingData.client_name}</p>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 backdrop-blur-[3px] sm:p-6"
+          onClick={() => setPackingData(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="packing-list-title"
+            className="flex max-h-[94vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <div>
+                <h2 id="packing-list-title" className="text-lg font-bold text-slate-900">
+                  Packing List — Order #{packingData.order_id}
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">Batch: {packingData.batch_number || '-'} · Client: {packingData.client_name || '-'}</p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleDownloadPdf}
+                  disabled={downloadingId === String(packingData.order_id)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 shadow-sm hover:bg-slate-100 disabled:opacity-60"
+                >
+                  <Download size={14} /> {downloadingId === String(packingData.order_id) ? 'Downloading...' : 'Download PDF'}
+                </button>
+                <button
+                  onClick={handlePrint}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs hover:bg-brand-700"
+                >
+                  <Printer size={14} /> Print List
+                </button>
+                <button
+                  onClick={() => setPackingData(null)}
+                  aria-label="Close packing list"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                >
+                  <X size={17} />
+                </button>
+              </div>
+            </header>
+
+            <div className="grid grid-cols-2 gap-3 border-b border-slate-100 bg-white p-4 text-sm sm:grid-cols-4 sm:gap-4 sm:p-5">
+              <div>
+                <span className="block text-xs font-bold uppercase text-slate-400">Grade</span>
+                <span className="font-bold text-slate-900">{packingGradeNames(packingData)}</span>
+              </div>
+              <div>
+                <span className="block text-xs font-bold uppercase text-slate-400">Transporter / Truck</span>
+                <span className="font-bold text-slate-900">{packingData.driver_name || '-'} · {packingData.driver_phone || 'No mobile'} ({packingData.vehicle_number || '-'})</span>
+              </div>
+              <div>
+                <span className="block text-xs font-bold uppercase text-slate-400">Container #</span>
+                <span className="font-bold text-slate-900">{packingData.container_number || '-'}</span>
+              </div>
+              <div>
+                <span className="block text-xs font-bold uppercase text-slate-400">Seal Number</span>
+                <span className="font-bold text-slate-900">{packingData.seal_number || 'Awaiting Loading'}</span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleDownloadPdf({ id: packingData.order_id, batch_number: packingData.batch_number })}
-                disabled={downloadingId === String(packingData.order_id)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 shadow-2xs"
-              >
-                <Download size={14} /> Download PDF
-              </button>
-              <button
-                onClick={handlePrint}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-brand-600 hover:bg-brand-700 text-white shadow-2xs"
-              >
-                <Printer size={14} /> Print Document
-              </button>
-            </div>
-          </div>
-
-          <div className="p-5 border-b border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm bg-white">
-            <div>
-              <span className="block text-xs font-bold text-slate-400 uppercase">Product</span>
-              <span className="font-bold text-slate-900">{packingData.product_name || '-'}</span>
-            </div>
-            <div>
-              <span className="block text-xs font-bold text-slate-400 uppercase">Transporter / Truck</span>
-              <span className="font-bold text-slate-900">{packingData.driver_name || '-'} · {packingData.driver_phone || 'No mobile'} ({packingData.vehicle_number || '-'})</span>
-            </div>
-            <div>
-              <span className="block text-xs font-bold text-slate-400 uppercase">Container #</span>
-              <span className="font-bold text-slate-900">{packingData.container_number || '-'}</span>
-            </div>
-            <div>
-              <span className="block text-xs font-bold text-slate-400 uppercase">Seal Number</span>
-              <span className="font-bold text-slate-900">{packingData.seal_number || 'Awaiting Loading'}</span>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-xs">
-                <tr>
-                  <th className="px-5 py-3">#</th>
-                  <th className="px-5 py-3">Product Name</th>
-                  <th className="px-5 py-3">SKU</th>
-                  <th className="px-5 py-3">Batch Number</th>
-                  <th className="px-5 py-3">Quantity</th>
-                  <th className="px-5 py-3">Storage Location</th>
-                  <th className="px-5 py-3">QR Barcode</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {packingData.items?.map((item: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-slate-50/50">
-                    <td className="px-5 py-3 font-bold text-slate-400">{idx + 1}</td>
-                    <td className="px-5 py-3 font-bold text-slate-900">{item.product_name}</td>
-                    <td className="px-5 py-3 text-xs text-slate-500">{item.sku}</td>
-                    <td className="px-5 py-3 font-mono text-xs font-bold text-slate-800">{item.batch_number}</td>
-                    <td className="px-5 py-3 font-bold text-slate-900">{item.quantity} bags</td>
-                    <td className="px-5 py-3">
-                      {locationLinks[itemLocation(item)] ? <button
-                        onClick={() => navigate(locationLinks[itemLocation(item)])}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-extrabold text-blue-800 hover:border-blue-300 hover:bg-blue-100"
-                        title="Open this position in the warehouse rack"
-                      ><MapPin size={13} />{itemLocation(item)}</button> : <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700"><MapPin size={13} />{itemLocation(item)}</span>}
-                    </td>
-                    <td className="px-5 py-3 font-mono text-xs text-slate-500">{itemBarcode(item, packingData)}</td>
+            <div className="min-h-0 overflow-auto">
+              <table className="w-full min-w-[850px] text-left text-sm">
+                <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-500">
+                  <tr>
+                    <th className="px-5 py-3">#</th>
+                    <th className="px-5 py-3">Grade</th>
+                    <th className="px-5 py-3">SKU</th>
+                    <th className="px-5 py-3">Batch Number</th>
+                    <th className="px-5 py-3">Bags to Pick</th>
+                    <th className="px-5 py-3">Storage Location</th>
+                    <th className="px-5 py-3">QR Barcode</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {packingData.items?.map((item: any, idx: number) => (
+                    <tr key={idx} className="hover:bg-slate-50/50">
+                      <td className="px-5 py-3 font-bold text-slate-400">{idx + 1}</td>
+                      <td className="px-5 py-3 font-bold text-slate-900">{itemGradeName(item, packingData)}</td>
+                      <td className="px-5 py-3 text-xs text-slate-500">{item.sku || '-'}</td>
+                      <td className="px-5 py-3 font-mono text-xs font-bold text-slate-800">{item.batch_number || packingData.batch_number || '-'}</td>
+                      <td className="px-5 py-3 font-bold text-slate-900">{item.quantity ?? '-'}</td>
+                      <td className="px-5 py-3">
+                        {locationLinks[itemLocation(item)] ? <button
+                          onClick={() => navigate(locationLinks[itemLocation(item)])}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-extrabold text-blue-800 hover:border-blue-300 hover:bg-blue-100"
+                          title="Open this position in the warehouse rack"
+                        ><MapPin size={13} />{itemLocation(item)}</button> : <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700"><MapPin size={13} />{itemLocation(item)}</span>}
+                      </td>
+                      <td className="px-5 py-3 font-mono text-xs text-slate-500">{itemBarcode(item, packingData)}</td>
+                    </tr>
+                  ))}
+                  {(!packingData.items || packingData.items.length === 0) && (
+                    <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-slate-500">No product lines found for this packing list.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       )}
     </div>

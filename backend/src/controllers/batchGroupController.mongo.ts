@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
-import { getContext, withTransaction } from '../config/database';
+import { getContext, parseDateValue, withTransaction } from '../config/database';
 
-type InputLine = { product_id: string; quantity: number; package_quantity: number; uom: string; shelf_location_id: string; warehouse_id: string; unit_price?: number; avg_standard_quantity?: number | null };
+type InputLine = { product_id: string; quantity: number; package_quantity: number; uom: string; shelf_location_id: string; warehouse_id: string; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
 
 export async function createGroup(req: Request, res: Response): Promise<void> {
   const raw = req.body?.items;
@@ -19,9 +19,15 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     avg_standard_quantity: item?.avg_standard_quantity === undefined || item?.avg_standard_quantity === null || item?.avg_standard_quantity === ''
       ? null
       : Number(item.avg_standard_quantity),
+    manufacturing_date: String(item?.manufacturing_date || '').trim().slice(0, 10),
+    expiry_date: String(item?.expiry_date || '').trim().slice(0, 10),
   }));
   if (items.some((item) => !item.product_id || !item.warehouse_id || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000 || !Number.isFinite(item.package_quantity) || item.package_quantity <= 0 || item.package_quantity > 1_000_000 || !item.uom || !item.shelf_location_id)) {
     res.status(400).json({ error: 'Each product needs a valid package quantity, bag count, UOM, and active godown location' }); return;
+  }
+  const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+  if (items.some((item) => !isValidDate(item.manufacturing_date) || !isValidDate(item.expiry_date) || item.expiry_date < item.manufacturing_date)) {
+    res.status(400).json({ error: 'Each product needs a valid manufacturing date and an expiry date on or after it' }); return;
   }
   if (items.some((item) => item.avg_standard_quantity !== null && item.avg_standard_quantity !== undefined && (!Number.isFinite(item.avg_standard_quantity) || item.avg_standard_quantity < 0 || item.avg_standard_quantity > 1_000_000))) {
     res.status(400).json({ error: 'Average standard quantity must be a number between 0 and 1,000,000' }); return;
@@ -160,6 +166,8 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
             parent_batch_number: batchNumber, tenant_id: req.user!.tenantId, quantity: 1, uom: item.uom,
             avg_standard_quantity: item.avg_standard_quantity ?? null,
             package_quantity: item.package_quantity,
+            manufacturing_date: parseDateValue(item.manufacturing_date),
+            expiry_date: parseDateValue(item.expiry_date),
             unit_price: item.unit_price || Number(product.price) || 0, shelf_location_id: location.shelf_location_id,
             storage_location: location.location_code, status: 'PENDING_QC', barcode_value: `QC:${randomUUID()}`,
           });

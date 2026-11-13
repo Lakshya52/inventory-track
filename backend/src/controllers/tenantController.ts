@@ -1,8 +1,14 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { execute, getContext, isDuplicateKey, query, useMongo } from '../config/database';
 import { issueAccessToken } from '../services/tokens';
+
+const REFRESH_TOKEN_DAYS = Number(process.env.REFRESH_TOKEN_DAYS) || 30;
+
+function hashRefreshToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
 
 function tenantError(status: number, message: string): Error & { status: number } {
   return Object.assign(new Error(message), { status });
@@ -130,6 +136,9 @@ export async function registerTenant(req: Request, res: Response): Promise<void>
   }
   const passwordHash = await bcrypt.hash(password, 12);
   const slug = tenantSlug(name);
+  const refreshToken = randomBytes(48).toString('hex');
+  const refreshTokenHash = hashRefreshToken(refreshToken);
+  const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000);
   try {
     let tenantId: string | number;
     let userId: string | number;
@@ -138,6 +147,15 @@ export async function registerTenant(req: Request, res: Response): Promise<void>
       const { tenant: insertedTenant, user: insertedUser } = await withTransaction(async mongoCtx => {
         const tenantId = await mongoCtx.insert('tenants', { name, email, email_key: email, phone, logo_url: logoUrl, slug, is_active: 1 });
         const userId = await mongoCtx.insert('admins', { tenant_id: tenantId, name: adminName, email, password_hash: passwordHash, is_active: 1 });
+        await mongoCtx.insert('refresh_tokens', {
+          token_hash: refreshTokenHash,
+          user_id: userId,
+          user_role: 'ADMIN',
+          user_table: 'admins',
+          device_uuid: null,
+          expires_at: refreshExpiresAt,
+          revoked_at: null,
+        });
         return { tenant: tenantId, user: userId };
       });
       tenantId = insertedTenant;
@@ -145,16 +163,23 @@ export async function registerTenant(req: Request, res: Response): Promise<void>
     } else {
       const { withTransaction } = await import('../config/database.mysql');
       const ids = await withTransaction(async conn => {
-      const [tenant] = await conn.execute<any>('INSERT INTO tenants (name, email, email_key, phone, logo_url, slug) VALUES (?, ?, ?, ?, ?, ?)', [name, email, email, phone, logoUrl, slug]);
+        const [tenant] = await conn.execute<any>('INSERT INTO tenants (name, email, email_key, phone, logo_url, slug) VALUES (?, ?, ?, ?, ?, ?)', [name, email, email, phone, logoUrl, slug]);
         const tenantId = tenant.insertId as number;
         const [admin] = await conn.execute<any>('INSERT INTO admins (tenant_id, name, email, password_hash, is_active) VALUES (?, ?, ?, ?, 1)', [tenantId, adminName, email, passwordHash]);
-        return { tenantId, userId: admin.insertId as number };
+        const userId = admin.insertId as number;
+        await conn.execute(
+          'INSERT INTO refresh_tokens (token_hash, user_id, user_role, user_table, device_uuid, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+          [refreshTokenHash, userId, 'ADMIN', 'admins', null, refreshExpiresAt]
+        );
+        return { tenantId, userId };
       });
       tenantId = ids.tenantId;
       userId = ids.userId;
     }
     res.status(201).json({
       token: issueAccessToken({ id: userId, name: adminName, email }, 'ADMIN', 'admins', tenantId),
+      refreshToken,
+      refreshExpiresAt: refreshExpiresAt.toISOString(),
       user: { id: userId, tenantId, name: adminName, email, role: 'ADMIN' },
       tenant: { id: tenantId, name, email, phone, slug, logoUrl, updatedAt: new Date().toISOString() },
     });

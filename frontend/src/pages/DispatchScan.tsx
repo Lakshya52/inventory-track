@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { BrowserMultiFormatReader } from "@zxing/library";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { formatDateTime as formatIsoDateTime } from "../utils/dateFormat";
 import {
 	AlertTriangle,
 	Boxes,
@@ -137,13 +138,7 @@ function formatTime(value?: string | number | null): string {
 }
 
 function formatDateTime(value?: string | null): string {
-	if (!value) return "-";
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return "-";
-	return date.toLocaleString([], {
-		year: "numeric",
-		month: "short",
-		day: "numeric",
+	return formatIsoDateTime(value, {
 		hour: "2-digit",
 		minute: "2-digit",
 	});
@@ -230,10 +225,10 @@ function DetailRow({
 	mono?: boolean;
 }) {
 	return (
-		<div className="flex items-start justify-between gap-3 border-b border-surface-100 py-1.5 last:border-0">
-			<dt className="shrink-0 text-surface-400">{label}</dt>
+		<div className="flex items-start justify-between gap-3 border-b border-surface-100 py-2 last:border-0">
+			<dt className="shrink-0 font-medium text-surface-500">{label}</dt>
 			<dd
-				className={`min-w-0 truncate text-right font-medium text-surface-700 ${mono ? "font-mono" : ""}`}
+				className={`min-w-0 truncate text-right font-semibold text-surface-800 ${mono ? "font-mono" : ""}`}
 				title={value || undefined}
 			>
 				{value || "-"}
@@ -289,9 +284,16 @@ export default function DispatchScan() {
 	const scanHandlerRef = useRef<(qr: string) => void>(() => {});
 	const deepLinkHandledRef = useRef(false);
 	const videoRef = useRef<HTMLVideoElement>(null);
+	const manualScanRef = useRef<HTMLInputElement>(null);
 
 	useEffect(() => {
 		sessionIdRef.current = session?.id ?? null;
+	}, [session?.id]);
+
+	useEffect(() => {
+		if (session?.id && window.matchMedia("(pointer: fine)").matches) {
+			manualScanRef.current?.focus({ preventScroll: true });
+		}
 	}, [session?.id]);
 
 	const allScanned = Boolean(
@@ -984,11 +986,11 @@ export default function DispatchScan() {
 				: XCircle;
 
 	return (
-		<div className="page-container max-w-5xl mx-auto">
+		<div className="page-container mx-auto max-w-7xl">
 			<div className="page-header">
 				<div>
-					<h1 className="page-title">Loading &amp; Scan</h1>
-					<p className="page-subtitle">
+					<h1 className="page-title text-2xl sm:text-3xl">Loading &amp; Scan</h1>
+					<p className="page-subtitle max-w-3xl text-sm leading-relaxed sm:text-base">
 						Start a loading session, scan every unit, then seal and
 						finalise the dispatch.
 					</p>
@@ -996,13 +998,13 @@ export default function DispatchScan() {
 				<div className="flex flex-wrap items-center gap-2">
 					<Link
 						to="/dispatch-orders"
-						className="btn-secondary btn-sm"
+						className="btn-secondary btn-sm min-h-10 text-sm"
 					>
 						<ClipboardList size={14} /> Dispatch Orders
 					</Link>
 					<Link
 						to="/dispatch-dashboard"
-						className="btn-secondary btn-sm"
+						className="btn-secondary btn-sm min-h-10 text-sm"
 					>
 						<Truck size={14} /> Dispatch Dashboard
 					</Link>
@@ -1011,7 +1013,7 @@ export default function DispatchScan() {
 
 			{message && (
 				<div
-					className={`mb-4 flex items-start gap-2 rounded-xl border p-3 text-sm ${MESSAGE_STYLES[messageKind]}`}
+					className={`mb-5 flex items-start gap-3 rounded-xl border p-4 text-sm sm:text-base ${MESSAGE_STYLES[messageKind]}`}
 					role="status"
 					aria-live="polite"
 				>
@@ -1100,7 +1102,7 @@ export default function DispatchScan() {
 
 					{activeSession && (
 						<div className="card mb-4 overflow-hidden border border-brand-200">
-							<div className="flex flex-wrap items-start justify-between gap-4 border-l-4 border-l-brand-500 p-6">
+							<div className="flex flex-wrap items-start justify-between gap-4 border-l-4 border-l-brand-500 p-4 sm:p-6">
 								<div className="min-w-0">
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="badge badge-success">
@@ -1117,7 +1119,7 @@ export default function DispatchScan() {
 											{activeSession.batch_number || "-"}
 										</span>
 									</div>
-									<h2 className="mt-2 flex items-center gap-2 text-base font-bold text-surface-900">
+									<h2 className="mt-2 flex items-center gap-2 text-lg font-bold text-surface-900">
 										<QrCode
 											size={18}
 											className="text-brand-500"
@@ -1133,7 +1135,7 @@ export default function DispatchScan() {
 											? ` · ${activeSession.client_name}`
 											: ""}
 									</p>
-									<p className="mt-1 text-xs text-surface-400">
+									<p className="mt-2 text-sm text-surface-500">
 										Started{" "}
 										{formatDateTime(
 											activeSession.started_at,
@@ -1165,7 +1167,7 @@ export default function DispatchScan() {
 						</div>
 					)}
 
-					<div className="card mb-4 p-6">
+					<div className="card mb-5 p-4 sm:p-6">
 						<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
 							<div>
 								<h2 className="section-title flex items-center gap-2">
@@ -1185,14 +1187,14 @@ export default function DispatchScan() {
 										/>
 									)}
 								</h2>
-								<p className="mt-1 text-xs text-surface-400">
+								<p className="mt-1 text-sm text-surface-500">
 									Select a dispatch order to start scanning.
 									Orders are ready as soon as Dispatch creates
 									them.
 								</p>
 							</div>
 							<button
-								className="btn-secondary btn-sm"
+								className="btn-secondary btn-sm min-h-10"
 								onClick={() =>
 									void Promise.all([
 										loadOrders(),
@@ -1212,15 +1214,15 @@ export default function DispatchScan() {
 						</div>
 
 						<input
-							className="input mb-3 text-sm"
-							placeholder="Search by order, product, batch, client, driver, vehicle or container"
+							className="input mb-3 min-h-12 text-base"
+							placeholder="Search orders by batch, product, client, transporter, or vehicle"
 							value={orderSearch}
 							onChange={(event) =>
 								setOrderSearch(event.target.value)
 							}
 						/>
 
-						<div className="max-h-80 divide-y divide-surface-100 overflow-y-auto rounded-xl border border-surface-200 bg-white">
+						<div className="max-h-[60vh] divide-y divide-surface-100 overflow-y-auto rounded-xl border border-surface-200 bg-white sm:max-h-96">
 							{filteredOrders.map((order) => {
 								const isSelected =
 									String(order.id) === selectedOrderId;
@@ -1231,21 +1233,21 @@ export default function DispatchScan() {
 										onClick={() =>
 											selectOrder(String(order.id))
 										}
-										className={`flex w-full flex-col gap-2 p-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between ${
+										className={`flex w-full flex-col gap-3 p-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:p-5 ${
 											isSelected
-												? "border-l-4 border-l-brand-600 bg-brand-50"
+												? "border-l-4 border-l-brand-600 bg-brand-50 shadow-inner"
 												: "hover:bg-surface-50"
 										}`}
 									>
 										<div className="min-w-0 flex-1">
 											<div className="flex flex-wrap items-center gap-2">
-												<span className="truncate text-sm font-semibold text-surface-900">
+												<span className="truncate text-base font-semibold text-surface-900">
 													{order.product_name}
 												</span>
-												<span className="badge badge-info text-[10px]">
+												<span className="badge badge-info">
 													Order #{order.id}
 												</span>
-												<span className="rounded bg-surface-100 px-1.5 py-0.5 font-mono text-xs text-surface-700">
+												<span className="rounded-md bg-surface-100 px-2 py-1 font-mono text-sm text-surface-700">
 													{order.items?.length > 1
 														? `${order.items.length} product lines`
 														: order.batch_number}
@@ -1259,7 +1261,7 @@ export default function DispatchScan() {
 																key={String(
 																	item.batch_id,
 																)}
-																className="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 text-[11px] text-surface-600"
+																className="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 text-xs text-surface-700"
 															>
 																<strong className="text-surface-800">
 																	{
@@ -1282,7 +1284,7 @@ export default function DispatchScan() {
 													)}
 												</div>
 											)}
-											<div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-surface-500 sm:grid-cols-2 lg:grid-cols-3">
+											<div className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 text-sm text-surface-600 sm:grid-cols-2 lg:grid-cols-3">
 												<span>
 													Client:{" "}
 													<strong className="text-surface-700">
@@ -1300,8 +1302,10 @@ export default function DispatchScan() {
 													</strong>
 												</span>
 												<span>
-													Driver:{" "}
-													{order.driver_name || "-"}
+													Transporter Name:{" "}
+													<strong className="text-surface-700">
+														{order.driver_name || "-"}
+													</strong>
 												</span>
 												<span>
 													Vehicle:{" "}
@@ -1315,8 +1319,8 @@ export default function DispatchScan() {
 												</span>
 											</div>
 										</div>
-										<span className="badge badge-success shrink-0">
-											Ready to load
+										<span className="badge badge-success shrink-0 self-start text-sm sm:self-center">
+											Ready
 										</span>
 									</button>
 								);
@@ -1336,7 +1340,7 @@ export default function DispatchScan() {
 												? "No dispatch orders match that search"
 												: "No dispatch orders ready for loading"}
 									</div>
-									<div className="mt-1 text-xs text-surface-400">
+									<div className="mt-1 text-sm text-surface-500">
 										{ordersLoading
 											? "Please wait a moment."
 											: orderSearch
@@ -1349,34 +1353,53 @@ export default function DispatchScan() {
 					</div>
 
 					{selectedOrder && (
-						<div className="card mb-4 border-l-4 border-l-brand-500 p-6">
+						<div className="card mb-5 border-l-4 border-l-brand-500 p-4 sm:p-6">
 							<div className="flex flex-wrap items-center justify-between gap-4">
 								<div className="min-w-0">
-									<h2 className="section-title">
-										Ready to load order #{selectedOrder.id}
+									<h2 className="section-title text-lg">
+										Selected order #{selectedOrder.id}
 									</h2>
-									<p className="mt-1 text-sm text-surface-500">
-										{selectedOrder.product_name ||
-											"Product"}{" "}
-										· batch{" "}
-										<span className="font-mono text-surface-700">
-											{selectedOrder.batch_number || "-"}
-										</span>{" "}
-										· {selectedOrder.quantity ?? "-"}{" "}
-										x {selectedOrder.uom || "units"} to scan
-									</p>
-									<p className="mt-1 text-xs text-surface-400">
-										{selectedOrder.client_name || "Client"}{" "}
-										· driver{" "}
-										{selectedOrder.driver_name || "-"} ·{" "}
-										{selectedOrder.vehicle_number ||
-											"No vehicle"}{" "}
-										· container{" "}
-										{selectedOrder.container_number || "-"}
-									</p>
+									<div className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+										<p className="text-surface-600">
+											Product:{" "}
+											<strong className="text-surface-900">
+												{selectedOrder.product_name || "Product"}
+											</strong>
+										</p>
+										<p className="text-surface-600">
+											Batch:{" "}
+											<strong className="font-mono text-surface-900">
+												{selectedOrder.batch_number || "-"}
+											</strong>
+										</p>
+										<p className="text-surface-600">
+											To load:{" "}
+											<strong className="text-surface-900">
+												{Number(selectedOrder.quantity || 0).toLocaleString()} {selectedOrder.uom || "units"}
+											</strong>
+										</p>
+										<p className="text-surface-600">
+											Client:{" "}
+											<strong className="text-surface-900">
+												{selectedOrder.client_name || "-"}
+											</strong>
+										</p>
+										<p className="text-surface-600">
+											Transporter Name:{" "}
+											<strong className="text-surface-900">
+												{selectedOrder.driver_name || "-"}
+											</strong>
+										</p>
+										<p className="text-surface-600">
+											Vehicle / Container:{" "}
+											<strong className="font-mono text-surface-900">
+												{selectedOrder.vehicle_number || "-"} / {selectedOrder.container_number || "-"}
+											</strong>
+										</p>
+									</div>
 								</div>
 								<button
-									className="btn-primary"
+									className="btn-primary min-h-12 w-full shrink-0 text-base sm:w-auto"
 									onClick={() => void startSession()}
 									disabled={starting}
 								>
@@ -1427,7 +1450,7 @@ export default function DispatchScan() {
 			{session && session.status === "ACTIVE" && (
 				<>
 					<div className="card mb-4 overflow-hidden">
-						<div className="border-b border-surface-100 bg-surface-50/70 px-6 py-5">
+						<div 						className="border-b border-surface-100 bg-gradient-to-r from-brand-50 via-white to-white px-4 py-5 sm:px-6 sm:py-6">
 							<div className="flex flex-wrap items-start justify-between gap-4">
 								<div className="min-w-0">
 									<div className="flex flex-wrap items-center gap-2">
@@ -1439,11 +1462,11 @@ export default function DispatchScan() {
 											Order #
 											{session.dispatch_order_id || "-"}
 										</span>
-										<span className="rounded-lg bg-white px-2 py-1 font-mono text-xs text-surface-700 ring-1 ring-surface-200">
+										<span className="rounded-lg bg-white px-3 py-1.5 font-mono text-sm text-surface-800 ring-1 ring-surface-200">
 											Batch {session.batch_number || "-"}
 										</span>
 									</div>
-									<h2 className="mt-2 flex items-center gap-2 text-lg font-bold tracking-tight text-surface-900">
+									<h2 className="mt-3 flex items-center gap-2 text-xl font-bold tracking-tight text-surface-900 sm:text-2xl">
 										<QrCode
 											size={18}
 											className="text-brand-500"
@@ -1451,9 +1474,10 @@ export default function DispatchScan() {
 										{session.product_name ||
 											"Loading in progress"}
 									</h2>
-									<p className="mt-1 text-xs text-surface-500">
+									<p className="mt-2 text-sm leading-relaxed text-surface-600">
 										{session.client_name || "Client"} ·
-										Driver {session.driver_name || "-"} ·{" "}
+										Transporter Name:{" "}
+										{session.driver_name || "-"} ·{" "}
 										{session.vehicle_number || "No vehicle"}
 										{session.container_number
 											? ` · Container ${session.container_number}`
@@ -1481,28 +1505,28 @@ export default function DispatchScan() {
 							</div>
 						</div>
 
-						<div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
-							<div className="min-w-0 space-y-4">
-								<div className="rounded-2xl border border-surface-200 bg-surface-50 p-5">
+						<div className="grid gap-4 p-4 sm:gap-6 sm:p-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.9fr)]">
+							<div className="min-w-0 space-y-5">
+								<div className="rounded-2xl border border-brand-100 bg-gradient-to-br from-brand-50 via-white to-white p-5 shadow-sm sm:p-6">
 									<div className="flex flex-wrap items-end justify-between gap-3">
 										<div>
-											<div className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">
+											<div className="text-sm font-semibold uppercase tracking-wide text-surface-600">
 												Scanned units
 											</div>
-											<div className="mt-1 text-4xl font-bold tabular-nums text-surface-900">
+											<div className="mt-1 text-5xl font-bold tabular-nums tracking-tight text-surface-900">
 												{scannedCount}{" "}
-												<span className="text-2xl text-surface-400">
+												<span className="text-3xl text-surface-500">
 													/ {totalCount}
 												</span>
 											</div>
 										</div>
 										<div className="text-right">
 											<div
-												className={`text-2xl font-bold ${progress >= 100 ? "text-emerald-600" : "text-brand-600"}`}
+												className={`text-3xl font-bold tabular-nums ${progress >= 100 ? "text-emerald-600" : "text-brand-700"}`}
 											>
 												{progress}%
 											</div>
-											<div className="text-xs text-surface-400">
+											<div className="text-sm text-surface-600">
 												{remaining === 0
 													? "All units scanned"
 													: `${remaining} unit${remaining === 1 ? "" : "s"} remaining`}
@@ -1510,7 +1534,7 @@ export default function DispatchScan() {
 										</div>
 									</div>
 									<div
-										className="mt-4 h-3 w-full overflow-hidden rounded-full bg-surface-200"
+										className="mt-5 h-4 w-full overflow-hidden rounded-full bg-surface-200"
 										role="progressbar"
 										aria-valuemin={0}
 										aria-valuemax={100}
@@ -1522,7 +1546,7 @@ export default function DispatchScan() {
 											style={{ width: `${progress}%` }}
 										/>
 									</div>
-									<div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-surface-400">
+									<div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-surface-600">
 										<span>
 											{lastSyncedAt
 												? `Last sync ${formatTime(lastSyncedAt)}`
@@ -1544,7 +1568,7 @@ export default function DispatchScan() {
 
 								<div>
 									<label
-										className="input-label"
+										className="mb-2 block text-sm font-semibold text-surface-700"
 										htmlFor="manual-scan"
 									>
 										Unit QR code
@@ -1552,7 +1576,8 @@ export default function DispatchScan() {
 									<div className="flex flex-col gap-2 sm:flex-row">
 										<input
 											id="manual-scan"
-											className="input flex-1 font-mono text-sm"
+											ref={manualScanRef}
+											className="input min-h-12 flex-1 font-mono text-base"
 											placeholder={
 												allScanned
 													? "All units scanned — ready to finalise"
@@ -1571,11 +1596,10 @@ export default function DispatchScan() {
 											disabled={scanBusy || allScanned}
 											autoComplete="off"
 											spellCheck={false}
-											autoFocus
 										/>
 										<button
 											type="button"
-											className="btn-secondary"
+											className="btn-secondary min-h-12 w-full text-base sm:w-auto"
 											onClick={submitManual}
 											disabled={
 												!manualValue.trim() ||
@@ -1597,7 +1621,7 @@ export default function DispatchScan() {
 										</button>
 										<button
 											type="button"
-											className="btn-primary"
+											className="btn-primary min-h-12 w-full text-base sm:w-auto"
 											onClick={toggleCamera}
 											disabled={allScanned}
 										>
@@ -1612,7 +1636,7 @@ export default function DispatchScan() {
 										</button>
 									</div>
 									<p
-										className={`mt-1.5 text-[11px] ${allScanned ? "font-medium text-emerald-600" : "text-surface-400"}`}
+										className={`mt-2 text-sm leading-relaxed ${allScanned ? "font-medium text-emerald-700" : "text-surface-500"}`}
 									>
 										{allScanned
 											? "All units are scanned. Add the seal number below and finalise the dispatch."
@@ -1620,7 +1644,70 @@ export default function DispatchScan() {
 									</p>
 								</div>
 
-								<div className="rounded-2xl bg-amber-50/70 p-4">
+								{scanning && (
+									<div className="space-y-3">
+										<div className="relative overflow-hidden rounded-2xl bg-black ring-1 ring-surface-200">
+											<video
+												ref={videoRef}
+												className="h-64 w-full object-cover sm:h-80 lg:h-[420px]"
+												playsInline
+												muted
+											/>
+											<div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+												<div className="h-48 w-48 rounded-2xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.35)]" />
+											</div>
+											<span className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-sm font-semibold text-white">
+												<span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{" "}
+												Scanning
+											</span>
+										</div>
+										<div className="flex flex-wrap items-center justify-between gap-2">
+											<span className="flex items-center gap-2 text-sm text-surface-600">
+												<Camera size={14} /> Hold the QR
+												inside the frame.
+											</span>
+											<button
+												className="btn-secondary btn-sm min-h-10"
+												onClick={toggleCamera}
+											>
+												<X size={14} /> Stop camera
+											</button>
+										</div>
+									</div>
+								)}
+
+								{lastScan && (
+									<div
+										className={`flex items-start gap-3 rounded-xl border p-4 ${INLINE_STYLES[lastScan.result].wrap}`}
+										role="status"
+										aria-live="polite"
+									>
+										<LastScanIcon
+											size={22}
+											className="mt-0.5 shrink-0"
+										/>
+										<div className="min-w-0 flex-1">
+											<div className="text-base font-semibold">
+												{
+													INLINE_STYLES[
+														lastScan.result
+													].label
+												}
+											</div>
+											<div
+												className="truncate font-mono text-sm opacity-80"
+												title={lastScan.qr}
+											>
+												{lastScan.qr}
+											</div>
+										</div>
+										<span className="shrink-0 text-xs opacity-80">
+											{formatTime(lastScan.at)}
+										</span>
+									</div>
+								)}
+
+								<div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 sm:p-5">
 									<div className="flex items-start gap-2">
 										<RotateCcw
 											size={17}
@@ -1630,7 +1717,7 @@ export default function DispatchScan() {
 											<h3 className="text-sm font-bold text-slate-900">
 												Recall a product
 											</h3>
-											<p className="mt-0.5 text-xs text-slate-600">
+											<p className="mt-1 text-sm leading-relaxed text-slate-700">
 												Use this if an item is damaged
 												or cannot be loaded. Recalled QR
 												codes are excluded from the
@@ -1641,7 +1728,7 @@ export default function DispatchScan() {
 									<div className="mt-3 grid gap-2 sm:grid-cols-2">
 										<div>
 											<label
-												className="input-label"
+												className="mb-1.5 block text-sm font-semibold text-surface-700"
 												htmlFor="recall-qr"
 											>
 												Product QR code
@@ -1661,7 +1748,7 @@ export default function DispatchScan() {
 										</div>
 										<div>
 											<label
-												className="input-label"
+												className="mb-1.5 block text-sm font-semibold text-surface-700"
 												htmlFor="recall-condition"
 											>
 												Condition
@@ -1690,7 +1777,7 @@ export default function DispatchScan() {
 										</div>
 										<div className="sm:col-span-2">
 											<label
-												className="input-label"
+												className="mb-1.5 block text-sm font-semibold text-surface-700"
 												htmlFor="recall-reason"
 											>
 												Reason
@@ -1736,80 +1823,18 @@ export default function DispatchScan() {
 									</div>
 								</div>
 
-								{lastScan && (
-									<div
-										className={`flex items-start gap-3 rounded-xl border p-3 ${INLINE_STYLES[lastScan.result].wrap}`}
-										role="status"
-										aria-live="polite"
-									>
-										<LastScanIcon
-											size={20}
-											className="mt-0.5 shrink-0"
-										/>
-										<div className="min-w-0 flex-1">
-											<div className="text-sm font-semibold">
-												{
-													INLINE_STYLES[
-														lastScan.result
-													].label
-												}
-											</div>
-											<div
-												className="truncate font-mono text-[11px] opacity-75"
-												title={lastScan.qr}
-											>
-												{lastScan.qr}
-											</div>
-										</div>
-										<span className="shrink-0 text-[11px] opacity-70">
-											{formatTime(lastScan.at)}
-										</span>
-									</div>
-								)}
-
-								{scanning && (
-									<div className="space-y-3">
-										<div className="relative overflow-hidden rounded-2xl bg-black ring-1 ring-surface-200">
-											<video
-												ref={videoRef}
-												className="h-[320px] w-full object-cover"
-												playsInline
-												muted
-											/>
-											<div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-												<div className="h-48 w-48 rounded-2xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.35)]" />
-											</div>
-											<span className="absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white">
-												<span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{" "}
-												Scanning
-											</span>
-										</div>
-										<div className="flex flex-wrap items-center justify-between gap-2">
-											<span className="flex items-center gap-2 text-xs text-surface-500">
-												<Camera size={14} /> Hold the QR
-												inside the frame.
-											</span>
-											<button
-												className="btn-secondary btn-sm"
-												onClick={toggleCamera}
-											>
-												<X size={14} /> Stop camera
-											</button>
-										</div>
-									</div>
-								)}
 							</div>
 
 							<div className="min-w-0 space-y-4">
 								<div className="rounded-2xl border border-surface-200 bg-white p-4">
-									<h3 className="flex items-center gap-2 text-sm font-semibold text-surface-800">
+									<h3 className="flex items-center gap-2 text-base font-semibold text-surface-900">
 										<Boxes
 											size={15}
 											className="text-brand-500"
 										/>{" "}
-										Batch &amp; vehicle
+										Shipment details
 									</h3>
-									<dl className="mt-3 text-xs">
+									<dl className="mt-3 text-sm">
 										<DetailRow
 											label="Product"
 											value={session.product_name}
@@ -1824,7 +1849,7 @@ export default function DispatchScan() {
 											value={session.client_name}
 										/>
 										<DetailRow
-											label="Driver"
+											label="Transporter Name"
 											value={session.driver_name}
 										/>
 										<DetailRow
@@ -1859,7 +1884,7 @@ export default function DispatchScan() {
 											{recentScans.length}
 										</span>
 									</div>
-									<div className="max-h-[320px] divide-y divide-surface-100 overflow-y-auto">
+									<div className="max-h-[420px] divide-y divide-surface-100 overflow-y-auto">
 										{recentScans.map((scan) => (
 											<div
 												key={scan.key}
@@ -1867,12 +1892,12 @@ export default function DispatchScan() {
 											>
 												<div className="min-w-0">
 													<div
-														className="truncate font-mono text-[11px] text-surface-700"
+														className="truncate font-mono text-sm font-medium text-surface-800"
 														title={scan.qr}
 													>
 														{scan.qr}
 													</div>
-													<div className="text-[11px] text-surface-400">
+													<div className="mt-0.5 text-xs text-surface-500">
 														{formatTime(scan.at)}
 													</div>
 												</div>
@@ -1897,19 +1922,19 @@ export default function DispatchScan() {
 						</div>
 					</div>
 
-					<div className="card mb-6 p-6">
+					<div className="card mb-6 p-4 sm:p-6">
 						<div className="flex flex-wrap items-center justify-between gap-2">
 							<div>
-								<h2 className="section-title flex items-center gap-2">
+								<h2 className="section-title flex items-center gap-2 text-lg">
 									<ShieldCheck
 										size={16}
 										className="text-indigo-500"
 									/>{" "}
 									Seal &amp; finalise
 								</h2>
-								<p className="mt-1 text-xs text-surface-400">
+								<p className="mt-1 text-sm text-surface-500">
 									Complete the shipment details after loading,
-									then mark the order dispatched. Driver
+									then mark the order dispatched. Transporter
 									mobile is optional.
 								</p>
 							</div>
@@ -1921,7 +1946,7 @@ export default function DispatchScan() {
 						</div>
 
 						{shortfall ? (
-							<div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+							<div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
 								<AlertTriangle
 									size={15}
 									className="mt-0.5 shrink-0"
@@ -1935,7 +1960,7 @@ export default function DispatchScan() {
 							</div>
 						) : (
 							scannedCount > 0 && (
-								<div className="mt-4 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
+								<div className="mt-4 flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
 									<CheckCircle
 										size={15}
 										className="mt-0.5 shrink-0"
@@ -1952,10 +1977,10 @@ export default function DispatchScan() {
 						<div className="form-grid mt-4">
 							<div>
 								<label
-									className="input-label"
+									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="driver-name"
 								>
-									Driver name *
+									Transporter Name *
 								</label>
 								<input
 									id="driver-name"
@@ -1969,10 +1994,10 @@ export default function DispatchScan() {
 							</div>
 							<div>
 								<label
-									className="input-label"
+									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="driver-phone"
 								>
-									Driver mobile (optional)
+									Transporter mobile (optional)
 								</label>
 								<input
 									id="driver-phone"
@@ -1987,7 +2012,7 @@ export default function DispatchScan() {
 							</div>
 							<div>
 								<label
-									className="input-label"
+									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="vehicle-number"
 								>
 									Vehicle number *
@@ -2004,7 +2029,7 @@ export default function DispatchScan() {
 							</div>
 							<div>
 								<label
-									className="input-label"
+									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="container-number"
 								>
 									Container number *
@@ -2021,7 +2046,7 @@ export default function DispatchScan() {
 							</div>
 							<div>
 								<label
-									className="input-label"
+									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="seal-number"
 								>
 									Seal number (optional)
@@ -2038,7 +2063,7 @@ export default function DispatchScan() {
 							</div>
 							<div>
 								<label
-									className="input-label"
+									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="outcome"
 								>
 									Order outcome
@@ -2064,7 +2089,7 @@ export default function DispatchScan() {
 						</div>
 
 						<div className="mt-4">
-							<label className="input-label" htmlFor="remarks">
+							<label className="mb-1.5 block text-sm font-semibold text-surface-700" htmlFor="remarks">
 								Remarks{" "}
 								{shortfall
 									? "(recommended for shortfall)"
@@ -2087,7 +2112,7 @@ export default function DispatchScan() {
 						</div>
 
 						<button
-							className="btn-primary mt-4 w-full"
+							className="btn-primary mt-5 min-h-12 w-full text-base"
 							onClick={() => void finalise()}
 							disabled={
 								finalising ||

@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { AdminStats } from '../types';
+import { formatDate } from '../utils/dateFormat';
 import {
   Package,
   Boxes,
@@ -38,12 +39,9 @@ function getGreeting(): string {
 }
 
 function getFormattedDate(): string {
-  return new Intl.DateTimeFormat('en-IN', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }).format(new Date());
+  const today = new Date();
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(today);
+  return `${weekday}, ${formatDate(today)}`;
 }
 
 export default function Dashboard() {

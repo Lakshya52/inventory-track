@@ -274,20 +274,42 @@ export async function list(req: Request, res: Response): Promise<void> {
   // Print jobs are tenant-scoped: a workspace never sees another one's jobs.
   const filter: Record<string, any> = { tenant_id: req.user!.tenantId };
   if (q) {
-    // Only job codes and label QR values are searchable. Product names are
-    // intentionally excluded: one product can own thousands of QR labels, so a
-    // name match floods the list instead of finding the scanned label.
-    const qrLabels = q.length >= 8
-      ? await ctx.find('qr_labels', { qr_value: contains(q) }, {
-          limit: 50,
-          projection: { print_job_id: 1 },
-        })
-      : [];
+    // Product names are excluded because one product can own thousands of QR
+    // labels; job codes, batch numbers, and label QR values identify a job.
+    const [qrLabels, matchingGroups] = await Promise.all([
+      q.length >= 8
+        ? ctx.find('qr_labels', { qr_value: contains(q) }, {
+            limit: 50,
+            projection: { print_job_id: 1 },
+          })
+        : Promise.resolve([]),
+      ctx.find('batch_groups', {
+        tenant_id: req.user!.tenantId,
+        batch_number: contains(q),
+      }, { projection: { group_key: 1 } }),
+    ]);
     const qrJobIds = qrLabels
       .map((label) => label.print_job_id)
       .filter((id) => id !== null && id !== undefined);
+    const matchingGroupKeys = matchingGroups.map((group) => group.group_key);
+    const matchingBatches = await ctx.find('batches', {
+      tenant_id: req.user!.tenantId,
+      $or: [
+        { batch_number: contains(q) },
+        { parent_batch_number: contains(q) },
+        ...(matchingGroupKeys.length ? [{ batch_group_id: { $in: matchingGroupKeys } }] : []),
+      ],
+    }, { projection: { id: 1 } });
+    const batchJobRows = matchingBatches.length
+      ? await ctx.aggregate('qr_labels', [
+          { $match: { batch_id: { $in: matchingBatches.map((batch) => batch.id) } } },
+          { $group: { _id: '$print_job_id' } },
+        ])
+      : [];
+    const batchJobIds = batchJobRows.map((row) => idKey(row._id));
     filter.$or = [
       { job_code: contains(q) },
+      ...(batchJobIds.length > 0 ? [{ id: { $in: batchJobIds } }] : []),
       ...(qrJobIds.length > 0 ? [{ id: { $in: qrJobIds.map(idKey) } }] : []),
     ];
   }

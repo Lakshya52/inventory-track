@@ -32,10 +32,13 @@ function errorResponse(res: Response, error: unknown, fallback: string): void {
 }
 
 async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Promise<Record<string, any>[]> {
+  const orderLineBatchIds = orders.flatMap((order) =>
+    Array.isArray(order.order_lines) ? order.order_lines.map((line: any) => line?.batch_id) : []
+  );
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    orders.map((order) => order.batch_id)
+    [...orders.map((order) => order.batch_id), ...orderLineBatchIds]
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
@@ -69,6 +72,14 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
     orderQrCounts.set(key, (orderQrCounts.get(key) || 0) + 1);
   }
 
+  const gradeNameForBatch = (batchId: any): string | null => {
+    const batch = batches.get(idKey(batchId));
+    if (!batch) return null;
+    return grades.get(idKey(batch.grade_id))?.name
+      ?? products.get(idKey(batch.product_id))?.grade
+      ?? null;
+  };
+
   return orders.flatMap((order) => {
     const batch = batches.get(idKey(order.batch_id));
     const orderQuantity = Number(order.quantity ?? batch?.quantity ?? 0);
@@ -100,7 +111,10 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       batch_status: batch?.status ?? null,
       storage_location: batch?.storage_location ?? null,
       vendor_name: vendors.get(idKey(batch?.vendor_id))?.name ?? null,
-      grade_name: grades.get(idKey(batch?.grade_id))?.name ?? product?.grade ?? null,
+      grade_name: [...new Set(items.map((item: any) => gradeNameForBatch(item.batch_id)).filter(Boolean))].join(', ')
+        || grades.get(idKey(batch?.grade_id))?.name
+        || product?.grade
+        || null,
       bag_quantity_name: bagQuantities.get(idKey(batch?.bag_quantity_id))?.name ?? null,
       bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
       bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
@@ -528,7 +542,7 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
     };
   }
 
-  const [batch, client, storedItems, dispatchRecord] = await Promise.all([
+  const [batch, client, storedItems, dispatchRecord, qrLabels] = await Promise.all([
     ctx.findOne('batches', { id: order.batch_id }, { projection: { _id: 0 } }),
     order.client_id
       ? ctx.findOne('clients', { id: order.client_id }, {
@@ -541,7 +555,20 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
       limit: 1,
       projection: { _id: 0, dispatcher_id: 1 },
     }),
+    // Human-readable QR IDs assigned to this order, grouped by batch line.
+    ctx.find('qr_labels', { dispatch_order_id: id }, {
+      sort: { batch_id: 1, serial_no: 1 },
+      projection: { _id: 0, batch_id: 1, qr_value: 1 },
+    }),
   ]);
+
+  const qrByBatch = new Map<string, string[]>();
+  for (const label of qrLabels) {
+    const key = String(label.batch_id);
+    const list = qrByBatch.get(key) || [];
+    list.push(String(label.qr_value));
+    qrByBatch.set(key, list);
+  }
 
   const [product, location, grade, vendor, bagQuantity, raisedBy, admin, dispatcher] = await Promise.all([
     batch ? ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } }) : null,
@@ -574,9 +601,10 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
 
   const storageLocation = location?.location_code || batch?.storage_location || null;
   const orderQuantity = Number(order.quantity ?? batch?.quantity ?? 0);
-  const items = storedItems.length > 0
+  const baseItems = storedItems.length > 0
     ? storedItems
     : [{
+        batch_id: batch?.id ?? null,
         product_name: product?.name ?? null,
         sku: product?.sku ?? null,
         batch_number: batch?.batch_number ?? null,
@@ -590,6 +618,43 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
         location_code: location?.location_code ?? null,
         location_description: location?.description ?? storageLocation ?? null,
       }];
+  // Packing-list lines snapshot the product, not its grade. Resolve each line's
+  // grade from its batch so the list (screen, print and PDF) can show grades.
+  const lineBatchIds = [...new Set(baseItems.map((item: any) => item.batch_id).filter(Boolean))];
+  const lineBatches = await mapByIds<Record<string, any>>(ctx, 'batches', lineBatchIds);
+  const lineGrades = await mapByIds<Record<string, any>>(
+    ctx,
+    'grades',
+    [...lineBatches.values()].map((lineBatch) => lineBatch.grade_id)
+  );
+  const lineProducts = await mapByIds<Record<string, any>>(
+    ctx,
+    'products',
+    [...lineBatches.values()].map((lineBatch) => lineBatch.product_id)
+  );
+  const gradeNameByBatch = new Map<string, string | null>();
+  for (const [key, lineBatch] of lineBatches) {
+    gradeNameByBatch.set(
+      key,
+      lineGrades.get(idKey(lineBatch.grade_id))?.name
+        ?? lineProducts.get(idKey(lineBatch.product_id))?.grade
+        ?? null,
+    );
+  }
+
+  const items = baseItems.map((item: any) => ({
+    ...item,
+    // Packing-list snapshots store the SKU as product_sku; surface it as sku
+    // so the table and PDFs can read a single field.
+    sku: item.sku ?? item.product_sku ?? null,
+    grade_name: item.grade_name
+      ?? gradeNameByBatch.get(String(item.batch_id))
+      ?? item.grade
+      ?? grade?.name
+      ?? product?.grade
+      ?? null,
+    qr_values: qrByBatch.get(String(item.batch_id)) || [],
+  }));
 
   return {
     ok: true,

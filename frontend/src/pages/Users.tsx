@@ -3,6 +3,7 @@ import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { User } from '../types';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { formatDate } from '../utils/dateFormat';
 import {
   Users as UsersIcon,
   Plus,
@@ -373,7 +374,7 @@ export default function Users() {
                     </td>
 
                     <td className="px-6 py-4 text-sm font-medium text-slate-500">
-                      {u.created_at ? new Date(u.created_at).toLocaleDateString() : '-'}
+                      {formatDate(u.created_at)}
                     </td>
 
                     <td className="px-6 py-4 text-right">

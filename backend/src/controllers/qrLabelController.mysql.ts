@@ -83,21 +83,29 @@ export async function create(req: Request, res: Response): Promise<void> {
 
 export async function list(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
-  // Only job codes and label QR values are searchable. Product names are
-  // intentionally excluded: one product can own thousands of QR labels, so a
-  // name match floods the list instead of finding the scanned label.
+  // Product names are excluded because one product can own thousands of QR
+  // labels; job codes, batch numbers, and label QR values identify a job.
   // Print jobs are tenant-scoped: a workspace never sees another one's jobs.
   const conditions: string[] = ['j.tenant_id = ?'];
   const params: any[] = [req.user!.tenantId];
   if (q) {
-    conditions.push('j.job_code LIKE ?');
+    const searchConditions = ['j.job_code LIKE ?'];
+    params.push(`%${q}%`);
+    searchConditions.push(`j.id IN (
+      SELECT l.print_job_id
+      FROM qr_labels l
+      JOIN batches b ON l.batch_id = b.id
+      LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id
+      WHERE COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) LIKE ?
+    )`);
     params.push(`%${q}%`);
     if (q.length >= 8) {
-      conditions.push('j.id IN (SELECT l.print_job_id FROM qr_labels l WHERE l.qr_value LIKE ?)');
+      searchConditions.push('j.id IN (SELECT l.print_job_id FROM qr_labels l WHERE l.qr_value LIKE ?)');
       params.push(`%${q}%`);
     }
+    conditions.push(`(${searchConditions.join(' OR ')})`);
   }
-  const where = `WHERE ${conditions.join(' OR ')}`;
+  const where = `WHERE ${conditions.join(' AND ')}`;
   const items = await query<RowDataPacket[]>(
     `SELECT j.*, p.name AS product_name, p.sku AS product_sku,
             COALESCE(qc.name, a.name, 'QC User') AS created_by_name,

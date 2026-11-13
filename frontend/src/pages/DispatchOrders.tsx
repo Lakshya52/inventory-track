@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import type { EntityId } from '../types';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { formatDate } from '../utils/dateFormat';
 import {
   ClipboardList,
   CheckCircle,
@@ -541,7 +542,7 @@ export default function DispatchOrders() {
                     </td>
 
                     <td className="px-5 py-4 text-sm font-medium text-slate-500">
-                      {order.created_at ? new Date(order.created_at).toLocaleDateString() : '-'}
+                      {formatDate(order.created_at)}
                     </td>
 
                     <td className="px-5 py-4">

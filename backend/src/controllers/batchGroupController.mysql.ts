@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import { RowDataPacket } from 'mysql2';
 import { query, withTransaction } from '../config/database.mysql';
 
-type InputLine = { product_id: number; quantity: number; package_quantity: number; uom: string; shelf_location_id: number; warehouse_id: number; unit_price?: number; avg_standard_quantity?: number | null };
+type InputLine = { product_id: number; quantity: number; package_quantity: number; uom: string; shelf_location_id: number; warehouse_id: number; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
 
 export async function createGroup(req: Request, res: Response): Promise<void> {
   const raw = req.body?.items;
@@ -19,8 +19,12 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     avg_standard_quantity: item?.avg_standard_quantity === undefined || item?.avg_standard_quantity === null || item?.avg_standard_quantity === ''
       ? null
       : Number(item.avg_standard_quantity),
+    manufacturing_date: String(item?.manufacturing_date || '').trim().slice(0, 10),
+    expiry_date: String(item?.expiry_date || '').trim().slice(0, 10),
   }));
   if (items.some((item) => !Number.isInteger(item.product_id) || item.product_id < 1 || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000 || !Number.isFinite(item.package_quantity) || item.package_quantity <= 0 || item.package_quantity > 1_000_000 || !item.uom || !Number.isInteger(item.shelf_location_id) || item.shelf_location_id < 1 || !Number.isInteger(item.warehouse_id) || item.warehouse_id < 1)) { res.status(400).json({ error: 'Each product needs a valid package quantity, bag count, UOM, and active godown location' }); return; }
+  const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+  if (items.some((item) => !isValidDate(item.manufacturing_date) || !isValidDate(item.expiry_date) || item.expiry_date < item.manufacturing_date)) { res.status(400).json({ error: 'Each product needs a valid manufacturing date and an expiry date on or after it' }); return; }
   if (items.some((item) => item.avg_standard_quantity !== null && item.avg_standard_quantity !== undefined && (!Number.isFinite(item.avg_standard_quantity) || item.avg_standard_quantity < 0 || item.avg_standard_quantity > 1_000_000))) { res.status(400).json({ error: 'Average standard quantity must be a number between 0 and 1,000,000' }); return; }
   if (items.reduce((sum, item) => sum + item.quantity, 0) > 10_000) { res.status(400).json({ error: 'A single batch can contain no more than 10,000 QR-labelled units' }); return; }
   if (new Set(items.map((item) => item.product_id)).size !== items.length) { res.status(400).json({ error: 'Each product can appear only once in a batch' }); return; }
@@ -144,9 +148,9 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         const labels: any[] = [];
         for (const [serial, location] of (locationsByProduct.get(item.product_id) || []).entries()) {
           const [batchInsert] = await conn.execute<any>(
-            `INSERT INTO batches (product_id, batch_number, batch_group_id, parent_batch_number, tenant_id, quantity, package_quantity, uom, avg_standard_quantity, unit_price, shelf_location_id, storage_location, status, barcode_value)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'PENDING_QC', ?)`,
-            [item.product_id, childNumbers[serial], groupId, batchNumber, req.user!.tenantId, item.package_quantity, item.uom, item.avg_standard_quantity ?? null, item.unit_price || Number(product.price) || 0, location.shelf_location_id, location.location_code, `QC:${randomUUID()}`],
+            `INSERT INTO batches (product_id, batch_number, batch_group_id, parent_batch_number, tenant_id, quantity, package_quantity, uom, avg_standard_quantity, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, status, barcode_value)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_QC', ?)`,
+            [item.product_id, childNumbers[serial], groupId, batchNumber, req.user!.tenantId, item.package_quantity, item.uom, item.avg_standard_quantity ?? null, item.unit_price || Number(product.price) || 0, item.manufacturing_date, item.expiry_date, location.shelf_location_id, location.location_code, `QC:${randomUUID()}`],
           );
           const batchId = Number(batchInsert.insertId);
           labels.push({

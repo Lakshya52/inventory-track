@@ -87,13 +87,18 @@ export async function listWarehouses(req: Request, res: Response): Promise<void>
 export async function listInventory(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const rows = await query<RowDataPacket[]>(
-    `SELECT b.id, b.batch_number, b.parent_batch_number,
-            b.quantity, b.dispatched_quantity, b.recalled_quantity, b.uom, b.status,
+    `SELECT b.id, b.product_id, b.grade_id, b.bag_quantity_id, b.batch_number, b.parent_batch_number,
+            b.quantity, b.dispatched_quantity, b.recalled_quantity, b.package_quantity, b.uom, b.status,
             b.shelf_location_id, b.storage_location, b.created_at,
             p.name AS master_product_name, p.sku AS master_product_sku,
+            p.grade AS product_grade, g.name AS grade_name,
+            q.name AS bag_quantity_name, q.quantity AS bag_quantity,
+            q.unit AS bag_quantity_unit,
             s.location_code, s.warehouse, s.rack, s.shelf
      FROM batches b
      LEFT JOIN products p ON p.id = b.product_id AND p.tenant_id = b.tenant_id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
      LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id AND s.tenant_id = b.tenant_id
      WHERE b.tenant_id = ? AND b.status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED')
      ORDER BY b.created_at DESC`,
@@ -120,9 +125,16 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
     const rack = rackByLocation.get(String(row.shelf_location_id));
     return {
       id: row.id,
+      product_id: row.product_id,
       batch_number: row.parent_batch_number || row.batch_number,
       product_name: row.product_name || row.master_product_name || 'Unknown product',
       product_sku: row.product_sku || row.master_product_sku || null,
+      product_grade: row.product_grade || null,
+      grade_name: row.grade_name || null,
+      package_quantity: row.package_quantity ?? null,
+      bag_quantity_name: row.bag_quantity_name || null,
+      bag_quantity: row.bag_quantity ?? null,
+      bag_quantity_unit: row.bag_quantity_unit || null,
       quantity: row.quantity,
       remaining_quantity: remaining,
       uom: row.uom || 'units',

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { createQrPdfBlob, downloadQrPdf, type QrJob, type QrLabel } from '../utils/qrPdf';
 import { useAuth } from '../contexts/AuthContext';
+import { IsoDateInput } from '../components/IsoDateInput';
 
 const statusBadgeStyle: Record<string, { bg: string; label: string }> = {
   PENDING_QC: { bg: 'bg-amber-100 text-amber-900 border-amber-300', label: 'Waiting for QC' },
@@ -690,11 +691,11 @@ export default function Batches() {
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
                     Manufacturing Date
                   </label>
-                  <input
-                    type="date"
+                  <IsoDateInput
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                     value={manufacturingDate}
-                    onChange={(e) => setManufacturingDate(e.target.value)}
+                    onChange={setManufacturingDate}
+                    aria-label="Manufacturing date"
                   />
                 </div>
 
@@ -702,11 +703,11 @@ export default function Batches() {
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
                     Expiry Date
                   </label>
-                  <input
-                    type="date"
+                  <IsoDateInput
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                     value={expiryDate}
-                    onChange={(e) => setExpiryDate(e.target.value)}
+                    onChange={setExpiryDate}
+                    aria-label="Expiry date"
                   />
                 </div>
               </div>

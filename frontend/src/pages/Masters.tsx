@@ -41,7 +41,7 @@ function isActive(item: MasterItem): boolean {
 const TABS: { id: MasterTab; label: string; icon: any }[] = [
   { id: 'clients', label: 'Customer', icon: Building2 },
   { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
-  { id: 'products', label: 'Products & Grades', icon: Package },
+  { id: 'products', label: 'Products', icon: Package },
   { id: 'uoms', label: 'Units of Measure (UOM)', icon: Scale },
   { id: 'printer-label', label: 'Printer Label Size', icon: Printer },
 ];

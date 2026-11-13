@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { formatDateTime } from "../utils/dateFormat";
 
 type BatchLine = {
   key: string;
@@ -518,7 +519,7 @@ export default function QCBatches() {
                       )}
                       <span className="text-xs font-medium text-slate-500">
                         {group.created_at
-                          ? new Date(group.created_at).toLocaleString()
+                          ? formatDateTime(group.created_at)
                           : "Date not recorded"}
                       </span>
                     </div>

@@ -13,19 +13,42 @@ import { api } from "../services/api";
 import { useAuth } from "../contexts/AuthContext";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
+type InventoryRecord = {
+	id?: string | number;
+	product_id?: string | number;
+	product_name?: string | null;
+	product_sku?: string | null;
+	product_grade?: string | null;
+	grade_name?: string | null;
+	package_quantity?: number | string | null;
+	bag_quantity_name?: string | null;
+	bag_quantity?: number | string | null;
+	bag_quantity_unit?: string | null;
+	quantity?: number | string | null;
+	remaining_quantity?: number | string | null;
+	uom?: string | null;
+	warehouse_id?: string | number | null;
+	rack_id?: string | number | null;
+	location_code?: string | null;
+};
+
+type PackageStock = {
+	key: string;
+	name: string;
+	detail: string;
+	count: number;
+	countUnit: string;
+	totalContent: number;
+	contentUnit: string;
+};
+
 type StockRow = {
 	key: string;
+	productKey: string;
+	grade: string;
 	product: string;
 	sku: string;
-	batch: string;
-	quantity: number;
-	uom: string;
-	warehouse: string;
-	rack: string;
-	location: string;
-	warehouseId: string;
-	rackId: string;
-	cellCode: string;
+	packages: PackageStock[];
 };
 
 function Metric({
@@ -66,7 +89,7 @@ function Metric({
 export default function Inventory() {
 	const { user } = useAuth();
 	const navigate = useNavigate();
-	const [inventory, setInventory] = useState<any[]>([]);
+	const [inventory, setInventory] = useState<InventoryRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 	const [search, setSearch] = useState("");
@@ -78,8 +101,12 @@ export default function Inventory() {
 		setError("");
 		try {
 			setInventory(await api.storage.inventory());
-		} catch (err: any) {
-			setError(err.message || "Could not load inventory.");
+		} catch (err: unknown) {
+			setError(
+				err instanceof Error
+					? err.message
+					: "Could not load inventory.",
+			);
 		} finally {
 			setLoading(false);
 		}
@@ -89,31 +116,97 @@ export default function Inventory() {
 	}, [load]);
 
 	const rows = useMemo<StockRow[]>(
-		() =>
-			inventory
-				.filter(
-					(item) =>
-						Number(item.remaining_quantity ?? item.quantity ?? 0) >
-						0,
-				)
-				.map((item) => ({
-					key: String(item.id),
-					product: item.product_name || "Unknown product",
-					sku: item.product_sku || "—",
-					batch: item.batch_number || "—",
-					quantity: Number(
-						item.remaining_quantity ?? item.quantity ?? 0,
-					),
-					uom: item.uom || "units",
-					warehouse: item.warehouse || "Unassigned warehouse",
-					rack: item.rack || "—",
-					location: item.location_code || "Unassigned",
-					warehouseId: item.warehouse_id
-						? String(item.warehouse_id)
-						: "",
-					rackId: item.rack_id ? String(item.rack_id) : "",
-					cellCode: String(item.location_code || ""),
-				})),
+		() => {
+			const grouped = new Map<string, StockRow>();
+			for (const item of inventory) {
+				const quantity = Number(
+					item.remaining_quantity ?? item.quantity ?? 0,
+				);
+				if (!Number.isFinite(quantity) || quantity <= 0) continue;
+
+				const product = item.product_name || "Unknown product";
+				const grade =
+					item.grade_name || item.product_grade || "Standard Grade";
+				const productKey = String(
+					item.product_id ?? (item.product_sku || product),
+				);
+				const key = JSON.stringify([productKey, grade]);
+				let row = grouped.get(key);
+				if (!row) {
+					row = {
+						key,
+						productKey,
+						grade,
+						product,
+						sku: item.product_sku || "—",
+						packages: [],
+					};
+					grouped.set(key, row);
+				}
+
+				const packageSize = Number(
+					item.package_quantity ?? item.bag_quantity ?? 0,
+				);
+				const hasPackageSize =
+					Number.isFinite(packageSize) && packageSize > 0;
+				const packageName = item.bag_quantity_name?.trim() || "";
+				const hasPackaging = hasPackageSize || Boolean(packageName);
+				const contentUnit = item.uom?.trim() || "units";
+				const packageUnit =
+					item.package_quantity != null
+						? contentUnit
+						: item.bag_quantity_unit?.trim() || contentUnit;
+				const packageSizeLabel = hasPackageSize
+					? `${packageSize.toLocaleString()} ${packageUnit}`
+					: "";
+				const packageLabel =
+					packageName ||
+					(hasPackageSize
+						? `${packageSizeLabel} pack`
+						: "Packaging not recorded");
+				const detail = hasPackageSize
+					? `${packageSizeLabel} per pack`
+					: hasPackaging
+						? "Package size not recorded"
+						: "Packaging not recorded";
+				const countUnit = hasPackaging ? "packs" : contentUnit;
+				const totalContentUnit = hasPackageSize
+					? packageUnit
+					: hasPackaging
+						? "packs"
+						: contentUnit;
+				const packageKey = JSON.stringify([
+					packageLabel,
+					hasPackageSize ? packageSize : null,
+					packageUnit.toLowerCase(),
+					countUnit.toLowerCase(),
+				]);
+				const stock = row.packages.find(
+					(entry) => entry.key === packageKey,
+				);
+				if (stock) {
+					stock.count += quantity;
+					stock.totalContent +=
+						quantity * (hasPackageSize ? packageSize : 1);
+				} else {
+					row.packages.push({
+						key: packageKey,
+						name: packageLabel,
+						detail,
+						count: quantity,
+						countUnit,
+						totalContent:
+							quantity * (hasPackageSize ? packageSize : 1),
+						contentUnit: totalContentUnit,
+					});
+				}
+			}
+			return [...grouped.values()].sort(
+				(a, b) =>
+					a.grade.localeCompare(b.grade) ||
+					a.product.localeCompare(b.product),
+			);
+		},
 		[inventory],
 	);
 
@@ -122,25 +215,35 @@ export default function Inventory() {
 		return rows.filter(
 			(row) =>
 				!term ||
-				[
-					row.product,
-					row.sku,
-					row.batch,
-					row.warehouse,
-					row.rack,
-					row.location,
-				].some((value) => value.toLowerCase().includes(term)),
+				[row.grade, row.product, row.sku].some((value) =>
+					value.toLowerCase().includes(term),
+				) ||
+				row.packages.some((stock) =>
+					`${stock.name} ${stock.detail}`
+						.toLowerCase()
+						.includes(term),
+				),
 		);
 	}, [rows, debouncedSearch]);
-	const quantitiesByUom = rows.reduce<Record<string, number>>(
-		(totals, row) => {
-			const uom = row.uom.trim() || "units";
-			totals[uom] = (totals[uom] || 0) + row.quantity;
-			return totals;
-		},
-		{},
-	);
-	const uomEntries = Object.entries(quantitiesByUom);
+	const quantitiesByUom = new Map<
+		string,
+		{ uom: string; quantity: number }
+	>();
+	for (const row of rows) {
+		for (const stock of row.packages) {
+			const key = stock.contentUnit.toLowerCase();
+			const existing = quantitiesByUom.get(key);
+			quantitiesByUom.set(key, {
+				uom: existing?.uom ?? stock.contentUnit,
+				quantity:
+					(existing?.quantity ?? 0) + stock.totalContent,
+			});
+		}
+	}
+	const uomEntries = [...quantitiesByUom.values()].map(({ uom, quantity }) => [
+		uom,
+		quantity,
+	] as const);
 	const stockValue =
 		uomEntries.length === 0
 			? "0"
@@ -156,15 +259,19 @@ export default function Inventory() {
 					)
 					.join(" · ")
 			: uomEntries.length === 1
-				? "On hand across all warehouses"
+				? "Across all storage locations"
 				: "No stock recorded";
-	const productCount = new Set(
-		rows.map((row) => (row.sku !== "—" ? row.sku : row.product)),
-	).size;
+	const productCount = new Set(rows.map((row) => row.productKey)).size;
 	const occupiedPositions = new Set(
-		rows
-			.filter((row) => row.quantity > 0)
-			.map((row) => `${row.warehouseId}:${row.rackId}:${row.cellCode}`),
+		inventory
+			.filter(
+				(item) =>
+					Number(item.remaining_quantity ?? item.quantity ?? 0) > 0,
+			)
+			.map(
+				(item) =>
+					`${item.warehouse_id ?? ""}:${item.rack_id ?? ""}:${item.location_code ?? ""}`,
+			),
 	).size;
 
 	return (
@@ -178,7 +285,8 @@ export default function Inventory() {
 						Inventory
 					</h1>
 					<p className="mt-1 text-sm text-slate-500">
-						Live quantities by product, batch, and rack position.
+						Live quantities by product grade across all storage
+						locations.
 					</p>
 				</div>
 				<div className="flex flex-wrap gap-2">
@@ -236,10 +344,8 @@ export default function Inventory() {
 					icon={<Boxes size={20} />}
 				/>
 				<Metric
-					label="Stock lines"
-					value={rows
-						.filter((row) => row.quantity > 0)
-						.length.toLocaleString()}
+					label="Product grades"
+					value={rows.length.toLocaleString()}
 					icon={<MapPin size={20} />}
 				/>
 				<Metric
@@ -253,11 +359,11 @@ export default function Inventory() {
 				<div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
 					<div>
 						<h2 className="text-lg font-extrabold text-slate-900">
-							Stock by location
+							Stock by product
 						</h2>
 						<p className="mt-0.5 text-sm text-slate-500">
-							Quantities reflect dispatches and recalls already
-							finalized.
+							Quantities are combined across batches and storage
+							locations.
 						</p>
 					</div>
 					<label className="relative w-full sm:max-w-sm">
@@ -267,7 +373,7 @@ export default function Inventory() {
 						/>
 						<input
 							className="input h-10 pl-9"
-							placeholder="Search product, SKU, batch, location…"
+							placeholder="Search product, grade, packaging, or SKU…"
 							value={search}
 							onChange={(event) => setSearch(event.target.value)}
 						/>
@@ -287,86 +393,90 @@ export default function Inventory() {
 						</p>
 						<p className="mt-1 text-sm text-slate-500">
 							{search
-								? "Try another product, batch, or location."
+								? "Try another product, grade, packaging, or SKU."
 								: "Create a QC stock batch to see inventory here."}
 						</p>
 					</div>
 				) : (
-					<div className="overflow-x-auto">
-						<table className="w-full min-w-[900px] text-left text-sm">
-							<thead className="bg-slate-50 text-[11px] font-extrabold uppercase tracking-wide text-slate-500">
-								<tr>
-									<th className="px-5 py-3">Product</th>
-									<th className="px-5 py-3">Batch</th>
-									<th className="px-5 py-3 text-right">
-										On hand
-									</th>
-									<th className="px-5 py-3">
-										Storage location
-									</th>
-									<th className="px-5 py-3">Rack position</th>
-								</tr>
-							</thead>
-							<tbody className="divide-y divide-slate-100">
-								{visibleRows.map((row) => (
-									<tr
-										key={row.key}
-										className="hover:bg-slate-50/70"
-									>
-										<td className="px-5 py-3">
-											<div className="font-bold text-slate-900">
-												{row.product}
-											</div>
-											<div className="mt-0.5 font-mono text-xs text-slate-500">
-												{row.sku}
-											</div>
-										</td>
-										<td className="px-5 py-3">
-											<span className="rounded-md bg-slate-100 px-2 py-1 font-mono text-xs font-semibold text-slate-700">
-												{row.batch}
+					<div>
+						<div className="hidden grid-cols-[minmax(0,1.3fr)_minmax(220px,1fr)_minmax(150px,0.65fr)] gap-4 bg-slate-50 px-5 py-3 text-[11px] font-extrabold uppercase tracking-wide text-slate-500 lg:grid">
+							<span>Grade and product</span>
+							<span>Packaging</span>
+							<span>Available stock</span>
+						</div>
+						<div className="divide-y divide-slate-100">
+							{visibleRows.map((row) => (
+								<div
+									key={row.key}
+									className="grid gap-4 px-4 py-4 transition-colors hover:bg-slate-50/70 sm:px-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(220px,1fr)_minmax(150px,0.65fr)] lg:items-center"
+								>
+									<div className="min-w-0">
+										<p className="mb-1 text-[11px] font-extrabold uppercase tracking-wide text-indigo-600 lg:hidden">
+											Product
+										</p>
+										<span className="inline-flex max-w-full rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700">
+											<span className="truncate">
+												{row.grade}
 											</span>
-										</td>
-										<td className="px-5 py-3 text-right">
-											<span className="font-extrabold tabular-nums text-slate-900">
-												{row.quantity.toLocaleString()}
-											</span>
-											<span className="ml-1.5 text-xs font-semibold text-slate-500">
-												x {row.uom}
-											</span>
-										</td>
-										<td className="px-5 py-3">
-											<div className="font-semibold text-slate-800">
-												{row.warehouse}
-											</div>
-											<div className="text-xs text-slate-500">
-												{row.rack}
-											</div>
-										</td>
-										<td className="px-5 py-3">
-											<button
-												className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1.5 text-xs font-extrabold text-blue-800 hover:bg-blue-100"
-												disabled={
-													!row.warehouseId ||
-													!row.rackId
-												}
-												onClick={() =>
-													navigate(
-														`/storage/${encodeURIComponent(row.warehouseId)}/racks/${encodeURIComponent(row.rackId)}?location=${encodeURIComponent(row.location)}`,
-													)
-												}
-											>
-												<MapPin size={13} />
-												{row.location}
-											</button>
-										</td>
-									</tr>
-								))}
-							</tbody>
-						</table>
+										</span>
+										<h3 className="mt-2 break-words text-base font-bold leading-snug text-slate-900">
+											{row.product}
+										</h3>
+										<p className="mt-1 truncate font-mono text-xs text-slate-500">
+											SKU: {row.sku}
+										</p>
+									</div>
+									<div className="min-w-0">
+										<p className="mb-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-500 lg:hidden">
+											Packaging
+										</p>
+										<div className="space-y-2">
+											{row.packages.map((stock) => (
+												<div
+													key={stock.key}
+													className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+												>
+													<p className="break-words text-sm font-bold text-slate-800">
+														{stock.name}
+													</p>
+													<p className="mt-0.5 text-xs text-slate-500">
+														{stock.detail}
+													</p>
+												</div>
+											))}
+										</div>
+									</div>
+									<div className="min-w-0">
+										<p className="mb-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-500 lg:hidden">
+											Available stock
+										</p>
+										<div className="space-y-2">
+											{row.packages.map((stock) => (
+												<div
+													key={stock.key}
+													className="rounded-lg bg-emerald-50 px-3 py-2 lg:bg-transparent lg:px-0 lg:py-0"
+												>
+													<p className="text-base font-extrabold tabular-nums text-emerald-800 lg:text-slate-900">
+														{stock.count.toLocaleString()}{" "}
+														<span className="text-sm font-semibold">
+															{stock.countUnit}
+														</span>
+													</p>
+													<p className="mt-0.5 text-xs font-medium text-slate-500">
+														{stock.totalContent.toLocaleString()}{" "}
+														{stock.contentUnit} total
+													</p>
+												</div>
+											))}
+										</div>
+									</div>
+								</div>
+							))}
+						</div>
 					</div>
 				)}
 				<div className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs font-medium text-slate-500">
-					<span>{visibleRows.length} stock lines</span>
+					<span>{visibleRows.length} product grades</span>
 					<span>Dispatch users have view-only access</span>
 				</div>
 			</section>

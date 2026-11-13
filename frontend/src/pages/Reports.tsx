@@ -3,6 +3,12 @@ import { useSearchParams } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import { api, uploadUrl } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { IsoDateInput } from "../components/IsoDateInput";
+import {
+	formatDate as formatIsoDate,
+	formatDateOnly,
+	formatDateTime,
+} from "../utils/dateFormat";
 import {
 	FileBarChart,
 	Microscope,
@@ -165,8 +171,7 @@ function downloadPdf(
 }
 
 function formatDate(value?: string | null): string {
-	if (!value) return "-";
-	return new Date(value).toLocaleDateString();
+	return formatIsoDate(value);
 }
 
 export default function Reports() {
@@ -408,7 +413,7 @@ export default function Reports() {
 				"Remarks",
 			];
 			rows = filteredQc.map((r) => [
-				new Date(r.created_at).toLocaleString(),
+				formatDateTime(r.created_at),
 				r.product_name,
 				r.product_sku,
 				r.batch_number,
@@ -434,7 +439,7 @@ export default function Reports() {
 				"Remarks",
 			];
 			rows = filteredDispatch.map((r) => [
-				new Date(r.created_at).toLocaleString(),
+				formatDateTime(r.created_at),
 				r.client_name || "",
 				r.product_name,
 				r.product_sku,
@@ -466,7 +471,7 @@ export default function Reports() {
 				"Approver Remarks",
 			];
 			rows = filteredRequests.map((r) => [
-				new Date(r.created_at).toLocaleString(),
+				formatDateTime(r.created_at),
 				r.product_name,
 				r.product_sku,
 				r.grade_name || r.product_grade || "",
@@ -525,15 +530,15 @@ export default function Reports() {
 				"Location",
 			];
 			rows = filteredBatches.map((r) => [
-				new Date(r.created_at).toLocaleString(),
+				formatDateTime(r.created_at),
 				r.product_name,
 				r.product_sku,
 				r.batch_number,
 				r.quantity,
 				r.uom || "",
 				r.status,
-				r.manufacturing_date || "",
-				r.expiry_date || "",
+				formatDateOnly(r.manufacturing_date),
+				formatDateOnly(r.expiry_date),
 				r.storage_location || "",
 			]);
 		} else if (tab === "activity") {
@@ -541,7 +546,7 @@ export default function Reports() {
 			title = "Activity log";
 			headers = ["Time", "User", "Role", "Action", "Description"];
 			rows = filteredLogs.map((r) => [
-				new Date(r.created_at).toLocaleString(),
+				formatDateTime(r.created_at),
 				r.user_name || "",
 				r.user_role || "",
 				r.action,
@@ -756,24 +761,22 @@ export default function Reports() {
 									<label className="text-sm font-semibold text-slate-600">
 										From
 									</label>
-									<input
-										type="date"
+									<IsoDateInput
 										className="input py-2.5 text-base"
 										value={from}
-										onChange={(e) =>
-											setFrom(e.target.value)
-										}
+										onChange={setFrom}
+										aria-label="From date"
 									/>
 								</div>
 								<div className="space-y-1.5">
 									<label className="text-sm font-semibold text-slate-600">
 										To
 									</label>
-									<input
-										type="date"
+									<IsoDateInput
 										className="input py-2.5 text-base"
 										value={to}
-										onChange={(e) => setTo(e.target.value)}
+										onChange={setTo}
+										aria-label="To date"
 									/>
 								</div>
 							</>
@@ -1089,9 +1092,7 @@ export default function Reports() {
 											className="hover:bg-slate-50"
 										>
 											<td className="px-4 py-3 text-sm text-slate-400">
-												{new Date(
-													r.created_at,
-												).toLocaleString()}
+												{formatDateTime(r.created_at)}
 											</td>
 											<td className="px-4 py-3">
 												<div className="text-base font-semibold text-slate-900">
@@ -1180,9 +1181,7 @@ export default function Reports() {
 											className="hover:bg-slate-50"
 										>
 											<td className="px-5 py-4 text-sm text-slate-400">
-												{new Date(
-													r.created_at,
-												).toLocaleString()}
+												{formatDateTime(r.created_at)}
 											</td>
 											<td className="px-5 py-4">
 												<div className="text-base font-semibold text-slate-900">
@@ -1302,9 +1301,7 @@ export default function Reports() {
 											className="hover:bg-slate-50"
 										>
 											<td className="px-5 py-4 text-sm text-slate-400 whitespace-nowrap">
-												{new Date(
-													r.created_at,
-												).toLocaleString()}
+												{formatDateTime(r.created_at)}
 											</td>
 											<td className="px-5 py-4 text-base text-slate-700">
 												{r.client_name || "-"}
@@ -1436,9 +1433,7 @@ export default function Reports() {
 										className="hover:bg-slate-50"
 									>
 										<td className="px-5 py-4 text-sm text-slate-400 whitespace-nowrap">
-											{new Date(
-												r.created_at,
-											).toLocaleString()}
+											{formatDateTime(r.created_at)}
 										</td>
 										<td className="px-5 py-4">
 											<div className="text-base font-semibold text-slate-900">
@@ -1680,10 +1675,10 @@ export default function Reports() {
 											</span>
 										</td>
 										<td className="px-5 py-4 text-sm text-slate-400">
-											{formatDate(r.manufacturing_date)}
+											{formatDateOnly(r.manufacturing_date)}
 										</td>
 										<td className="px-5 py-4 text-sm text-slate-400">
-											{formatDate(r.expiry_date)}
+											{formatDateOnly(r.expiry_date)}
 										</td>
 										<td className="px-5 py-4 text-base text-slate-700">
 											{r.storage_location || "-"}
@@ -1746,9 +1741,7 @@ export default function Reports() {
 										className="hover:bg-slate-50"
 									>
 										<td className="px-5 py-4 text-sm text-slate-400 whitespace-nowrap">
-											{new Date(
-												r.created_at,
-											).toLocaleString()}
+											{formatDateTime(r.created_at)}
 										</td>
 										<td className="px-5 py-4 text-base font-medium text-slate-800">
 											{r.user_name || "-"}

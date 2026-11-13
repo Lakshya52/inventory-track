@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { IsoDateInput } from "../components/IsoDateInput";
+import { formatDateTime } from "../utils/dateFormat";
 
 const batchStatusMeta: Record<
 	string,
@@ -37,6 +39,8 @@ type Line = {
 	avgStandardQuantity: string;
 	warehouseId: string;
 	shelfLocationId: string;
+	manufacturingDate: string;
+	expiryDate: string;
 };
 type Warehouse = { id: string; name: string; racks?: Rack[] };
 type Rack = { id: string; rack_code: string; cells?: ShelfCell[] };
@@ -48,6 +52,13 @@ type ShelfCell = {
 	shelf_location_id: string;
 	occupied?: boolean;
 };
+/** Today's date as YYYY-MM-DD in the user's local timezone. */
+function todayISO(): string {
+	const now = new Date();
+	const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+	return local.toISOString().slice(0, 10);
+}
+
 const newLine = (): Line => ({
 	productId: "",
 	quantity: "1",
@@ -55,6 +66,8 @@ const newLine = (): Line => ({
 	avgStandardQuantity: "",
 	warehouseId: "",
 	shelfLocationId: "",
+	manufacturingDate: todayISO(),
+	expiryDate: "",
 });
 
 /** Idempotency key for one batch submission. */
@@ -239,7 +252,8 @@ function ProductPicker({
 
 	const label = (product: any) =>
 		product?.grade
-			? `${product.name} · ${product.grade}`
+			// ? `${product.grade} · ${product.name}`
+			? `${product.grade} || ${product.name}`
 			: product?.name || product?.sku || "";
 
 	const selected = products.find(
@@ -366,6 +380,7 @@ export default function DispatchBatches() {
 	const [lines, setLines] = useState<Line[]>([newLine()]);
 	const [showCreateForm, setShowCreateForm] = useState(false);
 	const [useSameLocation, setUseSameLocation] = useState(false);
+	const [useSameDates, setUseSameDates] = useState(false);
 	const [search, setSearch] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 250);
 	const [busy, setBusy] = useState(false);
@@ -466,10 +481,41 @@ export default function DispatchBatches() {
 			}));
 		});
 	};
+	const setLineDates = (
+		index: number,
+		patch: Partial<Pick<Line, "manufacturingDate" | "expiryDate">>,
+	) => {
+		setLines((current) =>
+			current.map((line, i) =>
+				useSameDates || i === index ? { ...line, ...patch } : line,
+			),
+		);
+	};
+	const toggleSameDates = () => {
+		const next = !useSameDates;
+		setUseSameDates(next);
+		if (!next) return;
+		setLines((currentLines) => {
+			const sharedLine =
+				currentLines.find(
+					(line) => line.manufacturingDate && line.expiryDate,
+				) || currentLines[0];
+			if (!sharedLine) return currentLines;
+			return currentLines.map((line) => ({
+				...line,
+				manufacturingDate: sharedLine.manufacturingDate,
+				expiryDate: sharedLine.expiryDate,
+			}));
+		});
+	};
 	const addLine = () => {
 		setLines((current) => {
 			const sharedLine = useSameLocation
 				? current.find((line) => line.warehouseId && line.shelfLocationId)
+				: undefined;
+			const sharedDates = useSameDates
+				? current.find((line) => line.manufacturingDate && line.expiryDate) ||
+					current[0]
 				: undefined;
 			return [
 				...current,
@@ -477,6 +523,9 @@ export default function DispatchBatches() {
 					...newLine(),
 					warehouseId: sharedLine?.warehouseId || "",
 					shelfLocationId: sharedLine?.shelfLocationId || "",
+					manufacturingDate:
+						sharedDates?.manufacturingDate || todayISO(),
+					expiryDate: sharedDates?.expiryDate || "",
 				},
 			];
 		});
@@ -541,6 +590,9 @@ export default function DispatchBatches() {
 					getUom(product) !== "UOM not set" &&
 					hasValidPackageQuantity(line.packageQuantity) &&
 					hasValidAvgQuantity(line.avgStandardQuantity) &&
+					line.manufacturingDate &&
+					line.expiryDate &&
+					line.expiryDate >= line.manufacturingDate &&
 					line.warehouseId &&
 					line.shelfLocationId &&
 					location &&
@@ -585,6 +637,8 @@ export default function DispatchBatches() {
 						uom: getUom(product),
 						shelf_location_id: line.shelfLocationId,
 						warehouse_id: line.warehouseId,
+						manufacturing_date: line.manufacturingDate,
+						expiry_date: line.expiryDate,
 						unit_price: Number(product?.price || 0),
 					};
 				}),
@@ -835,9 +889,7 @@ export default function DispatchBatches() {
 									</td>
 									<td className="text-xs font-medium text-slate-500">
 										{batch.created_at
-											? new Date(
-													batch.created_at,
-												).toLocaleString()
+											? formatDateTime(batch.created_at)
 											: "-"}
 									</td>
 								</tr>
@@ -877,7 +929,7 @@ export default function DispatchBatches() {
 						role="dialog"
 						aria-modal="true"
 						aria-labelledby="create-batch-title"
-						className="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-y-auto rounded-3xl bg-white shadow-2xl"
+						className="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-y-auto rounded-3xl bg-white shadow-2xl"
 					>
 						<form onSubmit={create}>
 							<div className="relative flex flex-col gap-4 bg-white px-5 pb-4 pt-6 sm:px-8 sm:pb-5 sm:pt-7 lg:flex-row lg:items-center lg:justify-between lg:pr-16">
@@ -896,9 +948,9 @@ export default function DispatchBatches() {
 											<p className="mt-1.5 max-w-xl text-sm text-slate-500 sm:text-base">
 												Add products, set the package
 												size and bag count, then choose
-												a godown for each product. QC
-												will review the batch before
-												stock is added.
+												a godown and MFD / expiry dates
+												for each product. QC will review
+												the batch before stock is added.
 											</p>
 											{/* <p className="mt-1 text-xs font-semibold text-slate-500">
 												Initial QR labels print once.
@@ -919,42 +971,85 @@ export default function DispatchBatches() {
 									</button>
 								</div>
 							</div>
-							{/* toggle button for same locations selection */}
-							{/* when turned on , in the table , it should show only one dropdown for selecting the locations, and table will show that column as merged without any horizontal line breaks,  */}
-							<div className="flex w-fit items-center gap-2.5 px-5 py-2 sm:ml-auto sm:mr-4">
-								<span className="text-sm font-semibold text-slate-700">
-									Same location for all products
-								</span>
-								<button
-									type="button"
-									role="switch"
-									aria-checked={useSameLocation}
-									aria-label="Use the same godown location for all products"
-									onClick={toggleSameLocation}
-									className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full border-0 p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
-										useSameLocation
-											? "bg-indigo-600"
-											: "bg-slate-300"
-									}`}
-								>
-									<span
-										className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
-											useSameLocation
-												? "translate-x-5"
-												: "translate-x-0"
+							{/* toggle buttons for shared location and shared MFD/expiry dates */}
+							<div className="flex w-fit flex-col gap-2 px-5 py-2 sm:ml-auto sm:mr-4 items-end">
+								<div className="flex items-center gap-2.5">
+									<span className="text-sm font-semibold text-slate-700">
+										Same MFD &amp; EXP date ?
+									</span>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={useSameDates}
+										aria-label="Use the same manufacturing and expiry date for all products"
+										onClick={toggleSameDates}
+										className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full border-0 p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
+											useSameDates
+												? "bg-indigo-600"
+												: "bg-slate-300"
 										}`}
-									/>
-								</button>
+									>
+										<span
+											className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+												useSameDates
+													? "translate-x-5"
+													: "translate-x-0"
+											}`}
+										/>
+									</button>
+									{/* if button is turned on then it will show "yes" if not then "no" */}
+									{useSameDates && (
+										<span className="text-sm text-slate-500">Yes</span>
+									)}
+									{!useSameDates && (
+										<span className="text-sm text-slate-500">No</span>
+									)}
+								</div>
+
+								<div className="flex items-center gap-2.5">
+									<span className="text-sm font-semibold text-slate-700">
+										Same locations ?
+									</span>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={useSameLocation}
+										aria-label="Use the same godown location for all products"
+										onClick={toggleSameLocation}
+										className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full border-0 p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
+											useSameLocation
+												? "bg-indigo-600"
+												: "bg-slate-300"
+										}`}
+									>
+										<span
+											className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+												useSameLocation
+													? "translate-x-5"
+													: "translate-x-0"
+											}`}
+										/>
+									</button>
+									{/* if button is turned on then it will show "yes" if not then "no" */}
+									{useSameLocation && (
+										<span className="text-sm text-slate-500">Yes</span>
+									)}
+									{!useSameLocation && (
+										<span className="text-sm text-slate-500">No</span>
+									)}
+								</div>
+								
 							</div>
 
 							<div className="space-y-1 px-5 py-4 sm:px-8 sm:py-5">
 								<table className="block w-full text-left text-xs sm:table sm:table-fixed sm:text-sm">
 									<colgroup className="hidden sm:table-column-group">
-										<col className="w-[30%]" />
-										<col className="w-[15%]" />
-										<col className="w-[15%]" />
-										<col className="w-[20%]" />
-										<col className="w-[20%]" />
+										<col className="w-[26%]" />
+										<col className="w-[12%]" />
+										<col className="w-[12%]" />
+										<col className="w-[16%]" />
+										<col className="w-[18%]" />
+										<col className="w-[16%]" />
 									</colgroup>
 									<thead className="hidden bg-slate-50 sm:table-header-group">
 										<tr className="border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-[0.14em] text-slate-600">
@@ -972,6 +1067,9 @@ export default function DispatchBatches() {
 												</th> */}
 											<th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
 												Number of Units
+											</th>
+											<th className="break-words border-b border-r border-slate-200 px-1.5 py-3 sm:px-2">
+												MFD &amp; Expiry
 											</th>
 											<th className="break-words border-b border-slate-200 px-1.5 py-3 sm:px-2">
 												Storage Location
@@ -1330,6 +1428,86 @@ export default function DispatchBatches() {
 															this line.
 														</span>
 													</td>
+													{(!useSameDates || index === 0) && (
+														<td
+															rowSpan={
+																useSameDates
+																	? lines.length
+																	: undefined
+															}
+															className={`col-span-2 block min-w-0 px-1 py-1 align-top font-medium text-slate-800 sm:table-cell sm:border-r sm:border-slate-200 sm:px-2 sm:py-3 ${
+																useSameDates
+																	? "sm:border-b-0"
+																	: `sm:border-b sm:border-slate-200 ${
+																			index ===
+																			lines.length -
+																				1
+																				? "sm:border-b-0"
+																				: ""
+																		}`
+															}`}
+														>
+															<span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+																{useSameDates
+																	? "Shared MFD & expiry"
+																	: "MFD & expiry"}
+															</span>
+															<div className="grid gap-1">
+																<label className="flex items-center gap-1.5">
+																	<span className="w-9 shrink-0 text-[10px] font-extrabold uppercase tracking-wide text-slate-500">
+																		MFD
+																	</span>
+																	<IsoDateInput
+																		className="input h-9 min-w-0 flex-1 cursor-pointer border-slate-200 bg-white px-1 text-xs font-semibold text-slate-900"
+																		value={
+																			line.manufacturingDate
+																		}
+																		max={
+																			line.expiryDate ||
+																			undefined
+																		}
+																		required
+																		aria-label={`Manufacturing date for product ${index + 1}`}
+																		onChange={(value) =>
+																			setLineDates(
+																				index,
+																				{
+																					manufacturingDate:
+																						value,
+																				},
+																			)
+																		}
+																	/>
+																</label>
+																<label className="flex items-center gap-1.5">
+																	<span className="w-9 shrink-0 text-[10px] font-extrabold uppercase tracking-wide text-slate-500">
+																		EXP
+																	</span>
+																	<IsoDateInput
+																		className="input h-9 min-w-0 flex-1 cursor-pointer border-slate-200 bg-white px-1 text-xs font-semibold text-slate-900"
+																		value={
+																			line.expiryDate
+																		}
+																		min={
+																			line.manufacturingDate ||
+																			undefined
+																		}
+																		required
+																		aria-label={`Expiry date for product ${index + 1}`}
+																		onChange={(value) =>
+																			setLineDates(
+																				index,
+																				{
+																					expiryDate:
+																						value,
+																				},
+																			)
+																		}
+																	/>
+																</label>
+															</div>
+														</td>
+													)}
 													{(!useSameLocation ||
 														index === 0) && (
 														<td

@@ -24,12 +24,45 @@ function parseOrderLines(value: unknown): any[] {
   return Array.isArray(items) ? items : [];
 }
 
-function withOrderLines(order: any): any {
-  let items = order.order_lines;
-  if (typeof items === 'string') { try { items = JSON.parse(items); } catch { items = []; } }
-  if (!Array.isArray(items)) items = [];
-  if (!items.length) items = [{ batch_id: order.batch_id, batch_number: order.batch_number, product_name: order.product_name, product_sku: order.product_sku, quantity: order.quantity, uom: order.uom, location: order.storage_location || null }];
-  return { ...order, items, batch_number: items.length === 1 ? items[0].batch_number : 'Multi-product order', product_name: items.map((item: any) => item.product_name).filter(Boolean).join(', ') || order.product_name };
+async function gradeNamesForBatches(batchIds: number[]): Promise<Map<string, string | null>> {
+  const uniqueIds = [...new Set(batchIds.filter((batchId) => Number.isInteger(batchId) && batchId > 0))];
+  if (!uniqueIds.length) return new Map();
+  const rows = await query<RowDataPacket[]>(
+    `SELECT b.id AS batch_id, COALESCE(g.name, p.grade) AS grade_name
+     FROM batches b
+     JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON g.id = b.grade_id
+     WHERE b.id IN (?)`,
+    [uniqueIds]
+  );
+  return new Map(rows.map((row) => [String(row.batch_id), row.grade_name ?? null]));
+}
+
+async function withOrderLines(
+  orders: any[],
+  gradeByBatch?: Map<string, string | null>
+): Promise<any[]> {
+  const grades = gradeByBatch ?? await gradeNamesForBatches(
+    orders.flatMap((order) =>
+      parseOrderLines(order.order_lines).map((line: any) => Number(line?.batch_id))
+    )
+  );
+  return orders.map((order) => {
+    let items = order.order_lines;
+    if (typeof items === 'string') { try { items = JSON.parse(items); } catch { items = []; } }
+    if (!Array.isArray(items)) items = [];
+    if (!items.length) items = [{ batch_id: order.batch_id, batch_number: order.batch_number, product_name: order.product_name, product_sku: order.product_sku, quantity: order.quantity, uom: order.uom, location: order.storage_location || null }];
+    const lineGradeNames = [...new Set(
+      items.map((item: any) => grades.get(String(item.batch_id))).filter(Boolean)
+    )];
+    return {
+      ...order,
+      items,
+      batch_number: items.length === 1 ? items[0].batch_number : 'Multi-product order',
+      product_name: items.map((item: any) => item.product_name).filter(Boolean).join(', ') || order.product_name,
+      grade_name: lineGradeNames.length > 0 ? lineGradeNames.join(', ') : order.grade_name ?? order.product_grade ?? null,
+    };
+  });
 }
 
 export async function raise(req: Request, res: Response): Promise<void> {
@@ -145,7 +178,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
      ORDER BY d.created_at DESC LIMIT 100`,
     params
   );
-  res.json(orders.map(withOrderLines));
+  res.json(await withOrderLines(orders));
 }
 
 export async function listMine(req: Request, res: Response): Promise<void> {
@@ -180,7 +213,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
      ORDER BY d.created_at DESC LIMIT 100`,
     params
   );
-  res.json(orders.map(withOrderLines));
+  res.json(await withOrderLines(orders));
 }
 
 /**
@@ -334,11 +367,26 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
     'SELECT * FROM packing_list_items WHERE dispatch_order_id = ? ORDER BY id ASC',
     [id]
   );
+  // Map each batch line to the human-readable QR IDs (e.g. QRJ-20261113-...)
+  // that were assigned to the order, so the packing list shows the QR label
+  // text instead of the batch-level QC barcode.
+  const qrRows = await query<RowDataPacket[]>(
+    'SELECT batch_id, qr_value FROM qr_labels WHERE dispatch_order_id = ? ORDER BY batch_id ASC, serial_no ASC',
+    [id]
+  );
+  const qrByBatch = new Map<string, string[]>();
+  for (const row of qrRows) {
+    const key = String(row.batch_id);
+    const list = qrByBatch.get(key) || [];
+    list.push(String(row.qr_value));
+    qrByBatch.set(key, list);
+  }
   let orderLines = order.order_lines;
   if (typeof orderLines === 'string') { try { orderLines = JSON.parse(orderLines); } catch { orderLines = []; } }
-  const items = storedItems.length > 0
+  const baseItems = storedItems.length > 0
     ? storedItems
     : Array.isArray(orderLines) && orderLines.length > 0 ? orderLines : [{
+        batch_id: order.batch_id,
         product_name: order.product_name,
         sku: order.sku,
         batch_number: order.batch_number,
@@ -350,6 +398,35 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
         bag_quantity_unit: order.bag_quantity_unit,
         location: order.storage_location || 'N/A',
       }];
+  // Packing-list lines snapshot the product, not its grade. Resolve each line's
+  // grade from its batch so the list (screen, print and PDF) can show grades.
+  const itemBatchIds = [...new Set(baseItems.map((item: any) => Number(item.batch_id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const gradeRows = itemBatchIds.length
+    ? await query<RowDataPacket[]>(
+        `SELECT b.id AS batch_id, COALESCE(g.name, p.grade) AS grade_name
+         FROM batches b
+         JOIN products p ON b.product_id = p.id
+         LEFT JOIN grades g ON g.id = b.grade_id
+         WHERE b.id IN (?)`,
+        [itemBatchIds]
+      )
+    : [];
+  const gradeNameByBatch = new Map<string, string | null>(
+    gradeRows.map((row) => [String(row.batch_id), row.grade_name ?? null])
+  );
+
+  const items = baseItems.map((item: any) => ({
+    ...item,
+    // Packing-list snapshots store the SKU as product_sku; surface it as sku
+    // so the table and PDFs can read a single field.
+    sku: item.sku ?? item.product_sku ?? null,
+    grade_name: item.grade_name
+      ?? gradeNameByBatch.get(String(item.batch_id))
+      ?? item.grade
+      ?? order.grade
+      ?? null,
+    qr_values: qrByBatch.get(String(item.batch_id)) || [],
+  }));
 
   return {
     ok: true,
