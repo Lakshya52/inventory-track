@@ -290,7 +290,7 @@ export default function PackingList() {
                         {order.batch_number}
                       </span>
                       <div className="text-xs text-slate-600 font-semibold mt-1">
-                        {order.quantity} bags
+                        {order.quantity}
                       </div>
                     </td>
 
