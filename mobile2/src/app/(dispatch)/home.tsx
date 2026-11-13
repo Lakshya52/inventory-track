@@ -180,7 +180,7 @@ export default function DispatchHomeScreen() {
 								variant="caption"
 								className="text-[11px] text-[#4E5D76]"
 							>
-								Order #{activeSession.dispatch_order_id}
+								Order #{activeSession.order_number || activeSession.dispatch_order_id}
 							</AppText>
 
 							{/* Progress counter */}
@@ -295,7 +295,7 @@ export default function DispatchHomeScreen() {
 											<View className="flex-row items-center justify-between">
 												<View className="flex-1 pr-2">
 													<AppText className="text-[13px] font-manrope-bold text-navy">
-														Order #{order.id} ·{" "}
+														Order #{order.order_number || order.id} ·{" "}
 														{order.product_name ||
 															"Product"}
 													</AppText>

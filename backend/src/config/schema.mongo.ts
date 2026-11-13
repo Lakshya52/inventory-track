@@ -1,4 +1,5 @@
 import { getContext, DbContext, isDuplicateKey } from './database';
+import { nextDispatchOrderNumber } from '../services/orderNumbers';
 
 async function ensureIndexes(ctx: DbContext): Promise<void> {
   const unique = { unique: true } as const;
@@ -234,5 +235,24 @@ export async function ensureAdminSchema(): Promise<void> {
     } catch (error) {
       if (!isDuplicateKey(error)) throw error;
     }
+  }
+
+  // Human-readable order numbers for dispatch orders (DO-<YYYY>-<n>),
+  // allocated per tenant + year in the counters collection.
+  await backfillDispatchOrderNumbers(ctx);
+}
+
+/** Number dispatch orders created before order_number existed, oldest first. */
+async function backfillDispatchOrderNumbers(ctx: DbContext): Promise<void> {
+  const missing = await ctx.find(
+    'dispatch_orders',
+    { order_number: { $exists: false } },
+    { sort: { created_at: 1 }, projection: { _id: 0, id: 1, tenant_id: 1, created_at: 1 } }
+  );
+  if (missing.length === 0) return;
+  for (const order of missing) {
+    const year = new Date(order.created_at ?? Date.now()).getUTCFullYear();
+    const seq = await nextDispatchOrderNumber(ctx, String(order.tenant_id ?? ''));
+    await ctx.updateOne('dispatch_orders', { id: order.id }, { $set: { order_number: seq } });
   }
 }

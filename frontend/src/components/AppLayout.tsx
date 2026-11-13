@@ -4,10 +4,8 @@ import { useNavigate, useLocation, Link, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
-  LayoutGrid,
   Package,
   PackagePlus,
-  Boxes,
   Users,
   BarChart3,
   Camera,
@@ -25,9 +23,8 @@ import {
   QrCode,
   SlidersHorizontal,
   Activity,
-  Layers,
-  ShieldCheck,
   Warehouse,
+  Truck,
 } from "lucide-react";
 
 type SubNavItem = {
@@ -49,33 +46,21 @@ type NavItem = {
 
 const navSections: { title: string; items: NavItem[] }[] = [
   {
-    title: "",
+    title: "Admin Operations",
     items: [
       {
-        label: "Dashboard",
+        label: "Admin Overview",
+        path: "/",
         icon: <LayoutDashboard size={20} />,
         roles: ["ADMIN"],
-        subItems: [
-          {
-            label: "Overview",
-            path: "/",
-            icon: <LayoutGrid size={18} />,
-            roles: ["ADMIN"],
-          },
-          {
-            label: "Live Loading",
-            path: "/loading-monitor",
-            icon: <Activity size={18} />,
-            badge: "LIVE",
-            roles: ["ADMIN"],
-          },
-        ],
       },
-    ],
-  },
-  {
-    title: "Management",
-    items: [
+      {
+        label: "Live Loading",
+        path: "/loading-monitor",
+        icon: <Activity size={20} />,
+        roles: ["ADMIN"],
+        badge: "LIVE",
+      },
       {
         label: "Masters",
         path: "/masters",
@@ -83,50 +68,22 @@ const navSections: { title: string; items: NavItem[] }[] = [
         roles: ["ADMIN"],
       },
       {
-        label: "Views",
-        icon: <Layers size={20} />,
+        label: "QR Reprint Approvals",
+        path: "/qc/qr-codes",
+        icon: <QrCode size={20} />,
         roles: ["ADMIN"],
-        subItems: [
-          { label: "Batches", path: "/batches", icon: <Boxes size={18} /> },
-          {
-            label: "Create Batch",
-            path: "/dispatch/batches",
-            icon: <PackagePlus size={18} />,
-          },
-          {
-            label: "Dispatch Orders",
-            path: "/dispatch-orders",
-            icon: <ClipboardList size={18} />,
-          },
-          {
-            label: "Packaging Lists",
-            path: "/packing-list",
-            icon: <FileText size={18} />,
-          },
-          {
-            label: "QR Labels",
-            path: "/qc/qr-codes",
-            icon: <QrCode size={18} />,
-          },
-        ],
       },
       {
-        label: "Administrations",
-        icon: <ShieldCheck size={20} />,
+        label: "Reports",
+        path: "/reports",
+        icon: <FileBarChart size={20} />,
         roles: ["ADMIN"],
-        subItems: [
-          {
-            label: "Reports",
-            path: "/reports",
-            icon: <FileBarChart size={18} />,
-          },
-          {
-            label: "User Management",
-            path: "/users",
-            icon: <Users size={18} />,
-          },
-          // { label: 'Settings', path: '/settings', icon: <UserCircle size={18} /> },
-        ],
+      },
+      {
+        label: "User Management",
+        path: "/users",
+        icon: <Users size={20} />,
+        roles: ["ADMIN"],
       },
       {
         label: "Inventory",
@@ -139,6 +96,42 @@ const navSections: { title: string; items: NavItem[] }[] = [
         path: "/storage",
         icon: <Warehouse size={20} />,
         roles: ["ADMIN"],
+      },
+    ],
+  },
+  {
+    title: "Dispatch",
+    items: [
+      {
+        label: "Dispatch",
+        icon: <Truck size={20} />,
+        roles: ["ADMIN"],
+        subItems: [
+          {
+            label: "Create Batch",
+            path: "/dispatch/batches",
+            icon: <PackagePlus size={18} />,
+            roles: ["ADMIN"],
+          },
+          {
+            label: "QR Labels",
+            path: "/dispatch/qr-labels",
+            icon: <QrCode size={18} />,
+            roles: ["ADMIN"],
+          },
+          {
+            label: "Dispatch Orders",
+            path: "/dispatch-orders",
+            icon: <ClipboardList size={18} />,
+            roles: ["ADMIN"],
+          },
+          {
+            label: "Packaging Lists",
+            path: "/packing-list",
+            icon: <FileText size={18} />,
+            roles: ["ADMIN"],
+          },
+        ],
       },
     ],
   },
@@ -232,6 +225,7 @@ export function AppLayout() {
     Dashboard: true,
     Views: true,
     Administrations: true,
+    Dispatch: true,
   });
 
   useEffect(() => {

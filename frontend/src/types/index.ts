@@ -174,6 +174,7 @@ export interface DispatchRecord {
 
 export interface DispatchOrder {
   id: EntityId;
+  order_number?: string | null;
   batch_id: EntityId;
   raised_by: EntityId;
   status: DispatchOrderStatus;

@@ -233,7 +233,7 @@ export default function LoadingMonitor() {
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           {sortedSessions.map((session, index) => {
             const sessionKey = String(session?.session_id ?? session?.id ?? index);
-            const orderId = session?.order_id ?? session?.dispatch_order_id ?? '-';
+            const orderId = session?.order_number ?? session?.order_id ?? session?.dispatch_order_id ?? '-';
             const batchNumber = session?.batch_number ?? session?.batch ?? '-';
             const productName = session?.product_name ?? session?.product ?? 'Product';
             const loaderName = session?.loader_name ?? session?.loader ?? '-';

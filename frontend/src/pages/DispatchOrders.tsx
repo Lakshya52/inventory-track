@@ -213,7 +213,7 @@ export default function DispatchOrders() {
     setMessage('');
     try {
       await api.dispatchOrders.downloadPackingListPdf(order.id, `packing-list-${order.batch_number || order.id}.pdf`);
-      showMessage(`Packing list PDF downloaded for Order #${order.id}.`);
+      showMessage(`Packing list PDF downloaded for Order #${order.order_number || order.id}.`);
     } catch (err: any) {
       showMessage(err.message || 'Could not download packing list PDF', 'error');
     } finally {
@@ -471,7 +471,7 @@ export default function DispatchOrders() {
           <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             className="w-full pl-10 pr-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-sm text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500"
-            placeholder="Search by product name or batch number..."
+            placeholder="Search by order number, product name, or batch number..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -622,7 +622,7 @@ export default function DispatchOrders() {
             <div className="p-5 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Cancel Dispatch Order</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Order #{selectedOrder.id} · {selectedOrder.product_name}</p>
+                <p className="text-xs text-slate-500 mt-0.5">Order #{selectedOrder.order_number || selectedOrder.id} · {selectedOrder.product_name}</p>
               </div>
               <button
                 onClick={() => {

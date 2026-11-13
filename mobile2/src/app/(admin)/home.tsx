@@ -200,6 +200,7 @@ export default function AdminHomeScreen() {
 													<AppText className="mt-1 text-[10px] text-[#68758A]">
 														Order #
 														{
+															session.order_number ||
 															session.dispatch_order_id
 														}{" "}
 														·{" "}

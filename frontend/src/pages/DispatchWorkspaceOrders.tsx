@@ -271,7 +271,7 @@ export default function DispatchWorkspaceOrders() {
 		setError("");
 		try {
 			await api.dispatchOrders.cancel(order.id, cancelReason.trim());
-			setMessage(`Order #${order.id} was cancelled and the stock is free again.`);
+			setMessage(`Order #${order.order_number || order.id} was cancelled and the stock is free again.`);
 			setCancellingId(null);
 			setCancelReason("");
 			await load();
@@ -323,7 +323,7 @@ export default function DispatchWorkspaceOrders() {
 				scheduled_dispatch_at: scheduledDispatchAt.toISOString(),
 				client_operation_id: operationId(),
 			});
-			const orderId = result?.id ?? result?.entityId;
+			const orderId = result?.order_number ?? result?.id ?? result?.entityId;
 			if (!orderId) throw new Error("The order was not created. Refresh and try again.");
 			setCreatedOrderId(String(orderId));
 			setSelectedLineKeys([]);
@@ -1143,7 +1143,7 @@ export default function DispatchWorkspaceOrders() {
 									<div className="min-w-0">
 										<div className="flex flex-wrap items-center gap-2">
 											<span className="text-sm font-bold text-surface-900">
-												Order #{order.id}
+												Order #{order.order_number || order.id}
 											</span>
 											<span
 												className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${status.style}`}

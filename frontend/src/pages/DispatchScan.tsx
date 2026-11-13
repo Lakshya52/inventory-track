@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { BrowserMultiFormatReader } from "@zxing/library";
 import { api } from "../services/api";
+import { orderNumber } from "../utils/orderNumber";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { formatDateTime as formatIsoDateTime } from "../utils/dateFormat";
 import {
@@ -36,6 +37,7 @@ interface LoadingSession {
 	total: number;
 	scanned: number;
 	dispatch_order_id: string;
+	order_number: string | null;
 	batch_id: string;
 	batch_number: string | null;
 	product_name: string | null;
@@ -175,6 +177,7 @@ function normalizeSession(raw: any, fallback?: any): LoadingSession {
 		dispatch_order_id: String(
 			source?.dispatch_order_id ?? source?.order_id ?? base?.id ?? "",
 		),
+		order_number: text(source?.order_number) ?? text(base?.order_number) ?? null,
 		batch_id: String(source?.batch_id ?? base?.batch_id ?? ""),
 		batch_number: text(source?.batch_number) ?? text(base?.batch_number),
 		order_lines: source?.order_lines ?? base?.items ?? [],
@@ -379,6 +382,7 @@ export default function DispatchScan() {
 		if (!needle) return orders;
 		return orders.filter((order) =>
 			[
+				order.order_number,
 				order.id,
 				order.batch_number,
 				order.product_name,
@@ -495,7 +499,7 @@ export default function DispatchScan() {
 		setScanning(false);
 		setMessageKind("info");
 		setMessage(
-			`Resumed loading session for order #${next.dispatch_order_id} — ${next.scanned}/${next.total} units already scanned.`,
+			`Resumed loading session for order #${orderNumber(next)} — ${next.scanned}/${next.total} units already scanned.`,
 		);
 	};
 
@@ -1111,8 +1115,7 @@ export default function DispatchScan() {
 										</span>
 										<span className="badge badge-info">
 											Order #
-											{activeSession.dispatch_order_id ||
-												"-"}
+											{orderNumber(activeSession)}
 										</span>
 										<span className="rounded-lg bg-surface-100 px-2 py-1 font-mono text-xs text-surface-700">
 											Batch{" "}
@@ -1215,7 +1218,7 @@ export default function DispatchScan() {
 
 						<input
 							className="input mb-3 min-h-12 text-base"
-							placeholder="Search orders by batch, product, client, transporter, or vehicle"
+							placeholder="Search orders by order number, batch, product, client, transporter, or vehicle"
 							value={orderSearch}
 							onChange={(event) =>
 								setOrderSearch(event.target.value)
@@ -1245,7 +1248,7 @@ export default function DispatchScan() {
 													{order.product_name}
 												</span>
 												<span className="badge badge-info">
-													Order #{order.id}
+													Order #{orderNumber(order)}
 												</span>
 												<span className="rounded-md bg-surface-100 px-2 py-1 font-mono text-sm text-surface-700">
 													{order.items?.length > 1
@@ -1460,7 +1463,7 @@ export default function DispatchScan() {
 										</span>
 										<span className="badge badge-info">
 											Order #
-											{session.dispatch_order_id || "-"}
+											{orderNumber(session)}
 										</span>
 										<span className="rounded-lg bg-white px-3 py-1.5 font-mono text-sm text-surface-800 ring-1 ring-surface-200">
 											Batch {session.batch_number || "-"}
@@ -2221,7 +2224,7 @@ export default function DispatchScan() {
 								</h2>
 								<p className="mt-1 text-xs text-surface-500">
 									Order #
-									{cancelTarget.dispatch_order_id || "-"} ·
+									{orderNumber(cancelTarget)} ·
 									batch {cancelTarget.batch_number || "-"}
 								</p>
 							</div>

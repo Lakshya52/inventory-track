@@ -1,7 +1,35 @@
 import { execute, query } from "./database";
 import { RowDataPacket } from "mysql2";
+import { formatDispatchOrderNumber } from "../services/orderNumbers";
 
 const USER_TABLES = ["admins", "qc_users", "dispatch_users"];
+
+/** Number dispatch orders created before order_number existed, oldest first. */
+async function backfillDispatchOrderNumbers(): Promise<void> {
+  const rows = await query<RowDataPacket[]>(
+    `SELECT id, tenant_id, created_at
+     FROM dispatch_orders
+     WHERE order_number IS NULL
+     ORDER BY created_at ASC, id ASC`,
+    [],
+  );
+  if (rows.length === 0) return;
+  for (const row of rows) {
+    const year = new Date(row.created_at ?? Date.now()).getUTCFullYear();
+    const counterKey = `${Number(row.tenant_id ?? 0)}:dispatch_order:${year}`;
+    await execute(
+      `INSERT INTO counters (counter_key, seq) VALUES (?, 1)
+       ON DUPLICATE KEY UPDATE seq = LAST_INSERT_ID(seq + 1)`,
+      [counterKey],
+    );
+    const seqRows = await query<RowDataPacket[]>(`SELECT LAST_INSERT_ID() AS seq`, []);
+    const seq = Number(seqRows[0]?.seq ?? 1);
+    await execute(
+      `UPDATE dispatch_orders SET order_number = ? WHERE id = ? AND order_number IS NULL`,
+      [formatDispatchOrderNumber(year, seq), row.id],
+    );
+  }
+}
 
 async function columnExists(table: string, column: string): Promise<boolean> {
   const rows = await query<RowDataPacket[]>(
@@ -726,4 +754,18 @@ export async function ensureAdminSchema(): Promise<void> {
     "idx_batches_shelf_location",
     "shelf_location_id",
   );
+  // Human-readable order numbers for dispatch orders (DO-<YYYY>-<n>),
+  // allocated per tenant + year in a counters table.
+  await addColumnIfMissing("dispatch_orders", "order_number", "VARCHAR(20) NULL");
+  await addUniqueIndexIfMissing(
+    "dispatch_orders",
+    "uq_orders_order_number",
+    "order_number",
+  );
+  await execute(`CREATE TABLE IF NOT EXISTS counters (
+    counter_key VARCHAR(160) NOT NULL PRIMARY KEY,
+    seq BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await backfillDispatchOrderNumbers();
 }

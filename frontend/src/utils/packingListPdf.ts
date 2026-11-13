@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf';
+import { orderNumber } from './orderNumber';
 import { formatDateTime } from './dateFormat';
 
 /**
@@ -113,7 +114,7 @@ export function createPackingListPdfBlob(data: any): Blob {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text(`Order #${display(data.order_id)}`, PAGE_WIDTH - MARGIN, y, { baseline: 'top', align: 'right' });
+  doc.text(`Order #${display(orderNumber(data))}`, PAGE_WIDTH - MARGIN, y, { baseline: 'top', align: 'right' });
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
@@ -254,7 +255,7 @@ export function createPackingListPdfBlob(data: any): Blob {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(10);
         doc.setTextColor(15, 23, 42);
-        doc.text(`PACKING LIST - Order #${display(data.order_id)} (continued)`, MARGIN, y, { baseline: 'top' });
+        doc.text(`PACKING LIST - Order #${display(orderNumber(data))} (continued)`, MARGIN, y, { baseline: 'top' });
         y += 6;
         y = drawTableHeader(y);
       }

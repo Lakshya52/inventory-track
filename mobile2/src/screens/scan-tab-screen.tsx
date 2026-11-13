@@ -622,7 +622,7 @@ export function ScanTabScreen() {
                     </AppText>
                     <AppText variant="caption" className="text-[11px]">
                       {activeSession
-                        ? `Pulls the label out of the order you are loading (Order #${activeSession.dispatch_order_id}).`
+                        ? `Pulls the label out of the order you are loading (Order #${activeSession.order_number || activeSession.dispatch_order_id}).`
                         : 'Pulls the label out of one of your open dispatch orders.'}
                     </AppText>
                   </View>
@@ -844,7 +844,7 @@ export function ScanTabScreen() {
                     <View className="mt-2 flex-row flex-wrap gap-1.5">
                       <View className="rounded-full bg-[#EBF3FF] px-2.5 py-1">
                         <AppText className="text-[10px] font-manrope-bold text-navy">
-                          Order #{activeSession.dispatch_order_id}
+                          Order #{activeSession.order_number || activeSession.dispatch_order_id}
                         </AppText>
                       </View>
                       <View className="rounded-full bg-[#F0F5FD] px-2.5 py-1">
@@ -1410,7 +1410,7 @@ export function ScanTabScreen() {
                         <View className="flex-row items-start justify-between">
                           <View className="flex-1 pr-2">
                             <AppText className="text-[10.5px] font-manrope-bold tracking-wide text-[#71829B]">
-                              ORDER #{order.id}
+                              ORDER #{order.order_number || order.id}
                             </AppText>
                             <AppText
                               className="mt-0.5 text-[15px] text-navy"
@@ -1537,7 +1537,7 @@ export function ScanTabScreen() {
                       {activeSession.product_name || 'Product'}
                     </AppText>
                     <AppText className="text-[10.5px] font-manrope-bold text-[#71829B]">
-                      Order #{activeSession.dispatch_order_id}
+                      Order #{activeSession.order_number || activeSession.dispatch_order_id}
                     </AppText>
                   </View>
                   <View className="mt-2 flex-row flex-wrap gap-1.5">

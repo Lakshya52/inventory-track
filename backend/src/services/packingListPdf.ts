@@ -274,7 +274,8 @@ function buildDocument(data: PackingListData): string[][] {
   current.push(textAt(MARGIN, cursor, 'PACKING LIST', 22, true, INK));
   current.push(textAt(MARGIN, cursor + 30, 'Aceone Inventory & Product Scanning System', 9, false, MUTED));
 
-  const orderText = `Order #${display(data.order_id)}`;
+  const orderDisplay = data.order_number ?? data.order_id;
+  const orderText = `Order #${display(orderDisplay)}`;
   current.push(textAt(PAGE_WIDTH - MARGIN - textWidth(orderText, 11, true), cursor + 2, orderText, 11, true, INK));
 
   const generatedText = `Generated: ${formatDate(data.generated_at)}`;
@@ -311,7 +312,7 @@ function buildDocument(data: PackingListData): string[][] {
 
       if (cursor + rowHeight > BOTTOM_LIMIT) {
         beginPage();
-        current.push(textAt(MARGIN, cursor, `PACKING LIST - Order #${display(data.order_id)} (continued)`, 11, true, INK));
+        current.push(textAt(MARGIN, cursor, `PACKING LIST - Order #${display(orderDisplay)} (continued)`, 11, true, INK));
         cursor += 22;
         drawTableHeader();
       }

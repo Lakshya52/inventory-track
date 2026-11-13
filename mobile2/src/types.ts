@@ -36,6 +36,7 @@ export type DispatchOrderStatus =
 
 export type DispatchOrder = {
   id: string;
+  order_number?: string | null;
   batch_id?: string;
   batch_number?: string | null;
   barcode_value?: string | null;
@@ -102,6 +103,7 @@ export type LoadingSession = {
   session_id?: string;
   order_id?: string;
   dispatch_order_id: string;
+  order_number?: string | null;
   batch_id: string;
   batch_number?: string | null;
   product_name?: string | null;
@@ -153,6 +155,7 @@ export type PackingListItem = {
 
 export type PackingListData = {
   order_id: string;
+  order_number?: string | null;
   status: string;
   batch_number?: string | null;
   barcode?: string | null;

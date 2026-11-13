@@ -81,7 +81,7 @@ export default function App() {
         {/* QC */}
         <Route path="/qc" element={<Navigate to="/batches" replace />} />
         <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN']}><QRLabels /></ProtectedRoute>} />
-        <Route path="/qc-dashboard" element={<ProtectedRoute roles={['QC']}><QCDashboard /></ProtectedRoute>} />
+        <Route path="/qc-dashboard" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCDashboard /></ProtectedRoute>} />
 
         {/* Dispatch */}
         <Route path="/dispatch" element={<ProtectedRoute roles={['DISPATCH']}><DispatchScan /></ProtectedRoute>} />

@@ -160,6 +160,7 @@ export function DispatchOrdersScreen() {
       const q = search.trim().toLowerCase();
       return (
         String(order.id).toLowerCase().includes(q) ||
+        (order.order_number && order.order_number.toLowerCase().includes(q)) ||
         (order.batch_number && order.batch_number.toLowerCase().includes(q)) ||
         (order.product_name && order.product_name.toLowerCase().includes(q)) ||
         (order.client_name && order.client_name.toLowerCase().includes(q)) ||
@@ -214,7 +215,7 @@ export function DispatchOrdersScreen() {
             <TextInput
               value={search}
               onChangeText={setSearch}
-              placeholder="Search batch, client, driver, vehicle..."
+              placeholder="Search order number, batch, client, driver, vehicle..."
               placeholderTextColor="#8A98AC"
               className="ml-2 flex-1 font-manrope-medium text-[13px] text-navy"
             />
@@ -313,7 +314,7 @@ export function DispatchOrdersScreen() {
                             numberOfLines={2}
                             ellipsizeMode="tail"
                             style={{ fontFamily: 'Manrope_800ExtraBold' }}>
-                            Order #{order.id}
+                            Order #{order.order_number || order.id}
                           </AppText>
                           <AppText variant="tiny" className="text-[10px] text-[#71829B]">
                             Batch: {order.batch_number || 'N/A'}
@@ -555,7 +556,7 @@ export function DispatchOrdersScreen() {
                   {packingLoading ? 'Loading packing list' : 'Packing List'}
                 </AppText>
                 <AppText variant="caption" className="text-[11px]">
-                  {packingList ? `Order #${packingList.order_id} Â· Frozen Snapshot` : 'Please wait while we retrieve the approved order'}
+                  {packingList ? `Order #${packingList.order_number || packingList.order_id} · Frozen Snapshot` : 'Please wait while we retrieve the approved order'}
                 </AppText>
               </View>
               <Pressable

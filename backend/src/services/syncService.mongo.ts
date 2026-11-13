@@ -17,6 +17,7 @@ import {
   SyncOperationType,
 } from '../types';
 import { batchQrStats, EntityId } from './queryService';
+import { nextDispatchOrderNumber } from './orderNumbers';
 
 export class SyncError extends Error {
   constructor(
@@ -609,7 +610,8 @@ async function applyDispatchOrderRaise(
       vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
-    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), scheduled_dispatch_at: scheduledDispatchAt(input.payload.scheduled_dispatch_at), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
+    const orderNumber = await nextDispatchOrderNumber(ctx, user.tenantId);
+    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_number: orderNumber, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), scheduled_dispatch_at: scheduledDispatchAt(input.payload.scheduled_dispatch_at), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const assigned = await ctx.updateOne('qr_labels', { id: labelId, batch_id: assignment.batchId, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
       if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: assignment.batchId });
@@ -624,7 +626,7 @@ async function applyDispatchOrderRaise(
       await ctx.updateOne('batches', { id: line.batch_id }, { $set: { status: 'DISPATCH_APPROVED' } });
     }
     await logActivity(ctx, user, 'DISPATCH_ORDER_CREATED', `Dispatch order ${orderId} created with ${lines.length} product lines and ${total} units, ready for loading`);
-    return { entityType: 'dispatch_order', entityId: orderId, data: { id: orderId, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : `Multi-product order`, product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
+    return { entityType: 'dispatch_order', entityId: orderId, data: { id: orderId, order_number: orderNumber, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : `Multi-product order`, product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
   }
   const batch = await getBatchForUpdate(ctx, input.payload);
   const requestedQuantity = Number(input.payload.quantity);
@@ -692,8 +694,10 @@ async function applyDispatchOrderRaise(
   const labels = await ctx.find('qr_labels', { batch_id: batch.id, recall_status: { $ne: 'RECALLED' }, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { sort: { serial_no: 1 }, limit: requestedQuantity, projection: { _id: 0, id: 1 } });
   if (labels.length < requestedQuantity) throw new SyncConflictError('Not enough unassigned QR labels remain in this batch', { available_quantity: labels.length, requested_quantity: requestedQuantity });
 
+  const orderNumber = await nextDispatchOrderNumber(ctx, user.tenantId);
   const orderId = await ctx.insert('dispatch_orders', {
     batch_id: batch.id,
+    order_number: orderNumber,
     raised_by: user.userId,
     status: 'APPROVED',
     admin_id: null,
@@ -763,6 +767,7 @@ async function applyDispatchOrderRaise(
     entityId: orderId,
     data: {
       id: orderId,
+      order_number: orderNumber,
       batch_id: batch.id,
       batch_number: batch.batch_number,
       product_name: batch.product_name,

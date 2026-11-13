@@ -139,8 +139,8 @@ export async function raise(req: Request, res: Response): Promise<void> {
 function searchClause(q: string): { sql: string; params: string[] } {
   if (!q) return { sql: '', params: [] };
   return {
-    sql: 'AND (b.batch_number LIKE ? OR p.name LIKE ? OR p.sku LIKE ?)',
-    params: [`%${q}%`, `%${q}%`, `%${q}%`],
+    sql: 'AND (b.batch_number LIKE ? OR p.name LIKE ? OR p.sku LIKE ? OR d.order_number LIKE ?)',
+    params: [`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`],
   };
 }
 
@@ -432,6 +432,7 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
     ok: true,
     data: {
       order_id: order.id,
+      order_number: order.order_number ?? null,
       quantity: Number(order.quantity),
       status: order.status,
       batch_number: order.batch_number,

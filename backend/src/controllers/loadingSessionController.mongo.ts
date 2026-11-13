@@ -172,6 +172,11 @@ async function buildActiveSessions(
       })
     )
   );
+  const orders = await mapByIds<Record<string, any>>(
+    ctx,
+    'dispatch_orders',
+    sessions.map((session) => session.dispatch_order_id)
+  );
 
   return sessions.map((session, index) => {
     const batch = batches.get(idKey(session.batch_id));
@@ -182,6 +187,7 @@ async function buildActiveSessions(
     return {
       id: session.id,
       session_id: session.id,
+      order_number: orders.get(idKey(session.dispatch_order_id))?.order_number ?? null,
       order_lines: session.order_lines ?? [],
       order_id: session.dispatch_order_id,
       dispatch_order_id: session.dispatch_order_id,
@@ -260,6 +266,7 @@ export async function start(req: Request, res: Response): Promise<void> {
       try {
         sessionId = await ctx.insert('loading_sessions', {
           dispatch_order_id: order.id,
+          order_number: order.order_number ?? null,
           batch_id: batch.id,
           batch_ids: orderLines.map((line: any) => line.batch_id),
           order_lines: orderLines,
@@ -307,10 +314,12 @@ export async function start(req: Request, res: Response): Promise<void> {
           total,
           scanned: 0,
           dispatch_order_id: order.id,
+          order_number: order.order_number ?? null,
           batch_id: batch.id,
           order_lines: orderLines,
         },
         order_id: order.id,
+        order_number: order.order_number ?? null,
         batch_number: batch.batch_number ?? null,
         product_name: orderLines.map((line: any) => line.product_name).filter(Boolean).join(', ') || product?.name || null,
         order_lines: orderLines,

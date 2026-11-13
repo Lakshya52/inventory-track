@@ -286,10 +286,10 @@ export default function DispatchDashboard() {
 								<div className="min-w-0">
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="text-sm font-bold text-surface-900">
-											{order.client_name || `Order #${order.id}`}
+											{order.client_name || `Order #${order.order_number || order.id}`}
 										</span>
 										<span className="badge badge-neutral">
-											Order #{order.id}
+											Order #{order.order_number || order.id}
 										</span>
 									</div>
 									<p className="mt-1 text-xs text-surface-500">
@@ -371,7 +371,7 @@ export default function DispatchDashboard() {
 								>
 									<div className="min-w-0">
 										<p className="truncate text-sm font-semibold text-surface-800">
-											{order.client_name || `Order #${order.id}`}
+											{order.client_name || `Order #${order.order_number || order.id}`}
 										</p>
 										<p className="mt-0.5 text-xs text-surface-500">
 											{Number(order.quantity || 0).toLocaleString()} units ·{" "}

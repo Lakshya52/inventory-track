@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { applyOperation, SyncConflictError, SyncError } from '../services/syncService';
 import { SyncOperationInput } from '../types';
-import { batchIdsForSearch, batchQrStats, EntityId, mapByIds, mapNames } from '../services/queryService';
+import { contains, batchIdsForSearch, batchQrStats, EntityId, mapByIds, mapNames } from '../services/queryService';
 import { buildPackingListPdf } from '../services/packingListPdf';
 
 const ORDER_STATUS_FILTERS = [
@@ -135,8 +135,17 @@ async function orderFilterForSearch(
   base: Record<string, any>
 ): Promise<Record<string, any>> {
   if (!q) return base;
-  const batchIds = await batchIdsForSearch(ctx, q);
-  return { ...base, batch_id: { $in: batchIds } };
+  const pattern = contains(q);
+  const [batchIds, orderRows] = await Promise.all([
+    batchIdsForSearch(ctx, q),
+    ctx.find('dispatch_orders', { order_number: pattern }, { projection: { _id: 0, id: 1 } }),
+  ]);
+  const orderIds = orderRows.map((row) => idKey(row.id));
+  const or: Array<Record<string, unknown>> = [];
+  if (batchIds.length > 0) or.push({ batch_id: { $in: batchIds } });
+  if (orderIds.length > 0) or.push({ id: { $in: orderIds } });
+  if (or.length === 0) return { ...base, id: { $in: [] } };
+  return { ...base, $or: or };
 }
 
 export async function raise(req: Request, res: Response): Promise<void> {
@@ -660,6 +669,7 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
     ok: true,
     data: {
       order_id: order.id,
+      order_number: order.order_number ?? null,
       quantity: orderQuantity,
       status: order.status,
       batch_number: batch?.batch_number ?? null,

@@ -1,5 +1,6 @@
 import { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { execute, query, withTransaction } from '../config/database.mysql';
+import { nextDispatchOrderNumberSql } from './orderNumbers';
 import {
   JwtPayload,
   SyncOperationInput,
@@ -591,7 +592,8 @@ async function applyDispatchOrderRaise(
       vehicle_number: typeof input.payload.vehicle_number === 'string' ? input.payload.vehicle_number.trim().slice(0, 50) || null : null,
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
-    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, scheduled_dispatch_at, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, scheduledDispatchAt(input.payload.scheduled_dispatch_at), user.userId]);
+    const orderNumber = await nextDispatchOrderNumberSql(conn, String(user.tenantId));
+    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, order_number, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, scheduled_dispatch_at, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, orderNumber, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, scheduledDispatchAt(input.payload.scheduled_dispatch_at), user.userId]);
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, labelId]);
       if (updated.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.');
@@ -610,7 +612,7 @@ async function applyDispatchOrderRaise(
       await conn.execute('UPDATE batches SET status = \'DISPATCH_APPROVED\', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?', [line.batch_id]);
     }
     await logActivity(conn, user, 'DISPATCH_ORDER_CREATED', `Dispatch order #${insert.insertId} created with ${lines.length} product lines and ${total} units, ready for loading`);
-    return { entityType: 'dispatch_order', entityId: Number(insert.insertId), data: { id: Number(insert.insertId), batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : 'Multi-product order', product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
+    return { entityType: 'dispatch_order', entityId: Number(insert.insertId), data: { id: Number(insert.insertId), order_number: orderNumber, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : 'Multi-product order', product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
   }
   const batch = await getBatchForUpdate(conn, input.payload);
   const requestedQuantity = Number(input.payload.quantity);
@@ -682,16 +684,18 @@ async function applyDispatchOrderRaise(
   );
   if (labels.length < requestedQuantity) throw new SyncConflictError('Not enough unassigned QR labels remain in this batch', { available_quantity: labels.length, requested_quantity: requestedQuantity });
 
+  const orderNumber = await nextDispatchOrderNumberSql(conn, String(user.tenantId));
   const [insert] = await conn.execute<ResultSetHeader>(
     `INSERT INTO dispatch_orders
-      (batch_id, raised_by, status, client_id, quantity,
+      (batch_id, order_number, raised_by, status, client_id, quantity,
        client_operation_id, client_created_at, device_uuid,
        driver_name, driver_phone, vehicle_number, container_number,
        scheduled_dispatch_at,
        approved_by_role, approved_by_id, stock_reserved_at_order)
-     VALUES (?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`,
+     VALUES (?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`,
     [
       batch.id,
+      orderNumber,
       user.userId,
       clientId,
       requestedQuantity,
@@ -739,6 +743,7 @@ async function applyDispatchOrderRaise(
     entityId: insert.insertId,
     data: {
       id: insert.insertId,
+      order_number: orderNumber,
       batch_id: batch.id,
       batch_number: batch.batch_number,
       product_name: batch.product_name,

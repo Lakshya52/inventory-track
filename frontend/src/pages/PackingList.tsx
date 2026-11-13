@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { Printer, Package, Eye, AlertTriangle, Download, FileText, CheckCircle2, Truck, X, MapPin } from 'lucide-react';
 import type { EntityId } from '../types';
 import { createPackingListPdfBlob } from '../utils/packingListPdf';
+import { orderNumber } from '../utils/orderNumber';
 import { formatDate } from '../utils/dateFormat';
 
 function itemLocation(item: any): string {
@@ -151,7 +152,7 @@ export default function PackingList() {
       return;
     }
     win.document.write(`
-      <!DOCTYPE html><html><head><title>Packing List - Order #${escapeHtml(packingData.order_id)}</title>
+      <!DOCTYPE html><html><head><title>Packing List - Order #${escapeHtml(orderNumber(packingData))}</title>
       <style>
         @page { size: A4 landscape; margin: 12mm; }
         * { box-sizing: border-box; }
@@ -179,7 +180,7 @@ export default function PackingList() {
       </style></head><body>
       <div class="header">
         <div><div class="title">PACKING LIST</div><div class="subtitle">Aceone Inventory &amp; Product Scanning System</div></div>
-        <div class="order"><strong>Order #${escapeHtml(packingData.order_id)}</strong><div>Generated: ${formatDate(new Date())}</div></div>
+        <div class="order"><strong>Order #${escapeHtml(orderNumber(packingData))}</strong><div>Generated: ${formatDate(new Date())}</div></div>
       </div>
       <div class="meta">
         <div class="meta-item"><span class="label">Client</span>${escapeHtml(packingData.client_name || '-')}</div>
@@ -363,7 +364,7 @@ export default function PackingList() {
             <header className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
               <div>
                 <h2 id="packing-list-title" className="text-lg font-bold text-slate-900">
-                  Packing List — Order #{packingData.order_id}
+                  Packing List — Order #{orderNumber(packingData)}
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500">Batch: {packingData.batch_number || '-'} · Client: {packingData.client_name || '-'}</p>
               </div>

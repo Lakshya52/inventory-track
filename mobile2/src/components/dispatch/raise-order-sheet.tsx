@@ -30,8 +30,8 @@ type RaiseOrderSheetProps = {
  */
 export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetProps) {
   const [loadingOptions, setLoadingOptions] = useState(false);
-  const [readyBatches, setReadyBatches] = useState<DispatchBatch[]>([]];
-  const [clients, setClients] = useState<Client[]>([]];
+  const [readyBatches, setReadyBatches] = useState<DispatchBatch[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);;
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [selectedClientId, setSelectedClientId] = useState('');
   const [driverName, setDriverName] = useState('');
@@ -263,7 +263,7 @@ export function RaiseOrderSheet({ visible, onClose, onRaised }: RaiseOrderSheetP
                 onChangeText={setScheduledDispatchAt}
                 placeholder="Scheduled date & time (e.g. 2025-01-15T14:30)"
                 placeholderTextColor="#8A98AC"
-                keyboardType="date-time"
+                keyboardType="default"
                 className="h-10 rounded-lg border border-line bg-white px-3 font-manrope-medium text-[12px] text-navy"
               />
             </View>

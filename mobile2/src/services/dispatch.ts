@@ -51,6 +51,7 @@ export type RaiseOrderPayload = {
   driver_phone: string;
   vehicle_number: string;
   container_number: string;
+  scheduled_dispatch_at?: string | null;
   client_operation_id?: string;
 };
 
