@@ -265,7 +265,7 @@ export default function PackingList() {
                 <th className="px-5 py-4">Product &amp; Grade</th>
                 <th className="px-5 py-4">Batch Lot &amp; Quantity</th>
                 <th className="px-5 py-4">Client Destination</th>
-                <th className="px-5 py-4">Transport Info</th>
+                <th className="pxZ-5 py-4">Transport Info</th>
                 <th className="px-5 py-4">Status</th>
                 <th className="px-5 py-4 text-right">Actions</th>
               </tr>

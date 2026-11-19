@@ -25,14 +25,16 @@ import {
 	XCircle,
 } from "lucide-react";
 import { api } from "../services/api";
+import { subscribe } from "../services/realtime";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import type { EntityId } from "../types";
 import {
 	availableFor,
 	buildBatchGroups,
-	expandSelectedLines,
-	type BatchGroup,
 	type ProductLine,
 } from "../utils/batchGroups";
+import QrChipPicker, { type QrLabelChip } from "../components/QrChipPicker";
+import DateTimePicker from "../components/DateTimePicker";
 
 function operationId(): string {
 	return typeof crypto !== "undefined" && crypto.randomUUID
@@ -43,7 +45,7 @@ function operationId(): string {
 const STEPS = [
 	{ id: 1, title: "Select customer", icon: Users },
 	{ id: 2, title: "Select printed batches", icon: Package },
-	{ id: 3, title: "Review quantity", icon: ClipboardList },
+	{ id: 3, title: "Review QR codes", icon: ClipboardList },
 	{ id: 4, title: "Transporter details", icon: Truck },
 	{ id: 5, title: "Submit", icon: Check },
 ];
@@ -81,7 +83,9 @@ export default function DispatchWorkspaceOrders() {
 	const [orders, setOrders] = useState<any[]>([]);
 	const [selectedLineKeys, setSelectedLineKeys] = useState<string[]>([]);
 	const [clientId, setClientId] = useState("");
-	const [quantities, setQuantities] = useState<Record<string, number>>({});
+	const [qrLabels, setQrLabels] = useState<Record<string, QrLabelChip[]>>({});
+	const [selectedLabels, setSelectedLabels] = useState<Record<string, string[]>>({});
+	const [qrLabelsError, setQrLabelsError] = useState(false);
 	const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
 	const [expandedLocations, setExpandedLocations] = useState<string[]>([]);
 	const [search, setSearch] = useState("");
@@ -106,21 +110,43 @@ export default function DispatchWorkspaceOrders() {
 	const load = useCallback(async () => {
 		setError("");
 		try {
-			const [allBatches, clientRows, orderRows] = await Promise.all([
-				api.batches.list(),
+			const [readyBatches, clientRows, orderRows] = await Promise.all([
+				api.batches.recent({ status: "QC_PASSED", limit: 100 }),
 				api.clients.list(),
 				api.dispatchOrders.mine(),
 			]);
 			// Only QC-passed batches whose QR labels have been printed can be
 			// put on a truck.
-			setBatches(
-				allBatches.filter(
-					(row: any) =>
-						String(row.status || "").toUpperCase() === "QC_PASSED" &&
-						row.qr_printed === true &&
-						Number(row.available_quantity ?? row.quantity ?? 0) > 0,
-				),
+			const ready = readyBatches.filter(
+				(row: any) =>
+					String(row.status || "").toUpperCase() === "QC_PASSED" &&
+					row.qr_printed === true &&
+					Number(row.available_quantity ?? row.quantity ?? 0) > 0,
 			);
+			setBatches(ready);
+			// Pull the pickable QR labels for exactly the batches on screen so
+			// the chip picker in step 2 can show the codes without a per-batch
+			// round trip.
+			const labelBatchIds = [...new Set(ready.map((row: any) => row.id).filter((id: any) => id !== null && id !== undefined))];
+			if (labelBatchIds.length > 0) {
+				try {
+					const available = await api.dispatchOrders.availableQrLabels(labelBatchIds);
+					const grouped: Record<string, QrLabelChip[]> = {};
+					for (const label of available) {
+						(grouped[String(label.batch_id)] ??= []).push(label);
+					}
+					setQrLabels(grouped);
+					setQrLabelsError(false);
+				} catch {
+					// The picker is a convenience — surface the failure so the user
+					// knows why no chips appear, and can retry with Refresh.
+					setQrLabels({});
+					setQrLabelsError(true);
+				}
+			} else {
+				setQrLabels({});
+				setQrLabelsError(false);
+			}
 			setClients(
 				clientRows.filter(
 					(client: any) =>
@@ -139,6 +165,12 @@ export default function DispatchWorkspaceOrders() {
 
 	useEffect(() => {
 		void load();
+		const unsubscribe = subscribe((event) => {
+			if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed') {
+				void load();
+			}
+		});
+		return () => unsubscribe();
 	}, [load]);
 
 	const batchGroups = useMemo(() => buildBatchGroups(batches), [batches]);
@@ -192,10 +224,120 @@ export default function DispatchWorkspaceOrders() {
 				.filter((group) => group.lines.length > 0),
 		[batchGroups, selectedLineKeys],
 	);
+	/** All pickable QR labels for one line, flattened over its unit batches. */
+	const labelsForLine = useCallback(
+		(line: ProductLine): QrLabelChip[] =>
+			line.units
+				.flatMap((unit) => qrLabels[String(unit.id)] ?? [])
+				.slice()
+				.sort((a, b) =>
+					new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare(a.qr_value, b.qr_value),
+				),
+		[qrLabels],
+	);
+	const linePickCount = (key: string) => selectedLabels[key]?.length ?? 0;
+	const setAllLineLabels = (lineKey: string, labelIds: string[]) => {
+		setSelectedLabels((current) => ({ ...current, [lineKey]: labelIds }));
+	};
+	/**
+	 * The quantity stepper and the chip picker both drive the same selection.
+	 * Raising the stepper auto-picks the next available codes; lowering it trims
+	 * from the end of the picked list; clicking chips always wins and updates the
+	 * stepper to the picked count.
+	 */
+	const setQuantity = (line: ProductLine, raw: string) => {
+		const all = labelsForLine(line);
+		const total = all.length;
+		const value = raw === "" ? 1 : Math.max(1, Math.min(total, Math.floor(Number(raw) || 1)));
+		setSelectedLabels((current) => {
+			const picked = current[line.key] ?? [];
+			if (value > picked.length) {
+				const have = new Set(picked);
+				const additions = all
+					.filter((label) => !have.has(String(label.id)))
+					.slice(0, value - picked.length)
+					.map((label) => String(label.id));
+				return { ...current, [line.key]: [...picked, ...additions] };
+			}
+			return { ...current, [line.key]: picked.slice(0, value) };
+		});
+	};
+	const adjustQuantity = (line: ProductLine, delta: number) => {
+		setQuantity(line, String(linePickCount(line.key) + delta));
+	};
+	const quantityStepper = (line: ProductLine) => {
+		const qty = linePickCount(line.key);
+		const label = line.name || line.sku || "product";
+		const total = labelsForLine(line).length;
+		return (
+			<div className="flex items-center gap-2">
+				<button
+					type="button"
+					className="flex h-10 w-10 items-center justify-center rounded-lg border border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
+					aria-label={`Decrease quantity for ${label}`}
+					disabled={qty <= 1}
+					onClick={() => adjustQuantity(line, -1)}
+				>
+					<Minus size={16} />
+				</button>
+				<input
+					aria-label={`Quantity for ${label}`}
+					className="input h-10 w-20 text-center font-semibold tabular-nums"
+					type="text"
+					inputMode="numeric"
+					pattern="[0-9]*"
+					value={qty}
+					onChange={(event) => setQuantity(line, event.target.value)}
+				/>
+				<button
+					type="button"
+					className="flex h-10 w-10 items-center justify-center rounded-lg border border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
+					aria-label={`Increase quantity for ${label}`}
+					disabled={qty >= total}
+					onClick={() => adjustQuantity(line, 1)}
+				>
+					<Plus size={16} />
+				</button>
+				<span className="w-20 text-right text-xs text-surface-500">
+					max {total}
+				</span>
+			</div>
+		);
+	};
 	const selectedUnits = selectedLines.reduce(
-		(sum, line) => sum + Number(quantities[line.key] || 0),
+		(sum, line) => sum + linePickCount(line.key),
 		0,
 	);
+	const allSelectedLinesPicked = selectedLineKeys.every(
+		(key) => (selectedLabels[key]?.length ?? 0) > 0,
+	);
+	const toggleLineLabel = (lineKey: string, labelId: string) => {
+		setSelectedLabels((current) => {
+			const picked = new Set(current[lineKey] ?? []);
+			if (picked.has(labelId)) picked.delete(labelId);
+			else picked.add(labelId);
+			return { ...current, [lineKey]: [...picked] };
+		});
+	};
+	// When QR labels finish loading after a line was already picked, fill in the
+	// default selection (everything available) for lines that have none yet.
+	useEffect(() => {
+		setSelectedLabels((current) => {
+			let changed = false;
+			const next = { ...current };
+			for (const key of selectedLineKeys) {
+				if (next[key]?.length) continue;
+				const line = lineByKey.get(key);
+				if (!line) continue;
+				const ids = labelsForLine(line).map((label) => String(label.id));
+				if (ids.length) {
+					next[key] = ids;
+					changed = true;
+				}
+			}
+			return changed ? next : current;
+		});
+	}, [qrLabels, selectedLineKeys, lineByKey, labelsForLine]);
 
 	const toggleGroup = (key: string) => {
 		setCollapsedGroups((current) =>
@@ -212,39 +354,50 @@ export default function DispatchWorkspaceOrders() {
 		);
 	};
 
+	/**
+	 * Toggle a product line: picking it defaults to every available QR code of
+	 * the line (the previous default of "all units"), and unpicking clears the
+	 * hand-picked codes.
+	 */
 	const toggleLine = (line: ProductLine) => {
-		setSelectedLineKeys((current) => {
-			if (current.includes(line.key)) {
-				setQuantities((values) => {
-					const next = { ...values };
-					delete next[line.key];
-					return next;
-				});
-				return current.filter((value) => value !== line.key);
-			}
-			setQuantities((values) => ({
-				...values,
-				[line.key]: values[line.key] || line.available,
-			}));
-			return [...current, line.key];
-		});
-	};
-
-	const setQuantity = (key: string, raw: string, max: number) => {
-		const value = raw === "" ? 0 : Math.max(1, Math.min(max, Math.floor(Number(raw) || 1)));
-		setQuantities((current) => ({ ...current, [key]: value }));
-	};
-	const adjustQuantity = (key: string, delta: number, max: number) => {
-		const current = Number(quantities[key] || 1);
-		setQuantity(key, String(current + delta), max);
+		const key = line.key;
+		if (selectedLineKeys.includes(key)) {
+			setSelectedLineKeys((current) => current.filter((value) => value !== key));
+			setSelectedLabels((values) => {
+				const next = { ...values };
+				delete next[key];
+				return next;
+			});
+		} else {
+			setSelectedLineKeys((current) => [...current, key]);
+			setSelectedLabels((values) =>
+				values[key]
+					? values
+					: { ...values, [key]: labelsForLine(line).map((label) => String(label.id)) },
+			);
+		}
 	};
 
 	/**
 	 * The order is still raised per unit batch, because each unit carries its
-	 * own QR label. A selected product line fans out to the unit batches that
-	 * make it up.
+	 * own QR label. Each unit batch becomes one line item carrying exactly the
+	 * QR codes the picker chose — the server reserves those very labels.
 	 */
-	const buildOrderItems = () => expandSelectedLines(selectedLines, quantities);
+	const buildOrderItems = () => {
+		const items: Array<{ batch_id: EntityId; quantity: number; label_ids: EntityId[] }> = [];
+		for (const line of selectedLines) {
+			const picked = new Set(selectedLabels[line.key] ?? []);
+			for (const unit of line.units) {
+				const chosen = (qrLabels[String(unit.id)] ?? [])
+					.filter((label) => picked.has(String(label.id)))
+					.map((label) => label.id as EntityId);
+				if (chosen.length > 0) {
+					items.push({ batch_id: unit.id as EntityId, quantity: chosen.length, label_ids: chosen });
+				}
+			}
+		}
+		return items;
+	};
 
 	const downloadPdf = async (order: any) => {
 		setError("");
@@ -292,8 +445,8 @@ export default function DispatchWorkspaceOrders() {
 		event.preventDefault();
 		if (saving) return;
 		const items = buildOrderItems();
-		if (!items.length || !clientId) {
-			setError("Select at least one batch and a customer.");
+		if (!items.length || !clientId || !allSelectedLinesPicked) {
+			setError("Select at least one batch, pick at least one QR code per line, and choose a customer.");
 			return;
 		}
 		if (!transporterComplete) {
@@ -328,7 +481,7 @@ export default function DispatchWorkspaceOrders() {
 			setCreatedOrderId(String(orderId));
 			setSelectedLineKeys([]);
 			setClientId("");
-			setQuantities({});
+			setSelectedLabels({});
 			setTransporterName("");
 			setTransporterMobile("");
 			setVehicleNumber("");
@@ -351,51 +504,12 @@ export default function DispatchWorkspaceOrders() {
 		step === 1
 			? Boolean(clientId)
 			: step === 2
-				? selectedLineKeys.length > 0
+				? selectedLineKeys.length > 0 && allSelectedLinesPicked
 				: step === 4
 						? Boolean(transporterComplete && scheduledDispatchAtString)
 					: true;
 
-	const quantityStepper = (line: ProductLine) => {
-		const qty = Number(quantities[line.key] || 0);
-		const label = line.name || line.sku || "product";
-		return (
-			<div className="flex items-center gap-2">
-				<button
-					type="button"
-					className="flex h-10 w-10 items-center justify-center rounded-lg border border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
-					aria-label={`Decrease quantity for ${label}`}
-					disabled={qty <= 1}
-					onClick={() => adjustQuantity(line.key, -1, line.available)}
-				>
-					<Minus size={16} />
-				</button>
-				<input
-					aria-label={`Quantity for ${label}`}
-					className="input h-10 w-20 text-center font-semibold tabular-nums"
-					type="text"
-					inputMode="numeric"
-					pattern="[0-9]*"
-					value={qty}
-					onChange={(event) =>
-						setQuantity(line.key, event.target.value, line.available)
-					}
-				/>
-				<button
-					type="button"
-					className="flex h-10 w-10 items-center justify-center rounded-lg border border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-40"
-					aria-label={`Increase quantity for ${label}`}
-					disabled={qty >= line.available}
-					onClick={() => adjustQuantity(line.key, 1, line.available)}
-				>
-					<Plus size={16} />
-				</button>
-				<span className="w-20 text-right text-xs text-surface-500">
-					max {line.available}
-				</span>
-			</div>
-		);
-	};
+
 
 	return (
 		<div className="page-container space-y-6">
@@ -406,8 +520,8 @@ export default function DispatchWorkspaceOrders() {
 					</p>
 					<h1 className="page-title mt-1">Create a dispatch order</h1>
 					<p className="page-subtitle">
-						Pick the customer, choose the printed batches, confirm the
-						quantity, and send it for approval.
+						Pick the customer, tap the exact QR codes going on the order,
+						and send it for loading.
 					</p>
 				</div>
 				<button
@@ -638,7 +752,7 @@ export default function DispatchWorkspaceOrders() {
 											selectedLineKeys.includes(line.key),
 										);
 										const pickedUnits = picked.reduce(
-											(sum, line) => sum + Number(quantities[line.key] || 0),
+											(sum, line) => sum + linePickCount(line.key),
 											0,
 										);
 										return (
@@ -761,11 +875,21 @@ export default function DispatchWorkspaceOrders() {
 																		</div>
 																	</div>
 																	{selected && (
-																		<div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-100 bg-white px-4 py-3">
-																			<span className="text-xs font-bold uppercase tracking-wide text-surface-500">
-																				Quantity to dispatch
-																			</span>
-																			{quantityStepper(line)}
+																		<div className="space-y-3 border-t border-surface-100 bg-white px-4 py-3">
+																			<div className="flex flex-wrap items-center justify-between gap-3">
+																				<span className="text-xs font-bold uppercase tracking-wide text-surface-500">
+																					Quantity to dispatch
+																				</span>
+																				{quantityStepper(line)}
+																			</div>
+																			<QrChipPicker
+																				labels={labelsForLine(line)}
+																				selectedIds={selectedLabels[line.key] ?? []}
+																				onToggle={(id) => toggleLineLabel(line.key, id)}
+																				onSelectAll={() => setAllLineLabels(line.key, labelsForLine(line).map((label) => String(label.id)))}
+																				onClear={() => setAllLineLabels(line.key, [])}
+																				loadError={qrLabelsError}
+																			/>
 																		</div>
 																	)}
 																</li>
@@ -778,7 +902,12 @@ export default function DispatchWorkspaceOrders() {
 									})}
 								</ul>
 							)}
-							{selectedLines.length > 0 && (
+							{selectedLineKeys.length > 0 && !allSelectedLinesPicked && (
+							<p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+								Pick at least one QR code for every selected line — tap the chips above each line.
+							</p>
+						)}
+						{selectedLines.length > 0 && (
 								<div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-surface-50/70 px-5 py-3">
 									<span className="text-sm text-surface-600">
 										Customer:{" "}
@@ -800,16 +929,17 @@ export default function DispatchWorkspaceOrders() {
 					</section>
 				)}
 
-				{/* STEP 3 - QUANTITY */}
+				{/* STEP 3 - QR CODES */}
 				{step === 3 && (
 					<section className="card overflow-hidden">
 						<div className="border-b border-surface-100 px-5 py-4 sm:px-6">
 							<h2 className="section-title flex items-center gap-2">
 								<ClipboardList size={18} className="text-brand-600" /> Review
-								the quantity
+								the QR codes
 							</h2>
 							<p className="mt-1 text-sm text-surface-500">
-								Adjust how many units of each product go on this order.
+								These exact codes go on the order, and nothing can be changed here —
+								go back to step 2 to change the selection.
 							</p>
 						</div>
 						<ul className="divide-y divide-surface-100">
@@ -821,45 +951,77 @@ export default function DispatchWorkspaceOrders() {
 										</span>
 										<span className="text-xs text-surface-500">
 											{group.lines.reduce(
-												(sum, line) => sum + Number(quantities[line.key] || 0),
+												(sum, line) => sum + linePickCount(line.key),
 												0,
 											).toLocaleString()}{" "}
 											units
 										</span>
 									</div>
 									<ul className="divide-y divide-surface-100">
-										{group.lines.map((line) => (
+										{group.lines.map((line) => {
+											const lineLabels = labelsForLine(line);
+											const picked = selectedLabels[line.key] ?? [];
+											const pickedSet = new Set(picked);
+											const chosen = lineLabels.filter((label) => pickedSet.has(String(label.id)));
+											const remaining = lineLabels.length - chosen.length;
+											return (
 											<li
 												key={line.key}
-												className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"
+												className="flex flex-col gap-3 px-5 py-4 sm:px-6"
 											>
-												<div className="min-w-0">
-													<p className="truncate text-sm font-semibold text-surface-900">
-														{line.name || line.sku || "Unnamed product"}
-													</p>
-													<p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-surface-500">
-														{line.grade && (
-															<span className="font-medium text-surface-600">
-																{line.grade}
-															</span>
-														)}
-														{line.sku && (
-															<span className="font-mono">{line.sku}</span>
-														)}
-														{line.locations[0] && (
-															<span className="inline-flex items-center gap-1">
-																<MapPin size={12} />
-																{line.locations[0]}
-																{line.locations.length > 1
-																	? ` +${line.locations.length - 1}`
-																	: ""}
-															</span>
-														)}
-													</p>
+												<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+													<div className="min-w-0">
+														<p className="truncate text-sm font-semibold text-surface-900">
+															{line.name || line.sku || "Unnamed product"}
+														</p>
+														<p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-surface-500">
+															{line.grade && (
+																<span className="font-medium text-surface-600">
+																	{line.grade}
+																</span>
+															)}
+															{line.sku && (
+																<span className="font-mono">{line.sku}</span>
+															)}
+															{line.locations[0] && (
+																<span className="inline-flex items-center gap-1">
+																	<MapPin size={12} />
+																	{line.locations[0]}
+																	{line.locations.length > 1 ? ` +${line.locations.length - 1}` : ""}
+																</span>
+															)}
+														</p>
+													</div>
+													<div className="shrink-0 sm:text-right">
+														<span className="block text-xl font-black tabular-nums text-surface-900">
+															{chosen.length.toLocaleString()}{" "}
+															<span className="text-xs font-bold text-surface-500">units</span>
+														</span>
+														<span className="block text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+															{chosen.length} of {lineLabels.length} codes selected
+														</span>
+													</div>
 												</div>
-												{quantityStepper(line)}
+												<div className="flex flex-wrap gap-2">
+													{chosen.map((label) => (
+														<span
+															key={String(label.id)}
+															className="inline-flex items-center gap-1.5 rounded-md border border-brand-200 bg-brand-50 px-4 py-2 font-mono text-xs font-semibold text-brand-800"
+														>
+															<Check size={13} strokeWidth={3} />
+															{label.qr_value}
+														</span>
+													))}
+												</div>
+												{remaining > 0 && (
+													<p className="text-[11px] text-surface-400">
+														{remaining} of {lineLabels.length} codes not selected - they stay in stock.
+														Go back to step 2 to change the selection.
+													</p>
+												)}
 											</li>
-										))}
+											);
+										})}
 									</ul>
 								</li>
 							))}
@@ -965,16 +1127,12 @@ export default function DispatchWorkspaceOrders() {
 								<label className="input-label" htmlFor="scheduled-dispatch-at">
 									Scheduled Dispatch *
 								</label>
-								<input
+								<DateTimePicker
 									id="scheduled-dispatch-at"
-									type="datetime-local"
-									className="input w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
 									value={scheduledDispatchAtString || ""}
-									onChange={(event) =>
-										setScheduledDispatchAtString(event.target.value)
-									}
-									placeholder="e.g. 2025-01-15T14:30"
+									onChange={setScheduledDispatchAtString}
 									required
+									placeholder="Pick the dispatch date and time"
 								/>
 								<p className="mt-1 text-[10px] text-surface-500">
 									Planned date &amp; time the load leaves the plant.
@@ -1057,7 +1215,7 @@ export default function DispatchWorkspaceOrders() {
 												<span className="shrink-0 text-surface-500">
 													{group.lines.reduce(
 														(sum, line) =>
-															sum + Number(quantities[line.key] || 0),
+															sum + linePickCount(line.key),
 														0,
 													).toLocaleString()}{" "}
 													units · {group.lines.length} line

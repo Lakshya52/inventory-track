@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -11,6 +11,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "../services/api";
+import { subscribe } from "../services/realtime";
+import DivisionContextNote from "../components/DivisionContextNote";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { formatDateTime } from "../utils/dateFormat";
 
@@ -38,6 +40,10 @@ type ReviewGroup = {
 
 type ReviewFilter = "PENDING" | "ALL" | "PASSED" | "FAILED";
 type Decision = { group: ReviewGroup; result: "PASS" | "FAIL" };
+
+// Server-side page size for the pending-QC queue. The full batch table is
+// never pulled into the browser — history views are search-driven.
+const PENDING_PAGE_SIZE = 25;
 
 const statusMeta: Record<string, { label: string; className: string }> = {
   PENDING_QC: { label: "Waiting for QC", className: "badge badge-warning" },
@@ -125,6 +131,9 @@ export default function QCBatches() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 250);
   const [filter, setFilter] = useState<ReviewFilter>("PENDING");
+  const [page, setPage] = useState(1);
+  const [pendingTotal, setPendingTotal] = useState(0);
+  const [pendingPages, setPendingPages] = useState(1);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [remarks, setRemarks] = useState("");
   const [decisionError, setDecisionError] = useState("");
@@ -132,62 +141,109 @@ export default function QCBatches() {
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [bulkPassing, setBulkPassing] = useState(false);
 
+  // Guards against out-of-order responses when the search term, tab or page
+  // changes quickly — only the latest request may write to state.
+  const requestRef = useRef(0);
+  const query = debouncedSearch.trim();
+
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
     setError("");
+    setLoading(true);
     try {
-      const rows = await api.batches.list();
-      setBatches(rows);
+      if (filter === "PENDING") {
+        // Purpose-built, paginated, QC-scoped endpoint. Only PENDING_QC
+        // batches are returned, oldest first — safe at any table size.
+        const res = await api.qc.pending({
+          page,
+          limit: PENDING_PAGE_SIZE,
+          q: query || undefined,
+        });
+        if (requestId !== requestRef.current) return;
+        const items = Array.isArray(res?.items) ? res.items : [];
+        setBatches(items);
+        setPendingTotal(Number(res?.total ?? items.length) || 0);
+        setPendingPages(
+          Math.max(
+            1,
+            Number(res?.pages) ||
+              Math.ceil((Number(res?.total) || 0) / PENDING_PAGE_SIZE) ||
+              1,
+          ),
+        );
+      } else {
+        // History tabs: the full table is too large to enumerate, so these
+        // are server-search views (prefix match, capped server-side). An
+        // empty query deliberately loads nothing.
+        if (!query) {
+          if (requestId === requestRef.current) {
+            setBatches([]);
+            setLoading(false);
+          }
+          return;
+        }
+        const rows = await api.batches.search(query);
+        if (requestId !== requestRef.current) return;
+        setBatches(Array.isArray(rows) ? rows : []);
+      }
     } catch (err: any) {
+      if (requestId !== requestRef.current) return;
+      setBatches([]);
       setError(err.message || "Could not load QC review batches");
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current) setLoading(false);
     }
-  }, []);
+  }, [filter, page, query]);
+
+  // Back to page 1 whenever the search term or tab changes.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, filter]);
 
   useEffect(() => {
     void load();
+    const unsubscribe = subscribe((event) => {
+      if (event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed') {
+        void load();
+      }
+    });
+    return () => unsubscribe();
   }, [load]);
 
   const groups = useMemo(() => groupBatches(batches), [batches]);
 
-  const counts = useMemo(() => {
-    let pending = 0;
-    let pendingUnits = 0;
+  const loadedPendingUnits = useMemo(
+    () =>
+      groups
+        .filter((group) => group.status === "PENDING_QC")
+        .reduce((sum, group) => sum + group.units, 0),
+    [groups],
+  );
+
+  // History result counts from the currently loaded search matches only —
+  // full-history totals are intentionally not loaded at scale.
+  const historyCounts = useMemo(() => {
     let passed = 0;
     let failed = 0;
     for (const group of groups) {
-      if (group.status === "PENDING_QC") {
-        pending += 1;
-        pendingUnits += group.units;
-      }
       if (group.status === "QC_PASSED") passed += 1;
       if (group.status === "QC_FAILED") failed += 1;
     }
-    return { pending, pendingUnits, passed, failed, all: groups.length };
+    return { passed, failed, all: groups.length };
   }, [groups]);
 
   const filteredGroups = useMemo(() => {
-    const query = debouncedSearch.trim().toLowerCase();
+    const wantedStatus: Record<ReviewFilter, string | null> = {
+      PENDING: "PENDING_QC",
+      PASSED: "QC_PASSED",
+      FAILED: "QC_FAILED",
+      ALL: null,
+    };
+    const wanted = wantedStatus[filter];
+    // Text matching is done server-side (prefix search / qc.pending q), so
+    // only the tab's status filter is applied here.
     return groups
-      .filter((group) => {
-        if (filter === "PENDING" && group.status !== "PENDING_QC")
-          return false;
-        if (filter === "PASSED" && group.status !== "QC_PASSED")
-          return false;
-        if (filter === "FAILED" && group.status !== "QC_FAILED")
-          return false;
-        if (!query) return true;
-        return (
-          String(group.batch_number || "")
-            .toLowerCase()
-            .includes(query) ||
-          group.product_lines.some(
-            (line) =>
-              line.product_name.toLowerCase().includes(query) ||
-              line.product_sku.toLowerCase().includes(query),
-          )
-        );
-      })
+      .filter((group) => (wanted ? group.status === wanted : true))
       .sort((a, b) => {
         const aPending = a.status === "PENDING_QC" ? 0 : 1;
         const bPending = b.status === "PENDING_QC" ? 0 : 1;
@@ -196,7 +252,7 @@ export default function QCBatches() {
         const bTime = new Date(b.created_at || 0).getTime();
         return aPending === 0 ? aTime - bTime : bTime - aTime;
       });
-  }, [groups, filter, debouncedSearch]);
+  }, [groups, filter]);
 
   const openDecision = (group: ReviewGroup, result: "PASS" | "FAIL") => {
     setDecision({ group, result });
@@ -236,12 +292,20 @@ export default function QCBatches() {
   const filterOptions: Array<{
     value: ReviewFilter;
     label: string;
-    count: number;
+    count: number | null;
   }> = [
-    { value: "PENDING", label: "Waiting for QC", count: counts.pending },
-    { value: "PASSED", label: "Passed", count: counts.passed },
-    { value: "FAILED", label: "Failed", count: counts.failed },
-    { value: "ALL", label: "All batches", count: counts.all },
+    { value: "PENDING", label: "Waiting for QC", count: pendingTotal },
+    {
+      value: "PASSED",
+      label: "Passed",
+      count: query ? historyCounts.passed : null,
+    },
+    {
+      value: "FAILED",
+      label: "Failed",
+      count: query ? historyCounts.failed : null,
+    },
+    { value: "ALL", label: "All batches", count: query ? historyCounts.all : null },
   ];
 
   const pendingGroups = useMemo(
@@ -351,29 +415,29 @@ export default function QCBatches() {
         {[
           {
             label: "Waiting for QC",
-            value: counts.pending,
-            sub: `${counts.pendingUnits.toLocaleString()} units`,
+            value: pendingTotal,
+            sub: `${loadedPendingUnits.toLocaleString()} units in current view`,
             icon: Clock,
             style: "bg-amber-50 text-amber-700",
           },
           {
             label: "Passed batches",
-            value: counts.passed,
-            sub: "Stock available",
+            value: query ? historyCounts.passed : "—",
+            sub: query ? "Matches in current search" : "Search to view history",
             icon: CheckCircle2,
             style: "bg-emerald-50 text-emerald-700",
           },
           {
             label: "Failed batches",
-            value: counts.failed,
-            sub: "Stock not added",
+            value: query ? historyCounts.failed : "—",
+            sub: query ? "Matches in current search" : "Search to view history",
             icon: AlertTriangle,
             style: "bg-rose-50 text-rose-700",
           },
           {
             label: "All batches",
-            value: counts.all,
-            sub: "Full history",
+            value: query ? historyCounts.all : "—",
+            sub: query ? "Matches in current search" : "Search to view history",
             icon: Package,
             style: "bg-sky-50 text-sky-700",
           },
@@ -424,15 +488,17 @@ export default function QCBatches() {
                   }`}
                 >
                   {option.label}
-                  <span
-                    className={`ml-1.5 rounded-md px-1.5 py-0.5 text-[11px] ${
-                      filter === option.value
-                        ? "bg-white/20 text-white"
-                        : "bg-slate-100 text-slate-500"
-                    }`}
-                  >
-                    {option.count}
-                  </span>
+                  {option.count !== null && (
+                    <span
+                      className={`ml-1.5 rounded-md px-1.5 py-0.5 text-[11px] ${
+                        filter === option.value
+                          ? "bg-white/20 text-white"
+                          : "bg-slate-100 text-slate-500"
+                      }`}
+                    >
+                      {option.count}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -593,18 +659,22 @@ export default function QCBatches() {
                 <CheckCircle2 size={22} />
               </span>
               <p className="mt-3 text-base font-bold text-slate-800">
-                {debouncedSearch
-                  ? "No batches match your search"
-                  : filter === "PENDING"
-                    ? "No batches waiting for QC"
-                    : "No batches in this view"}
+                {filter !== "PENDING" && !debouncedSearch.trim()
+                  ? "Search to view batch history"
+                  : debouncedSearch
+                    ? "No batches match your search"
+                    : filter === "PENDING"
+                      ? "No batches waiting for QC"
+                      : "No batches in this view"}
               </p>
               <p className="mt-1 text-sm text-slate-500">
-                {debouncedSearch
-                  ? "Try another batch number, product name, or SKU."
-                  : filter === "PENDING"
-                    ? "Dispatch will send new batches here for review."
-                    : "Switch to another filter to see more batches."}
+                {filter !== "PENDING" && !debouncedSearch.trim()
+                  ? "Batch history is too large to list in full — search by batch number, product or SKU."
+                  : debouncedSearch
+                    ? "Try the start of a batch number, product name, or SKU."
+                    : filter === "PENDING"
+                      ? "Dispatch will send new batches here for review."
+                      : "Switch to another filter to see more batches."}
               </p>
             </div>
           )}
@@ -614,6 +684,32 @@ export default function QCBatches() {
             </div>
           )}
         </div>
+
+        {filter === "PENDING" && pendingPages > 1 && (
+          <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-sm sm:px-6">
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page <= 1 || loading}
+            >
+              Previous
+            </button>
+            <span className="text-xs font-semibold text-slate-500">
+              Page {page} of {pendingPages} · {pendingTotal} waiting for QC
+            </span>
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              onClick={() =>
+                setPage((current) => Math.min(pendingPages, current + 1))
+              }
+              disabled={page >= pendingPages || loading}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </section>
 
       {decision && (
@@ -661,6 +757,7 @@ export default function QCBatches() {
                     · {decision.group.units.toLocaleString()}{" "}
                     {decision.group.units === 1 ? "unit" : "units"}
                   </p>
+                  <div className="mt-2"><DivisionContextNote /></div>
                 </div>
               </div>
               <button

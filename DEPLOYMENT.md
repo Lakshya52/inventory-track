@@ -72,3 +72,58 @@ application data backend is configured as MySQL.
 When using a custom Vercel domain, include its origin in `CORS_ORIGIN` and
 redeploy/restart the Render service. If using Vercel preview deployments, add
 the appropriate preview origins too.
+
+## 5. Tenant isolation (multi-workspace)
+
+The API enforces tenant isolation server-side. Every business table carries a
+`tenant_id` column (MongoDB: hex-string ObjectId of the `tenants` document;
+MySQL: BIGINT UNSIGNED referencing `tenants.id`) and every query issued by the
+API is filtered by the caller's tenant from their access token; inserts are
+stamped with it. There is no tenant id in any request payload — it is always
+derived from the token, and the middleware re-checks that the token tenant
+matches the user row in the database on every request.
+
+Scope notes:
+
+- Global keys that remain unique install-wide: user email (single identity per
+  install), idempotency operation ids, refresh-token hashes, `device_uuid`.
+  Everything else that must be reusable across workspaces (product SKU, batch
+  barcode, shelf `location_code`, vendor code, grade / UOM / bag-quantity name,
+  QR value, dispatch order number `DO-<YYYY>-<n>`, batch-group number) is
+  unique per `(tenant_id, ...)` instead.
+- Fresh installs: `database/init.sql` creates the tenant schema natively.
+- Upgrades: the idempotent startup migration (`ensureAdminSchema()`) adds the
+  columns, backfills pre-existing rows to the `__legacy_workspace__` tenant,
+  and swaps the legacy global unique indexes for tenant-scoped composites. It
+  is safe to re-run.
+- Seeding: `npm run seed` rebuilds the demo tenant `Aceone Inventory`
+  (`admin@gmail.com` / `qc@gmail.com` / `dispatch@gmail.com`) and links the
+  three accounts to it. Self-serve `POST /api/auth/register` creates a new
+  tenant plus its first ADMIN account and an internal `SELF` vendor.
+- Offline sync (`/api/sync/*`) is tenant-scoped: devices only ever receive
+  their tenant's products/batches/orders/QC data.
+- Tenant logos are served unauthenticated by design (`GET /api/tenants/:id/logo`,
+  used by `<img>` tags); they carry no business data. Attachments under
+  `/uploads/:filename` use unguessable random names and are public by design.
+
+## 6. Divisions (manufacturing units within a tenant)
+
+A tenant can run several **divisions** (plants / manufacturing units) that share
+the tenant's directory data (clients, vendors, UOMs, bag quantities, users) but
+keep their operational data separate. Products, grades, batches, QR labels,
+QC records, dispatch orders and records, fix records, packing-list items,
+loading sessions, warehouses, storage racks, shelf locations and activity logs
+carry a nullable `division_id`; `NULL` means shared tenant-wide (the default,
+and what all pre-divisions rows become, so existing data keeps working).
+
+- The single ADMIN sees everything by default. A division switcher in the
+  top bar (top-right) scopes the whole session to one division: reads filter to
+  it (plus shared rows) and anything the admin creates is stamped with it
+  (`X-Division-Id: all`, or no selection, restores tenant-wide).
+- QC and DISPATCH members are assigned to one division at creation time (Users
+  page) and see only that division plus shared rows; they are unaffected by the
+  admin's switcher.
+- Divisions are managed from the **Divisions** page (list, create, rename,
+  activate/deactivate, delete when unused).
+- Fresh installs and upgrades both get the schema automatically (`init.sql` /
+  `ensureAdminSchema()`); no manual migration is needed.

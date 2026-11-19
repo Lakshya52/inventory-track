@@ -9,6 +9,25 @@ import {
   SyncOperationType,
 } from '../types';
 
+/**
+ * Division visibility for sync payloads. Mirrors utils/division.ts, but the
+ * helpers there require an Express request while sync functions receive the
+ * decoded JWT payload, so the same fragment is built here from `user`
+ * (ADMIN or unassigned users see everything tenant-wide).
+ */
+function divisionWhereFor(user: JwtPayload, column = 'division_id'): { sql: string; params: any[] } {
+  // ADMIN always sees everything; only an assigned QC/DISPATCH member is restricted.
+  if (user.role === 'ADMIN' || user.divisionId === undefined || user.divisionId === null) {
+    return { sql: '', params: [] };
+  }
+  return { sql: ` AND (${column} = ? OR ${column} IS NULL)`, params: [user.divisionId] };
+}
+
+/** division_id to stamp on newly created rows (null = shared / tenant-wide). */
+function divisionStampFor(user: JwtPayload): string | number | null {
+  return user.divisionId ?? null;
+}
+
 export class SyncError extends Error {
   constructor(
     message: string,
@@ -90,17 +109,18 @@ function validateOperation(input: SyncOperationInput): void {
 
 async function findExistingOperation(
   conn: PoolConnection | null,
-  operationId: string
+  operationId: string,
+  tenantId: string | number
 ): Promise<SyncOperationResult | null> {
   const sql = `SELECT operation_id, user_id, user_role, status, entity_type, entity_id,
                       error_code, error_message, result
-               FROM sync_operations WHERE operation_id = ? LIMIT 1${conn ? ' FOR UPDATE' : ''}`;
+               FROM sync_operations WHERE operation_id = ? AND tenant_id = ? LIMIT 1${conn ? ' FOR UPDATE' : ''}`;
   let rows: RowDataPacket[];
   if (conn) {
-    const [result] = await conn.execute<RowDataPacket[]>(sql, [operationId]);
+    const [result] = await conn.execute<RowDataPacket[]>(sql, [operationId, tenantId]);
     rows = result;
   } else {
-    rows = await query<RowDataPacket[]>(sql, [operationId]);
+    rows = await query<RowDataPacket[]>(sql, [operationId, tenantId]);
   }
 
   if (!rows || rows.length === 0) return null;
@@ -129,10 +149,13 @@ async function recordOperation(
   errorMessage: string | null,
   result: SyncOperationResult
 ): Promise<void> {
+  // tenant_id is deliberately not part of the ON DUPLICATE KEY UPDATE clause:
+  // operation_id is globally unique, so a colliding key from another tenant
+  // must never reassign this row's ownership.
   const sql = `INSERT INTO sync_operations
-    (operation_id, device_uuid, user_id, user_role, operation_type, entity_type, entity_id,
+    (operation_id, tenant_id, device_uuid, user_id, user_role, operation_type, entity_type, entity_id,
      status, error_code, error_message, payload, result, client_timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
       device_uuid = VALUES(device_uuid),
       user_id = VALUES(user_id),
@@ -149,6 +172,7 @@ async function recordOperation(
       server_timestamp = CURRENT_TIMESTAMP(3)`;
   const params = [
     input.operation_id,
+    user.tenantId,
     deviceUuid,
     user.userId,
     user.role,
@@ -171,8 +195,14 @@ async function recordOperation(
 
 async function getBatchForUpdate(
   conn: PoolConnection,
-  payload: Record<string, any>
+  payload: Record<string, any>,
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<RowDataPacket> {
+  const dvQ = divisionWhereFor(user, 'l.division_id');
+  const dvJoinQ = divisionWhereFor(user, 'l.division_id');
+  const dvP = divisionWhereFor(user, 'p.division_id');
+  const dvB = divisionWhereFor(user, 'b.division_id');
   const barcode = typeof payload.barcode_value === 'string' ? payload.barcode_value.trim() : '';
   const batchId = Number(payload.batch_id);
   if (!barcode && !Number.isFinite(batchId)) {
@@ -182,16 +212,16 @@ async function getBatchForUpdate(
   const sql = barcode
     ? `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
               p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
-              (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count
-       FROM batches b JOIN products p ON b.product_id = p.id
-       LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ?
-       WHERE b.barcode_value = ? OR l.qr_value = ? FOR UPDATE`
+              (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvQ.sql}) AS qr_count
+       FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvP.sql}
+       LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ? AND l.tenant_id = ?${dvJoinQ.sql}
+       WHERE (b.barcode_value = ? OR l.qr_value = ?) AND b.tenant_id = ?${dvB.sql} FOR UPDATE`
     : `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
               p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
-              (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count
-       FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.id = ? FOR UPDATE`;
-  const [rows] = await conn.execute<RowDataPacket[]>(sql, barcode ? [barcode, barcode, barcode] : [batchId]);
+              (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvQ.sql}) AS qr_count
+       FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvP.sql}
+       WHERE b.id = ? AND b.tenant_id = ?${dvB.sql} FOR UPDATE`;
+  const [rows] = await conn.execute<RowDataPacket[]>(sql, barcode ? [tenantId, ...dvQ.params, tenantId, ...dvP.params, barcode, tenantId, ...dvJoinQ.params, barcode, barcode, tenantId, ...dvB.params] : [tenantId, ...dvQ.params, tenantId, ...dvP.params, batchId, tenantId, ...dvB.params]);
   if (rows.length === 0) {
     throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
   }
@@ -234,8 +264,14 @@ function bulkBarcodes(payload: Record<string, any>): string[] {
 
 async function getBatchesForUpdate(
   conn: PoolConnection,
-  barcodes: string[]
+  barcodes: string[],
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<RowDataPacket[]> {
+  const dvL = divisionWhereFor(user, 'l.division_id');
+  const dvP = divisionWhereFor(user, 'p.division_id');
+  const dvB = divisionWhereFor(user, 'b.division_id');
+  const dvBBare = divisionWhereFor(user);
   if (barcodes.length === 0) {
     throw new SyncError('At least one QR code is required', 'BATCH_REFERENCE_REQUIRED');
   }
@@ -243,13 +279,13 @@ async function getBatchesForUpdate(
   const [labelRows] = await conn.query<RowDataPacket[]>(
     `SELECT l.qr_value, l.batch_id
      FROM qr_labels l
-     WHERE l.qr_value IN (${placeholders})`,
-    barcodes
+     WHERE l.qr_value IN (${placeholders}) AND l.tenant_id = ?${dvL.sql}`,
+    [...barcodes, tenantId, ...dvL.params]
   );
   const [legacyRows] = await conn.query<RowDataPacket[]>(
     `SELECT barcode_value, id AS batch_id FROM batches
-     WHERE barcode_value IN (${placeholders})`,
-    barcodes
+     WHERE barcode_value IN (${placeholders}) AND tenant_id = ?${dvBBare.sql}`,
+    [...barcodes, tenantId, ...dvBBare.params]
   );
   const codeToBatch = new Map<string, number>();
   for (const row of labelRows) codeToBatch.set(String(row.qr_value), Number(row.batch_id));
@@ -261,14 +297,15 @@ async function getBatchesForUpdate(
 
   const batchIds = [...new Set(barcodes.map((barcode) => codeToBatch.get(barcode)!))];
   const batchPlaceholders = batchIds.map(() => '?').join(',');
+  const qrCountDv = divisionWhereFor(user, 'l.division_id');
   const [batches] = await conn.query<RowDataPacket[]>(
     `SELECT b.*, p.name AS product_name, p.sku AS product_sku,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count
-     FROM batches b JOIN products p ON b.product_id = p.id
-     WHERE b.id IN (${batchPlaceholders})
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${qrCountDv.sql}) AS qr_count
+     FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvP.sql}
+     WHERE b.id IN (${batchPlaceholders}) AND b.tenant_id = ?${dvB.sql}
      ORDER BY b.id
      FOR UPDATE`,
-    batchIds
+    [tenantId, ...qrCountDv.params, tenantId, ...dvP.params, ...batchIds, tenantId, ...dvB.params]
   );
   const scannedCounts = new Map<number, number>();
   const scannedCodes = new Map<number, Set<string>>();
@@ -282,8 +319,8 @@ async function getBatchesForUpdate(
   const [expectedLabelRows] = await conn.query<RowDataPacket[]>(
     `SELECT batch_id, qr_value
      FROM qr_labels
-     WHERE batch_id IN (${batchPlaceholders})`,
-    batchIds
+     WHERE batch_id IN (${batchPlaceholders}) AND tenant_id = ?${dvL.sql}`,
+    [...batchIds, tenantId, ...dvL.params]
   );
   const expectedCodes = new Map<number, Set<string>>();
   for (const row of expectedLabelRows) {
@@ -320,9 +357,9 @@ async function logActivity(
   description: string
 ): Promise<void> {
   await conn.execute(
-    `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-     VALUES (?, ?, ?, ?, ?)`,
-    [user.userId, user.name || user.role, user.role, action, description]
+    `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [user.userId, user.name || user.role, user.role, action, description, user.tenantId, divisionStampFor(user)]
   );
 }
 
@@ -334,21 +371,24 @@ async function logActivity(
 async function deductProductStock(
   conn: PoolConnection,
   productId: number,
-  quantity: number
+  quantity: number,
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<number | null> {
   if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
     return null;
   }
+  const dv = divisionWhereFor(user);
   await conn.execute(
     `UPDATE products
      SET quantity = GREATEST(COALESCE(quantity, 0) - ?, 0),
          updated_at = CURRENT_TIMESTAMP(3)
-     WHERE id = ?`,
-    [quantity, productId]
+     WHERE id = ? AND tenant_id = ?${dv.sql}`,
+    [quantity, productId, tenantId, ...dv.params]
   );
   const [rows] = await conn.execute<RowDataPacket[]>(
-    'SELECT quantity FROM products WHERE id = ?',
-    [productId]
+    `SELECT quantity FROM products WHERE id = ? AND tenant_id = ?${dv.sql}`,
+    [productId, tenantId, ...dv.params]
   );
   return rows.length > 0 ? Number(rows[0].quantity) : null;
 }
@@ -359,6 +399,7 @@ async function applyQcSubmit(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
   if (!['QC', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only QC or admin users can submit QC results', 'FORBIDDEN', 403);
   }
@@ -369,8 +410,9 @@ async function applyQcSubmit(
   }
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
+  const dv = divisionWhereFor(user);
 
-  const batch = await getBatchForUpdate(conn, payload);
+  const batch = await getBatchForUpdate(conn, payload, tenantId, user);
   if (Number(batch.qr_count) > 0) {
     throw new SyncConflictError('Scan every unit QR code in the batch before submitting QC', {
       batch_id: batch.id,
@@ -391,8 +433,8 @@ async function applyQcSubmit(
   const newStatus = result === 'PASS' ? 'QC_PASSED' : 'QC_FAILED';
   const [insert] = await conn.execute<ResultSetHeader>(
     `INSERT INTO qc_records
-      (batch_id, tester_id, result, remarks, images, client_operation_id, client_created_at, device_uuid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      (batch_id, tester_id, result, remarks, images, client_operation_id, client_created_at, device_uuid, tenant_id, division_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       batch.id,
       user.userId,
@@ -402,13 +444,15 @@ async function applyQcSubmit(
       input.operation_id,
       toDate(input.client_timestamp),
       deviceUuid,
+      tenantId,
+      divisionStampFor(user),
     ]
   );
 
   const [update] = await conn.execute<ResultSetHeader>(
     `UPDATE batches SET status = ?, updated_at = CURRENT_TIMESTAMP(3)
-     WHERE id = ? AND status = 'CREATED'`,
-    [newStatus, batch.id]
+     WHERE id = ? AND status = 'CREATED' AND tenant_id = ?${dv.sql}`,
+    [newStatus, batch.id, tenantId, ...dv.params]
   );
   if (update.affectedRows !== 1) {
     throw new SyncConflictError('Batch was changed by another user. Refresh and try again.', {
@@ -444,6 +488,7 @@ async function applyQcSubmitBulk(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
   if (!['QC', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only QC or admin users can submit QC results', 'FORBIDDEN', 403);
   }
@@ -455,7 +500,8 @@ async function applyQcSubmitBulk(
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
   const barcodes = bulkBarcodes(payload);
-  const batches = await getBatchesForUpdate(conn, barcodes);
+  const dv = divisionWhereFor(user);
+  const batches = await getBatchesForUpdate(conn, barcodes, tenantId, user);
 
   const invalid = batches.filter((batch) => String(batch.status) !== 'CREATED');
   if (invalid.length > 0) {
@@ -475,8 +521,8 @@ async function applyQcSubmitBulk(
     const [insert] = await conn.execute<ResultSetHeader>(
       `INSERT INTO qc_records
         (batch_id, tester_id, result, remarks, images, group_operation_id,
-         client_created_at, device_uuid)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         client_created_at, device_uuid, tenant_id, division_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         batch.id,
         user.userId,
@@ -486,13 +532,15 @@ async function applyQcSubmitBulk(
         input.operation_id,
         toDate(input.client_timestamp),
         deviceUuid,
+        tenantId,
+        divisionStampFor(user),
       ]
     );
     recordIds.push(insert.insertId);
     const [update] = await conn.execute<ResultSetHeader>(
       `UPDATE batches SET status = ?, updated_at = CURRENT_TIMESTAMP(3)
-       WHERE id = ? AND status = 'CREATED'`,
-      [newStatus, batch.id]
+       WHERE id = ? AND status = 'CREATED' AND tenant_id = ?${dv.sql}`,
+      [newStatus, batch.id, tenantId, ...dv.params]
     );
     if (update.affectedRows !== 1) {
       throw new SyncConflictError('A QR code was changed by another user. Refresh and try again.', {
@@ -530,6 +578,7 @@ async function applyDispatchOrderRaise(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can raise dispatch orders', 'FORBIDDEN', 403);
   }
@@ -537,9 +586,10 @@ async function applyDispatchOrderRaise(
   if (!Number.isInteger(clientId) || clientId <= 0) {
     throw new SyncError('Select a client for this dispatch order', 'DISPATCH_CLIENT_REQUIRED');
   }
+  const dv = divisionWhereFor(user);
   const [clients] = await conn.execute<RowDataPacket[]>(
-    'SELECT id FROM clients WHERE id = ? AND is_active = 1',
-    [clientId]
+    'SELECT id FROM clients WHERE id = ? AND is_active = 1 AND tenant_id = ?',
+    [clientId, tenantId]
   );
   if (clients.length === 0) {
     throw new SyncError('Selected client is no longer active', 'CLIENT_NOT_FOUND', 404);
@@ -552,17 +602,17 @@ async function applyDispatchOrderRaise(
     const assignments: Array<{ batchId: number; labelIds: number[] }> = [];
     const stockDeductions = new Map<number, { productId: number; quantity: number }>();
     for (const line of requested) {
-      const batch = await getBatchForUpdate(conn, { batch_id: line.batch_id });
+      const batch = await getBatchForUpdate(conn, { batch_id: line.batch_id }, tenantId, user);
       const batchId = Number(batch.id);
       if (seen.has(batchId)) throw new SyncError('A batch can appear only once in a dispatch order', 'DUPLICATE_ORDER_LINE');
       seen.add(batchId);
       const quantity = Number(line.quantity);
       if (!Number.isInteger(quantity) || quantity < 1) throw new SyncError('Each product line needs a whole-number quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
       assertStatus(batch, ['QC_PASSED'], `Batch ${batch.batch_number} is not available for dispatch`);
-      const [[counts]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS total, SUM(dispatch_order_id IS NOT NULL) AS reserved, SUM(recall_status = \'RECALLED\') AS recalled FROM qr_labels WHERE batch_id = ?', [batchId]);
+      const [[counts]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS total, SUM(dispatch_order_id IS NOT NULL) AS reserved, SUM(recall_status = \'RECALLED\') AS recalled FROM qr_labels WHERE batch_id = ? AND tenant_id = ?' + dv.sql, [batchId, tenantId, ...dv.params]);
       if (Number(counts.total) !== Number(batch.quantity)) throw new SyncConflictError(`QR labels are incomplete for ${batch.batch_number}`);
       // Every QR label must have been printed before the batch goes on a truck.
-      const [[printed]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS printed FROM qr_labels WHERE batch_id = ? AND print_count > 0', [batchId]);
+      const [[printed]] = await conn.execute<RowDataPacket[]>('SELECT COUNT(*) AS printed FROM qr_labels WHERE batch_id = ? AND print_count > 0 AND tenant_id = ?' + dv.sql, [batchId, tenantId, ...dv.params]);
       if (Number(printed.printed) < Number(counts.total)) {
         throw new SyncConflictError(`Print the QR labels for ${batch.batch_number} before raising a dispatch order`, {
           batch_id: batchId,
@@ -573,12 +623,42 @@ async function applyDispatchOrderRaise(
       }
       const available = Math.max(0, Number(batch.quantity) - Number(counts.reserved || 0) - Number(counts.recalled || 0));
       if (quantity > available) throw new SyncConflictError(`Only ${available} units remain for ${batch.product_name}`, { batch_id: batchId, available_quantity: available, requested_quantity: quantity });
-      const [labels] = await conn.execute<RowDataPacket[]>('SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL ORDER BY serial_no ASC LIMIT ? FOR UPDATE', [batchId, quantity]);
-      if (labels.length !== quantity) throw new SyncConflictError(`Not enough unassigned QR labels remain for ${batch.product_name}`);
-      const [locations] = await conn.execute<RowDataPacket[]>('SELECT location_code, description FROM shelf_locations WHERE id = ?', [batch.shelf_location_id]);
+      // When the picker chose exact QR codes, reserve precisely those instead
+      // of the first-N auto assignment.
+      const requestedLabelIds = Array.isArray(line.label_ids)
+        ? [...new Set(line.label_ids.map(Number).filter((value: number) => Number.isInteger(value) && value > 0))]
+        : null;
+      if (requestedLabelIds) {
+        if (requestedLabelIds.length !== quantity) {
+          throw new SyncError(`Select exactly ${quantity} QR code${quantity === 1 ? '' : 's'} for ${batch.product_name}`, 'LABEL_COUNT_MISMATCH');
+        }
+        const [picked] = await conn.execute<RowDataPacket[]>(
+          'SELECT id, qr_value, print_count, dispatch_order_id, recall_status FROM qr_labels WHERE batch_id = ? AND id IN (?) AND tenant_id = ?' + dv.sql + ' FOR UPDATE',
+          [batchId, requestedLabelIds, tenantId, ...dv.params]
+        );
+        if (picked.length !== requestedLabelIds.length) {
+          throw new SyncConflictError(`Some selected QR labels were not found in ${batch.batch_number}`, { batch_id: batchId });
+        }
+        for (const label of picked) {
+          if (Number(label.print_count) < 1) {
+            throw new SyncConflictError(`QR ${label.qr_value} has not been printed yet`, { code: 'QR_NOT_PRINTED', qr_value: label.qr_value });
+          }
+          if (label.dispatch_order_id !== null && label.dispatch_order_id !== undefined) {
+            throw new SyncConflictError(`QR ${label.qr_value} is already reserved by another order`, { code: 'QR_ALREADY_ASSIGNED', qr_value: label.qr_value });
+          }
+          if (label.recall_status && String(label.recall_status).toUpperCase() === 'RECALLED') {
+            throw new SyncConflictError(`QR ${label.qr_value} is recalled and cannot be dispatched`, { code: 'QR_RECALLED', qr_value: label.qr_value });
+          }
+        }
+        assignments.push({ batchId, labelIds: requestedLabelIds });
+      } else {
+        const [labels] = await conn.execute<RowDataPacket[]>('SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL AND tenant_id = ?' + dv.sql + ' ORDER BY serial_no ASC LIMIT ? FOR UPDATE', [batchId, tenantId, ...dv.params, quantity]);
+        if (labels.length !== quantity) throw new SyncConflictError(`Not enough unassigned QR labels remain for ${batch.product_name}`);
+        assignments.push({ batchId, labelIds: labels.map((label) => Number(label.id)) });
+      }
+      const [locations] = await conn.execute<RowDataPacket[]>('SELECT location_code, description FROM shelf_locations WHERE id = ? AND tenant_id = ?' + dv.sql, [batch.shelf_location_id, tenantId, ...dv.params]);
       const location = locations[0];
       lines.push({ batch_id: batchId, batch_number: batch.parent_batch_number || batch.batch_number, child_batch_number: batch.batch_number, product_name: batch.product_name, product_sku: batch.product_sku, quantity, uom: batch.uom, location: location?.location_code || batch.storage_location || 'N/A', location_code: location?.location_code ?? null, location_description: location?.description ?? null });
-      assignments.push({ batchId, labelIds: labels.map((label) => Number(label.id)) });
       const productId = Number(batch.product_id);
       const existing = stockDeductions.get(productId);
       stockDeductions.set(productId, { productId, quantity: (existing?.quantity || 0) + quantity });
@@ -593,28 +673,28 @@ async function applyDispatchOrderRaise(
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
     const orderNumber = await nextDispatchOrderNumberSql(conn, String(user.tenantId));
-    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, order_number, raised_by, status, client_id, quantity, order_lines, tenant_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, scheduled_dispatch_at, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, orderNumber, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, scheduledDispatchAt(input.payload.scheduled_dispatch_at), user.userId]);
+    const [insert] = await conn.execute<ResultSetHeader>(`INSERT INTO dispatch_orders (batch_id, order_number, raised_by, status, client_id, quantity, order_lines, tenant_id, division_id, client_operation_id, client_created_at, device_uuid, driver_name, driver_phone, vehicle_number, container_number, scheduled_dispatch_at, approved_by_role, approved_by_id, stock_reserved_at_order) VALUES (?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`, [lines[0].batch_id, orderNumber, user.userId, clientId, total, JSON.stringify(lines), user.tenantId, divisionStampFor(user), input.operation_id, toDate(input.client_timestamp), deviceUuid, transport.driver_name, transport.driver_phone, transport.vehicle_number, transport.container_number, scheduledDispatchAt(input.payload.scheduled_dispatch_at), user.userId]);
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
-      const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, labelId]);
+      const [updated] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL AND tenant_id = ?' + dv.sql, [insert.insertId, labelId, tenantId, ...dv.params]);
       if (updated.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.');
     }
     // The ordered units leave the stock as soon as the order is created, so
     // their QR labels stop being available stock from here on.
     for (const entry of stockDeductions.values()) {
       await conn.execute(
-        'UPDATE products SET quantity = GREATEST(0, COALESCE(quantity, 0) - ?), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
-        [entry.quantity, entry.productId]
+        'UPDATE products SET quantity = GREATEST(0, COALESCE(quantity, 0) - ?), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ?' + dv.sql,
+        [entry.quantity, entry.productId, tenantId, ...dv.params]
       );
     }
     // No approval step: the order is released for loading the moment it is
     // raised, so the batch goes straight to DISPATCH_APPROVED.
     for (const line of lines) {
-      await conn.execute('UPDATE batches SET status = \'DISPATCH_APPROVED\', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?', [line.batch_id]);
+      await conn.execute('UPDATE batches SET status = \'DISPATCH_APPROVED\', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ?' + dv.sql, [line.batch_id, tenantId, ...dv.params]);
     }
     await logActivity(conn, user, 'DISPATCH_ORDER_CREATED', `Dispatch order #${insert.insertId} created with ${lines.length} product lines and ${total} units, ready for loading`);
     return { entityType: 'dispatch_order', entityId: Number(insert.insertId), data: { id: Number(insert.insertId), order_number: orderNumber, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : 'Multi-product order', product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
   }
-  const batch = await getBatchForUpdate(conn, input.payload);
+  const batch = await getBatchForUpdate(conn, input.payload, tenantId, user);
   const requestedQuantity = Number(input.payload.quantity);
   if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) throw new SyncError('Enter a whole-number dispatch quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
   if (input.payload.expected_status && String(input.payload.expected_status) !== String(batch.status)) {
@@ -631,8 +711,8 @@ async function applyDispatchOrderRaise(
   );
   if (!batch.fg_details_completed_at) {
     const [labels] = await conn.execute<RowDataPacket[]>(
-      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ?',
-      [batch.id]
+      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND tenant_id = ?' + dv.sql,
+      [batch.id, tenantId, ...dv.params]
     );
     if (Number(labels[0]?.count) !== Number(batch.quantity)) {
       throw new SyncConflictError('Complete finished-goods details and generate bag QR labels before raising a dispatch order', {
@@ -644,8 +724,8 @@ async function applyDispatchOrderRaise(
   }
   if (Number(batch.quantity) > 1) {
     const [existingLabels] = await conn.execute<RowDataPacket[]>(
-      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ?',
-      [batch.id]
+      'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND tenant_id = ?' + dv.sql,
+      [batch.id, tenantId, ...dv.params]
     );
     if (Number(existingLabels[0]?.count) !== Number(batch.quantity)) {
       throw new SyncConflictError('Batch unit QR labels are incomplete. Contact an administrator.', {
@@ -658,8 +738,8 @@ async function applyDispatchOrderRaise(
   // Every QR label of the batch must have been printed before it can be
   // assigned to a dispatch order.
   const [[labelTotals]] = await conn.execute<RowDataPacket[]>(
-    'SELECT COUNT(*) AS total, SUM(CASE WHEN print_count > 0 THEN 1 ELSE 0 END) AS printed FROM qr_labels WHERE batch_id = ?',
-    [batch.id]
+    'SELECT COUNT(*) AS total, SUM(CASE WHEN print_count > 0 THEN 1 ELSE 0 END) AS printed FROM qr_labels WHERE batch_id = ? AND tenant_id = ?' + dv.sql,
+    [batch.id, tenantId, ...dv.params]
   );
   if (Number(labelTotals.printed || 0) < Number(labelTotals.total || 0)) {
     throw new SyncConflictError(`Print the QR labels for ${batch.batch_number} before raising a dispatch order`, {
@@ -671,16 +751,16 @@ async function applyDispatchOrderRaise(
   }
 
   const [[reservation]] = await conn.execute<RowDataPacket[]>(
-    'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND dispatch_order_id IS NOT NULL', [batch.id]
+    'SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND dispatch_order_id IS NOT NULL AND tenant_id = ?' + dv.sql, [batch.id, tenantId, ...dv.params]
   );
   const [[recalls]] = await conn.execute<RowDataPacket[]>(
-    "SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND recall_status = 'RECALLED'", [batch.id]
+    "SELECT COUNT(*) AS count FROM qr_labels WHERE batch_id = ? AND recall_status = 'RECALLED' AND tenant_id = ?" + dv.sql, [batch.id, tenantId, ...dv.params]
   );
   const availableQuantity = Math.max(0, Number(batch.quantity) - Number(reservation.count) - Number(recalls.count));
   if (requestedQuantity > availableQuantity) throw new SyncConflictError(`Only ${availableQuantity} units remain available in this batch`, { batch_id: batch.id, available_quantity: availableQuantity, requested_quantity: requestedQuantity });
   const [labels] = await conn.execute<RowDataPacket[]>(
-    "SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL ORDER BY serial_no ASC LIMIT ? FOR UPDATE",
-    [batch.id, requestedQuantity]
+    "SELECT id FROM qr_labels WHERE batch_id = ? AND recall_status IS NULL AND dispatch_order_id IS NULL AND tenant_id = ?" + dv.sql + " ORDER BY serial_no ASC LIMIT ? FOR UPDATE",
+    [batch.id, tenantId, ...dv.params, requestedQuantity]
   );
   if (labels.length < requestedQuantity) throw new SyncConflictError('Not enough unassigned QR labels remain in this batch', { available_quantity: labels.length, requested_quantity: requestedQuantity });
 
@@ -691,8 +771,8 @@ async function applyDispatchOrderRaise(
        client_operation_id, client_created_at, device_uuid,
        driver_name, driver_phone, vehicle_number, container_number,
        scheduled_dispatch_at,
-       approved_by_role, approved_by_id, stock_reserved_at_order)
-     VALUES (?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3))`,
+       approved_by_role, approved_by_id, stock_reserved_at_order, tenant_id, division_id)
+     VALUES (?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH', ?, CURRENT_TIMESTAMP(3), ?, ?)`,
     [
       batch.id,
       orderNumber,
@@ -710,26 +790,28 @@ async function applyDispatchOrderRaise(
       typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
       scheduledDispatchAt(input.payload.scheduled_dispatch_at),
       user.userId,
+      tenantId,
+      divisionStampFor(user),
     ]
   );
 
   for (const label of labels) {
-    const [assigned] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL', [insert.insertId, label.id]);
+    const [assigned] = await conn.execute<ResultSetHeader>('UPDATE qr_labels SET dispatch_order_id = ? WHERE id = ? AND dispatch_order_id IS NULL AND tenant_id = ?' + dv.sql, [insert.insertId, label.id, tenantId, ...dv.params]);
     if (assigned.affectedRows !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: batch.id });
   }
 
   // The ordered units leave the stock as soon as the order is created, so
   // their QR labels stop being available stock from here on.
   await conn.execute(
-    'UPDATE products SET quantity = GREATEST(0, COALESCE(quantity, 0) - ?), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
-    [requestedQuantity, batch.product_id]
+    'UPDATE products SET quantity = GREATEST(0, COALESCE(quantity, 0) - ?), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ?' + dv.sql,
+    [requestedQuantity, batch.product_id, tenantId, ...dv.params]
   );
 
   // No approval step: the order is released for loading the moment it is
   // raised, so the batch goes straight to DISPATCH_APPROVED.
   await conn.execute(
-    "UPDATE batches SET status = 'DISPATCH_APPROVED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
-    [batch.id]
+    "UPDATE batches SET status = 'DISPATCH_APPROVED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ?" + dv.sql,
+    [batch.id, tenantId, ...dv.params]
   );
   await logActivity(
     conn,
@@ -759,13 +841,15 @@ async function applyDispatchConfirm(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can confirm dispatches', 'FORBIDDEN', 403);
   }
   const payload = input.payload;
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
-  const batch = await getBatchForUpdate(conn, payload);
+  const dv = divisionWhereFor(user);
+  const batch = await getBatchForUpdate(conn, payload, tenantId, user);
   if (Number(batch.quantity) > 1) {
     throw new SyncConflictError('Scan every unit QR code in the batch before completing dispatch', {
       batch_id: batch.id,
@@ -801,9 +885,9 @@ async function applyDispatchConfirm(
   if (batch.status === 'DISPATCH_APPROVED') {
     const [orders] = await conn.execute<RowDataPacket[]>(
       `SELECT id, stock_reserved_at_order FROM dispatch_orders
-       WHERE batch_id = ? AND status = 'APPROVED'
+       WHERE batch_id = ? AND status = 'APPROVED' AND tenant_id = ?${dv.sql}
        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-      [batch.id]
+      [batch.id, tenantId, ...dv.params]
     );
     if (orders.length === 0) {
       throw new SyncConflictError('No approved dispatch order was found for this batch', {
@@ -831,8 +915,8 @@ async function applyDispatchConfirm(
   const [insert] = await conn.execute<ResultSetHeader>(
     `INSERT INTO dispatch_records
       (batch_id, dispatcher_id, remarks, images, dispatch_order_id,
-       client_operation_id, client_created_at, device_uuid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       client_operation_id, client_created_at, device_uuid, tenant_id, division_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       batch.id,
       user.userId,
@@ -842,13 +926,15 @@ async function applyDispatchConfirm(
       input.operation_id,
       toDate(input.client_timestamp),
       deviceUuid,
+      tenantId,
+      divisionStampFor(user),
     ]
   );
 
   const [update] = await conn.execute<ResultSetHeader>(
     `UPDATE batches SET status = 'DISPATCHED', updated_at = CURRENT_TIMESTAMP(3)
-     WHERE id = ? AND status = ?`,
-    [batch.id, batch.status]
+     WHERE id = ? AND status = ? AND tenant_id = ?${dv.sql}`,
+    [batch.id, batch.status, tenantId, ...dv.params]
   );
   if (update.affectedRows !== 1) {
     throw new SyncConflictError('Batch was changed by another user. Refresh and try again.', {
@@ -859,13 +945,13 @@ async function applyDispatchConfirm(
 
   if (orderId) {
     await conn.execute(
-      "UPDATE dispatch_orders SET status = 'CLOSED_DISPATCHED', outcome = 'DISPATCHED', dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
-      [orderId]
+      "UPDATE dispatch_orders SET status = 'CLOSED_DISPATCHED', outcome = 'DISPATCHED', dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ?" + dv.sql,
+      [orderId, tenantId, ...dv.params]
     );
   }
 
   const dispatchedQuantity = Number(batch.quantity) || 0;
-  const remainingStock = stockReservedAtOrder ? null : await deductProductStock(conn, Number(batch.product_id), dispatchedQuantity);
+  const remainingStock = stockReservedAtOrder ? null : await deductProductStock(conn, Number(batch.product_id), dispatchedQuantity, tenantId, user);
 
   await logActivity(
     conn,
@@ -900,12 +986,14 @@ async function applyDispatchConfirmBulk(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: number; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can confirm dispatches', 'FORBIDDEN', 403);
   }
   const payload = input.payload;
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
+  const dv = divisionWhereFor(user);
   const barcodes = bulkBarcodes(payload);
   const requestedOrderId = Number(payload.dispatch_order_id);
   // Web dispatch selects one approved order up front, while the offline mobile
@@ -915,7 +1003,7 @@ async function applyDispatchConfirmBulk(
   const hasRequestedOrderId = payload.dispatch_order_id !== undefined &&
     payload.dispatch_order_id !== null &&
     String(payload.dispatch_order_id).trim() !== '';
-  const batches = await getBatchesForUpdate(conn, barcodes);
+  const batches = await getBatchesForUpdate(conn, barcodes, tenantId, user);
 
   const directAllowed = payload.direct === true &&
     (user.role === 'ADMIN' || process.env.ALLOW_DIRECT_DISPATCH === 'true');
@@ -949,9 +1037,9 @@ async function applyDispatchConfirmBulk(
     if (batch.status === 'DISPATCH_APPROVED') {
       const [orders] = await conn.execute<RowDataPacket[]>(
         `SELECT id, stock_reserved_at_order FROM dispatch_orders
-         WHERE batch_id = ? AND status = 'APPROVED'
+         WHERE batch_id = ? AND status = 'APPROVED' AND tenant_id = ?${dv.sql}
          ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-        [batch.id]
+        [batch.id, tenantId, ...dv.params]
       );
       if (orders.length === 0) {
         throw new SyncConflictError('No approved dispatch order was found for a scanned QR code', {
@@ -989,8 +1077,8 @@ async function applyDispatchConfirmBulk(
     const [insert] = await conn.execute<ResultSetHeader>(
       `INSERT INTO dispatch_records
         (batch_id, dispatcher_id, remarks, images, dispatch_order_id,
-         group_operation_id, client_created_at, device_uuid)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         group_operation_id, client_created_at, device_uuid, tenant_id, division_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         batch.id,
         user.userId,
@@ -1000,14 +1088,16 @@ async function applyDispatchConfirmBulk(
         input.operation_id,
         toDate(input.client_timestamp),
         deviceUuid,
+        tenantId,
+        divisionStampFor(user),
       ]
     );
     recordIds.push(insert.insertId);
 
     const [update] = await conn.execute<ResultSetHeader>(
       `UPDATE batches SET status = 'DISPATCHED', updated_at = CURRENT_TIMESTAMP(3)
-       WHERE id = ? AND status = ?`,
-      [batch.id, batch.status]
+       WHERE id = ? AND status = ? AND tenant_id = ?${dv.sql}`,
+      [batch.id, batch.status, tenantId, ...dv.params]
     );
     if (update.affectedRows !== 1) {
       throw new SyncConflictError('A QR code was changed by another user. Refresh and try again.', {
@@ -1017,13 +1107,13 @@ async function applyDispatchConfirmBulk(
     }
     if (orderId) {
       await conn.execute(
-        "UPDATE dispatch_orders SET status = 'CLOSED_DISPATCHED', outcome = 'DISPATCHED', dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
-        [orderId]
+        "UPDATE dispatch_orders SET status = 'CLOSED_DISPATCHED', outcome = 'DISPATCHED', dispatched_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ?" + dv.sql,
+        [orderId, tenantId, ...dv.params]
       );
     }
 
     const dispatchedQuantity = Number(batch.quantity) || 0;
-    const remainingStock = stockReservedAtOrder ? null : await deductProductStock(conn, Number(batch.product_id), dispatchedQuantity);
+    const remainingStock = stockReservedAtOrder ? null : await deductProductStock(conn, Number(batch.product_id), dispatchedQuantity, tenantId, user);
     if (remainingStock !== null) {
       stockDeductions.push({
         batch_id: Number(batch.id),
@@ -1071,7 +1161,7 @@ export async function applyOperation(
 
   try {
     return await withTransaction(async (conn) => {
-      const existing = await findExistingOperation(conn, input.operation_id);
+      const existing = await findExistingOperation(conn, input.operation_id, user.tenantId);
       if (existing) {
         if (existing.user_id !== undefined && existing.user_id !== user.userId) {
           return {
@@ -1089,7 +1179,7 @@ export async function applyOperation(
         // A FAILED or CONFLICT operation never committed any business writes:
         // its transaction was rolled back. Allow a manual/retry pass with the
         // same idempotency key to re-evaluate the current server state.
-        await conn.execute('DELETE FROM sync_operations WHERE operation_id = ?', [input.operation_id]);
+        await conn.execute('DELETE FROM sync_operations WHERE operation_id = ? AND tenant_id = ?', [input.operation_id, user.tenantId]);
       }
 
       let applied: { entityType: string; entityId: number; data: Record<string, any> };
@@ -1127,7 +1217,7 @@ export async function applyOperation(
     });
   } catch (error) {
     if (isDuplicateKey(error)) {
-      const existing = await findExistingOperation(null, input.operation_id);
+      const existing = await findExistingOperation(null, input.operation_id, user.tenantId);
       if (existing) return existing;
     }
 
@@ -1175,21 +1265,25 @@ export async function registerDevice(
   const platform = String(input.platform || 'unknown').slice(0, 20);
   const appVersion = input.app_version ? String(input.app_version).slice(0, 30) : null;
   const pushToken = input.push_token ? String(input.push_token).slice(0, 255) : null;
+  const tenantId = user.tenantId;
 
+  // tenant_id is stamped on insert but intentionally omitted from the update
+  // clause: device_uuid is globally unique, so a re-registration must not
+  // reassign a row created by another tenant.
   await execute(
-    `INSERT INTO devices (device_uuid, user_id, user_role, platform, app_version, push_token, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
+    `INSERT INTO devices (device_uuid, tenant_id, user_id, user_role, platform, app_version, push_token, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
      ON DUPLICATE KEY UPDATE
        user_id = VALUES(user_id), user_role = VALUES(user_role), platform = VALUES(platform),
        app_version = VALUES(app_version), push_token = COALESCE(VALUES(push_token), push_token),
        last_seen_at = CURRENT_TIMESTAMP(3)`,
-    [deviceUuid, user.userId, user.role, platform, appVersion, pushToken]
+    [deviceUuid, tenantId, user.userId, user.role, platform, appVersion, pushToken]
   );
   await execute(
-    `INSERT INTO device_sync_state (device_uuid, updated_at)
-     VALUES (?, CURRENT_TIMESTAMP(3))
+    `INSERT INTO device_sync_state (device_uuid, tenant_id, updated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP(3))
      ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP(3)`,
-    [deviceUuid]
+    [deviceUuid, tenantId]
   );
   return { device_uuid: deviceUuid };
 }
@@ -1197,15 +1291,19 @@ export async function registerDevice(
 export async function touchDeviceSync(
   deviceUuid: string | null,
   kind: 'pull' | 'push',
-  error?: string | null
+  error: string | null | undefined,
+  tenantId: string | number
 ): Promise<void> {
   if (!deviceUuid || !DEVICE_ID_PATTERN.test(deviceUuid)) return;
   const column = kind === 'pull' ? 'last_pull_at' : 'last_push_at';
+  // tenant_id is stamped on insert; the update clause deliberately leaves it
+  // untouched so a push/pull heartbeat can never move a device row to another
+  // tenant.
   await execute(
-    `INSERT INTO device_sync_state (device_uuid, ${column}, last_error, updated_at)
-     VALUES (?, CURRENT_TIMESTAMP(3), ?, CURRENT_TIMESTAMP(3))
+    `INSERT INTO device_sync_state (device_uuid, tenant_id, ${column}, last_error, updated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP(3), ?, CURRENT_TIMESTAMP(3))
      ON DUPLICATE KEY UPDATE ${column} = CURRENT_TIMESTAMP(3),
        last_error = VALUES(last_error), updated_at = CURRENT_TIMESTAMP(3)`,
-    [deviceUuid, error || null]
+    [deviceUuid, tenantId, error || null]
   );
 }

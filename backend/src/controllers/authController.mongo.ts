@@ -193,7 +193,7 @@ export async function me(_req: Request, res: Response): Promise<void> {
   }
   const ctx = await getContext();
   const user = await ctx.findOne(_req.user.table, { id: _req.user.userId }, {
-    projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1, tenant_id: 1 },
+    projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1, tenant_id: 1, division_id: 1 },
   });
   if (!user) {
     res.status(404).json({ error: 'User not found' });
@@ -204,5 +204,8 @@ export async function me(_req: Request, res: Response): Promise<void> {
     return;
   }
   if (String(user.tenant_id) !== String(_req.user.tenantId)) { res.status(404).json({ error: 'User not found' }); return; }
-  res.json({ ...user, tenantId: user.tenant_id, role: _req.user.role });
+  const division = user.division_id
+    ? await ctx.findOne('divisions', { id: user.division_id, tenant_id: user.tenant_id }, { projection: { _id: 0, name: 1 } })
+    : null;
+  res.json({ ...user, tenantId: user.tenant_id, divisionId: user.division_id ?? null, divisionName: division?.name ?? null, role: _req.user.role });
 }

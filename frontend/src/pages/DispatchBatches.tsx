@@ -12,8 +12,10 @@ import {
 	Search,
 } from "lucide-react";
 import { api } from "../services/api";
+import { subscribe } from "../services/realtime";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { IsoDateInput } from "../components/IsoDateInput";
+import DivisionContextNote from "../components/DivisionContextNote";
 import { formatDateTime } from "../utils/dateFormat";
 
 const batchStatusMeta: Record<
@@ -165,10 +167,12 @@ function ProductPicker({
 	products,
 	value,
 	onChange,
+	onPick,
 }: {
 	products: any[];
 	value: string;
 	onChange: (productId: string) => void;
+	onPick: (product: any) => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
@@ -238,17 +242,26 @@ function ProductPicker({
 		};
 	}, [open]);
 
-	const matches = useMemo(() => {
-		const q = query.trim().toLowerCase();
-		if (!q) return products;
-		return products.filter((product) =>
-			[product?.name, product?.grade, product?.sku]
-				.filter(Boolean)
-				.join(" ")
-				.toLowerCase()
-				.includes(q),
-		);
-	}, [products, query]);
+	const [results, setResults] = useState<any[]>([]);
+	const [searching, setSearching] = useState(false);
+	const debouncedQuery = useDebouncedValue(query.trim(), 250);
+	useEffect(() => {
+		if (!debouncedQuery) {
+			setResults([]);
+			setSearching(false);
+			return;
+		}
+		let cancelled = false;
+		setSearching(true);
+		api.products
+			.search(debouncedQuery)
+			.then((rows) => { if (!cancelled) setResults(Array.isArray(rows) ? rows : []); })
+			.catch(() => { if (!cancelled) setResults([]); })
+			.finally(() => { if (!cancelled) setSearching(false); });
+		return () => { cancelled = true; };
+	}, [debouncedQuery]);
+
+	const matches = results;
 
 	const label = (product: any) =>
 		product?.grade
@@ -262,6 +275,7 @@ function ProductPicker({
 
 	const choose = (product: any) => {
 		onChange(String(product.id));
+		onPick(product);
 		setOpen(false);
 		setQuery("");
 	};
@@ -334,6 +348,16 @@ function ProductPicker({
 						aria-label="Products"
 						className="min-h-0 flex-1 overflow-y-auto py-1"
 					>
+						{query.trim() === "" && (
+							<li className="px-3 py-3 text-sm font-medium text-slate-500">
+								Type a name, grade, or SKU to search.
+							</li>
+						)}
+						{searching && query.trim() !== "" && (
+							<li className="px-3 py-3 text-sm font-medium text-slate-500">
+								Searching…
+							</li>
+						)}
 						{matches.map((product) => {
 							const isSelected =
 								String(product.id) === String(value);
@@ -357,7 +381,7 @@ function ProductPicker({
 								</li>
 							);
 						})}
-						{matches.length === 0 && (
+						{!searching && matches.length === 0 && query.trim() !== "" && (
 							<li className="px-3 py-3 text-sm font-medium text-slate-500">
 								No products match your search.
 							</li>
@@ -372,7 +396,7 @@ function ProductPicker({
 
 export default function DispatchBatches() {
 	const operationIdRef = useRef(newOperationId());
-	const [products, setProducts] = useState<any[]>([]);
+	const [products, setProducts] = useState<Record<string, any>>({});
 	const [uoms, setUoms] = useState<any[]>([]);
 	const [bagQuantities, setBagQuantities] = useState<any[]>([]);
 	const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -388,16 +412,26 @@ export default function DispatchBatches() {
 	const [message, setMessage] = useState("");
 	const [loaded, setLoaded] = useState(false);
 
-	const reload = async () => {
-		const [productRows, uomRows, bagRows, warehouseRows, batchRows] =
+	const pickProduct = (product: any) => {
+		if (!product?.id) return;
+		setProducts((current) => ({ ...current, [String(product.id)]: product }));
+	};
+
+	const loadBatches = async (query: string) => {
+		const rows = await api.batches.recent({
+			limit: 50,
+			q: query.trim() || undefined,
+		});
+		setBatches(Array.isArray(rows) ? rows : []);
+		setLoaded(true);
+	};
+	const loadMasters = async () => {
+		const [uomRows, bagRows, warehouseRows] =
 			await Promise.all([
-				api.products.list(),
 				api.masters.list("uoms"),
 				api.masters.list("bag-quantities"),
 				api.storage.list(),
-				api.batches.list(),
 			]);
-		setProducts(productRows);
 		setUoms(uomRows);
 		setBagQuantities(bagRows);
 		setWarehouses(
@@ -408,15 +442,32 @@ export default function DispatchBatches() {
 					Number(row.is_active) === 1,
 			),
 		);
-		setBatches(batchRows);
-		setLoaded(true);
+	};
+	// Masters change rarely; the batch list is re-fetched server-side whenever
+	// the search term settles, so the browser never holds the whole table.
+	const reload = async () => {
+		await Promise.all([loadMasters(), loadBatches(debouncedSearch)]);
 	};
 	useEffect(() => {
-		void reload().catch((err) => {
+		void loadMasters().catch((err) => {
 			setError(err.message || "Could not load batches");
 			setLoaded(true);
 		});
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
+	useEffect(() => {
+		void loadBatches(debouncedSearch).catch((err) => {
+			setError(err.message || "Could not load batches");
+			setLoaded(true);
+		});
+		const unsubscribe = subscribe((event) => {
+			if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status') {
+				void loadBatches(debouncedSearch).catch(() => {});
+			}
+		});
+		return () => unsubscribe();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [debouncedSearch]);
 
 	const getPackageMaster = (product: any) =>
 		bagQuantities.find(
@@ -572,9 +623,7 @@ export default function DispatchBatches() {
 			new Set(lines.map((line) => line.productId).filter(Boolean))
 				.size === lines.filter((line) => line.productId).length &&
 			lines.every((line) => {
-				const product = products.find(
-					(row) => String(row.id) === line.productId,
-				);
+				const product = line.productId ? products[line.productId] : undefined;
 				const warehouse = warehouses.find(
 					(row) => String(row.id) === line.warehouseId,
 				);
@@ -623,9 +672,7 @@ export default function DispatchBatches() {
 		try {
 			const result = await api.batches.createGroup({
 				items: lines.map((line) => {
-					const product = products.find(
-						(row) => String(row.id) === line.productId,
-					);
+					const product = line.productId ? products[line.productId] : undefined;
 					return {
 						product_id: line.productId,
 						quantity: Number(line.quantity),
@@ -713,27 +760,7 @@ export default function DispatchBatches() {
 			),
 		}));
 	}, [batches]);
-	const filteredBatches = groupedBatches.filter((batch) => {
-		const query = debouncedSearch.trim().toLowerCase();
-		return (
-			!query ||
-			String(batch.batch_number || "")
-				.toLowerCase()
-				.includes(query) ||
-			String(batch.product_name || "")
-				.toLowerCase()
-				.includes(query) ||
-			batch.product_lines.some(
-				(line: any) =>
-					String(line.product_name || "")
-						.toLowerCase()
-						.includes(query) ||
-					String(line.product_sku || "")
-						.toLowerCase()
-						.includes(query),
-			)
-		);
-	});
+
 
 	return (
 		<div className="mx-auto max-w-7xl space-y-6">
@@ -814,7 +841,7 @@ export default function DispatchBatches() {
 							/>
 						</label>
 						<span className="inline-flex h-10 min-w-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-sm font-extrabold text-slate-700">
-							{filteredBatches.length}
+							{groupedBatches.length}
 						</span>
 					</div>
 				</div>
@@ -830,7 +857,7 @@ export default function DispatchBatches() {
 							</tr>
 						</thead>
 						<tbody>
-							{filteredBatches.map((batch) => (
+							{groupedBatches.map((batch) => (
 								<tr key={batch.id}>
 									<td className="font-mono text-xs font-bold">
 										{batch.batch_number}
@@ -894,7 +921,7 @@ export default function DispatchBatches() {
 									</td>
 								</tr>
 							))}
-							{loaded && filteredBatches.length === 0 && (
+							{loaded && groupedBatches.length === 0 && (
 								<tr>
 									<td colSpan={5}>
 										<div className="empty-state">
@@ -952,6 +979,7 @@ export default function DispatchBatches() {
 												for each product. QC will review
 												the batch before stock is added.
 											</p>
+											<div className="mt-2"><DivisionContextNote /></div>
 											{/* <p className="mt-1 text-xs font-semibold text-slate-500">
 												Initial QR labels print once.
 												For missing or damaged labels,
@@ -1078,11 +1106,7 @@ export default function DispatchBatches() {
 									</thead>
 									<tbody className="block sm:table-row-group">
 										{lines.map((line, index) => {
-											const product = products.find(
-												(row) =>
-													String(row.id) ===
-													line.productId,
-											);
+											const product = line.productId ? products[line.productId] : undefined;
 											const lineLabels =
 												Number(line.quantity) || 0;
 											const positionsNeeded = lines
@@ -1117,13 +1141,14 @@ export default function DispatchBatches() {
 														</span>
 														<div className="flex min-w-0 items-center gap-1">
 															<ProductPicker
-																products={products}
+																products={Object.values(products)}
 																value={line.productId}
+																onPick={pickProduct}
 																onChange={(productId) =>
 																	updateLine(index, {
 																		productId,
 																		packageQuantity: getPackageDefault(
-																			products.find((row) => String(row.id) === productId),
+																			productId ? products[productId] : undefined,
 																		),
 																	})
 																}
@@ -1602,12 +1627,7 @@ export default function DispatchBatches() {
 										<button
 											type="submit"
 											className="btn-primary min-w-48 justify-center rounded-xl px-5 py-3 font-bold shadow-sm"
-											disabled={
-												!canCreate ||
-												busy ||
-												!loaded ||
-												products.length === 0
-											}
+											disabled={!canCreate || busy || !loaded}
 										>
 											{busy ? (
 												"Creating batch…"

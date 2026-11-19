@@ -29,7 +29,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
     const ctx = await getContext();
     const user = await ctx.findOne(decoded.table, { id: decoded.userId }, {
-      projection: { _id: 0, id: 1, is_active: 1, tenant_id: 1 },
+      projection: { _id: 0, id: 1, is_active: 1, tenant_id: 1, division_id: 1 },
     });
     if (!user) {
       res.status(401).json({ error: 'User account no longer exists' });
@@ -43,8 +43,39 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       res.status(401).json({ error: 'Invalid or expired token' });
       return;
     }
+    // Division-locked non-admin users cannot operate in a deactivated division.
+    if (decoded.role !== 'ADMIN' && user.division_id) {
+      const division = await ctx.findOne('divisions', { id: user.division_id, tenant_id: user.tenant_id }, { projection: { _id: 0, is_active: 1 } });
+      if (!division || Number(division.is_active) !== 1) {
+        res.status(403).json({ error: 'Your division is deactivated — contact your administrator.' });
+        return;
+      }
+    }
 
-    req.user = decoded;
+    // Division selection for the single ADMIN — any other role keeps its own
+    // assigned division (or none). Admins can narrow the whole request to one
+    // division with the `X-Division-Id` header ('all' or absent = tenant-wide).
+    // Any division of the tenant is selectable, including deactivated ones — the
+    // admin must still be able to view a deactivated division's rows.
+    let divisionId = user.division_id ?? null;
+    const selection = String(req.headers['x-division-id'] ?? '').trim();
+    if (decoded.role === 'ADMIN') {
+      if (!selection || selection === 'all') {
+        divisionId = null;
+      } else {
+        const selected = await ctx.findOne('divisions', {
+          id: selection,
+          tenant_id: decoded.tenantId,
+        }, { projection: { _id: 0, id: 1 } });
+        if (!selected) {
+          res.status(403).json({ error: 'Division not found in this organization' });
+          return;
+        }
+        divisionId = selected.id;
+      }
+    }
+
+    req.user = { ...decoded, divisionId };
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });

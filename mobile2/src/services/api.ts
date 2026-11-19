@@ -25,6 +25,30 @@ function resolveBaseUrl(): string {
 
 export const API_BASE_URL = resolveBaseUrl();
 
+/** Origin of the API server (API_BASE_URL without the trailing `/api`). */
+export function apiOrigin(): string {
+  return API_BASE_URL.replace(/\/api\/?$/i, '');
+}
+
+/**
+ * Absolute URL for a tenant logo path returned by `/auth/tenant`
+ * (the backend stores `/api/tenants/<id>/logo`), with a cache-busting
+ * version so a replaced logo shows up immediately.
+ */
+export function resolveTenantLogoUrl(
+  logoUrl: string | null | undefined,
+  version?: string | number | null,
+): string | null {
+  if (!logoUrl?.trim()) return null;
+  const trimmed = logoUrl.trim();
+  const absolute = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : `${apiOrigin()}${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;
+  if (version === null || version === undefined) return absolute;
+  const separator = absolute.includes('?') ? '&' : '?';
+  return `${absolute}${separator}v=${encodeURIComponent(String(version))}`;
+}
+
 let accessToken: string | null = null;
 
 /** Kept in sync by the auth service after login, restore and logout. */

@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { api } from '../services/api';
-import { Tenant, User } from '../types';
+import { Tenant, User, EntityId } from '../types';
+
+const ADMIN_DIVISION_KEY = 'adminDivisionId';
 
 interface AuthContextType {
   user: User | null;
@@ -11,6 +13,9 @@ interface AuthContextType {
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   refreshTenant: () => Promise<void>;
+  /** ADMIN-only: which division the admin acts in ('all' = whole tenant). */
+  adminDivisionId: EntityId | 'all';
+  setAdminDivisionId: (id: EntityId | 'all') => void;
 }
 
 const AuthContext = createContext<AuthContextType>(null!);
@@ -19,6 +24,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
+  const [adminDivisionId, setAdminDivisionIdState] = useState<EntityId | 'all'>(
+    () => (typeof localStorage !== 'undefined' ? (localStorage.getItem(ADMIN_DIVISION_KEY) as EntityId | 'all' | null) : 'all') || 'all'
+  );
+
+  const setAdminDivisionId = (id: EntityId | 'all') => {
+    setAdminDivisionIdState(id);
+    try {
+      localStorage.setItem(ADMIN_DIVISION_KEY, String(id));
+    } catch {
+      /* storage unavailable — keep in-memory selection */
+    }
+  };
 
   const refreshUser = async () => {
     const t = localStorage.getItem('token');
@@ -78,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshTenant = async () => setTenant(await api.auth.tenant());
 
   return (
-    <AuthContext.Provider value={{ user, tenant, loading, login, register, logout, refreshUser, refreshTenant }}>
+    <AuthContext.Provider value={{ user, tenant, loading, login, register, logout, refreshUser, refreshTenant, adminDivisionId, setAdminDivisionId }}>
       {children}
     </AuthContext.Provider>
   );

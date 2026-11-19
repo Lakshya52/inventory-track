@@ -6,6 +6,8 @@ import type { PoolConnection } from 'mysql2/promise';
 import { applyOperation, SyncConflictError, SyncError } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import { buildPackingListPdf } from '../services/packingListPdf';
+import { divisionStamp, divisionWhere } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 function errorResponse(res: Response, error: unknown, fallback: string): void {
   if (error instanceof SyncError) {
@@ -24,28 +26,42 @@ function parseOrderLines(value: unknown): any[] {
   return Array.isArray(items) ? items : [];
 }
 
-async function gradeNamesForBatches(batchIds: number[]): Promise<Map<string, string | null>> {
+// Explicitly chosen QR labels for an order line, if the picker selected any.
+function sanitizeLabelIds(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = [...new Set(value.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  return ids.length > 0 ? ids.slice(0, 1000) : undefined;
+}
+
+async function gradeNamesForBatches(batchIds: number[], tenantId: string | number, req?: Request): Promise<Map<string, string | null>> {
   const uniqueIds = [...new Set(batchIds.filter((batchId) => Number.isInteger(batchId) && batchId > 0))];
   if (!uniqueIds.length) return new Map();
+  const dvB = req ? divisionWhere(req, 'b.division_id') : { sql: '', params: [] };
+  const dvP = req ? divisionWhere(req, 'p.division_id') : { sql: '', params: [] };
+  const dvG = req ? divisionWhere(req, 'g.division_id') : { sql: '', params: [] };
   const rows = await query<RowDataPacket[]>(
     `SELECT b.id AS batch_id, COALESCE(g.name, p.grade) AS grade_name
      FROM batches b
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     WHERE b.id IN (?)`,
-    [uniqueIds]
+     JOIN products p ON b.product_id = p.id ${dvP.sql}
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
+     WHERE b.tenant_id = ? AND p.tenant_id = ? AND b.id IN (?) ${dvB.sql}`,
+    [...dvP.params, tenantId, ...dvG.params, tenantId, tenantId, uniqueIds, ...dvB.params]
   );
   return new Map(rows.map((row) => [String(row.batch_id), row.grade_name ?? null]));
 }
 
 async function withOrderLines(
   orders: any[],
-  gradeByBatch?: Map<string, string | null>
+  tenantId: string | number,
+  gradeByBatch?: Map<string, string | null>,
+  req?: Request
 ): Promise<any[]> {
   const grades = gradeByBatch ?? await gradeNamesForBatches(
     orders.flatMap((order) =>
       parseOrderLines(order.order_lines).map((line: any) => Number(line?.batch_id))
-    )
+    ),
+    tenantId,
+    req
   );
   return orders.map((order) => {
     let items = order.order_lines;
@@ -66,6 +82,8 @@ async function withOrderLines(
 }
 
 export async function raise(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
   const batchId = req.body.batch_id;
   const barcodeValue = req.body.barcode_value;
   const items = Array.isArray(req.body.items) ? req.body.items : null;
@@ -96,6 +114,35 @@ export async function raise(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // Referenced batches must belong to this tenant; ids may not point into
+  // another organization's stock.
+  const referencedBatchIds = [...new Set([
+    ...(batchId !== undefined && batchId !== null && batchId !== '' ? [Number(batchId)] : []),
+    ...(items ?? []).map((item: any) => Number(item?.batch_id)),
+  ].filter((value: number) => Number.isInteger(value) && value > 0))];
+  if (referencedBatchIds.length > 0) {
+    const found = await query<RowDataPacket[]>(
+      `SELECT id FROM batches WHERE id IN (?) AND tenant_id = ? ${dv.sql}`,
+      [referencedBatchIds, tenantId, ...dv.params]
+    );
+    if (found.length !== referencedBatchIds.length) {
+      res.status(404).json({ error: 'Batch not found' });
+      return;
+    }
+  }
+  // The client must belong to this tenant as well.
+  const clientRef = Number(req.body.client_id);
+  if (Number.isFinite(clientRef) && clientRef > 0) {
+    const clientRows = await query<RowDataPacket[]>(
+      'SELECT id FROM clients WHERE id = ? AND tenant_id = ? LIMIT 1',
+      [clientRef, tenantId]
+    );
+    if (clientRows.length === 0) {
+      res.status(404).json({ error: 'Client not found' });
+      return;
+    }
+  }
+
   const operation: SyncOperationInput = {
     operation_id: req.body.client_operation_id || randomUUID(),
     type: 'DISPATCH_ORDER_RAISE',
@@ -106,7 +153,7 @@ export async function raise(req: Request, res: Response): Promise<void> {
       expected_status: req.body.expected_status || undefined,
       client_id: Number(req.body.client_id),
       quantity: req.body.quantity,
-      items: items?.map((item: any) => ({ batch_id: Number(item.batch_id), quantity: item.quantity })),
+      items: items?.map((item: any) => ({ batch_id: Number(item.batch_id), quantity: item.quantity, label_ids: sanitizeLabelIds(item.label_ids) })),
       // Transport details are captured here and can be corrected when the
       // loading session is finalised.
       driver_name: transport.driver_name,
@@ -140,21 +187,29 @@ function searchClause(q: string): { sql: string; params: string[] } {
   if (!q) return { sql: '', params: [] };
   return {
     sql: 'AND (b.batch_number LIKE ? OR p.name LIKE ? OR p.sku LIKE ? OR d.order_number LIKE ?)',
-    params: [`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`],
+    params: [`${q}%`, `${q}%`, `${q}%`, `${q}%`],
   };
 }
 
 export async function listAll(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || '').toUpperCase();
   const search = searchClause(q);
-  const where = ['1=1'];
-  const params: any[] = [];
+  const where = ['d.tenant_id = ?', 'b.tenant_id = ?', 'p.tenant_id = ?'];
+  const params: any[] = [tenantId, tenantId, tenantId];
   if (['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(status)) {
     where.push('d.status = ?');
     params.push(status);
   }
   params.push(...search.params);
+  const dvD = divisionWhere(req, 'd.division_id');
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
+  const dvG = divisionWhere(req, 'g.division_id');
+  // Parameters for the JOIN predicates appear before the WHERE clause in the SQL text;
+  // the scoped grades join carries an additional division predicate, in position.
+  const joinTenantParams = [tenantId, ...dvG.params, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId];
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, b.status AS batch_status,
             p.name AS product_name,
@@ -164,34 +219,42 @@ export async function listAll(req: Request, res: Response): Promise<void> {
             c.name AS client_name, d.container_number,
             COALESCE(aa.name, qu.name, du.name) AS approver_name
      FROM dispatch_orders d
-     JOIN batches b ON d.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
-     LEFT JOIN dispatch_users u ON d.raised_by = u.id
-     LEFT JOIN clients c ON c.id = d.client_id
-     LEFT JOIN admins a ON d.admin_id = a.id
-     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
-     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
-     LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH'
-     WHERE ${where.join(' AND ')} ${search.sql}
+     JOIN batches b ON d.batch_id = b.id ${dvB.sql}
+     JOIN products p ON b.product_id = p.id ${dvP.sql}
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id AND q.tenant_id = ?
+     LEFT JOIN dispatch_users u ON d.raised_by = u.id AND u.tenant_id = ?
+     LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
+     LEFT JOIN admins a ON d.admin_id = a.id AND a.tenant_id = ?
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN' AND aa.tenant_id = ?
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC' AND qu.tenant_id = ?
+     LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH' AND du.tenant_id = ?
+     WHERE ${where.join(' AND ')} ${search.sql} ${dvD.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
-    params
+    [...dvB.params, ...dvP.params, ...joinTenantParams, ...params, ...dvD.params]
   );
-  res.json(await withOrderLines(orders));
+  res.json(await withOrderLines(orders, tenantId, undefined, req));
 }
 
 export async function listMine(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || '').toUpperCase();
   const search = searchClause(q);
-  const where = ['d.raised_by = ?'];
-  const params: any[] = [req.user!.userId];
+  const where = ['d.tenant_id = ?', 'b.tenant_id = ?', 'p.tenant_id = ?', 'd.raised_by = ?'];
+  const params: any[] = [tenantId, tenantId, tenantId, req.user!.userId];
   if (['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(status)) {
     where.push('d.status = ?');
     params.push(status);
   }
   params.push(...search.params);
+  const dvD = divisionWhere(req, 'd.division_id');
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
+  const dvG = divisionWhere(req, 'g.division_id');
+  // Parameters for the JOIN predicates appear before the WHERE clause in the SQL text;
+  // the scoped grades join carries an additional division predicate, in position.
+  const joinTenantParams = [tenantId, ...dvG.params, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId];
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, b.status AS batch_status,
             p.name AS product_name,
@@ -200,20 +263,20 @@ export async function listMine(req: Request, res: Response): Promise<void> {
             a.name AS admin_name, c.name AS client_name,
             d.container_number, COALESCE(aa.name, qu.name, du.name) AS approver_name
      FROM dispatch_orders d
-     JOIN batches b ON d.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
-     LEFT JOIN admins a ON d.admin_id = a.id
-     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
-     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
-     LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH'
-     LEFT JOIN clients c ON c.id = d.client_id
-     WHERE ${where.join(' AND ')} ${search.sql}
+     JOIN batches b ON d.batch_id = b.id ${dvB.sql}
+     JOIN products p ON b.product_id = p.id ${dvP.sql}
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id AND q.tenant_id = ?
+     LEFT JOIN admins a ON d.admin_id = a.id AND a.tenant_id = ?
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN' AND aa.tenant_id = ?
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC' AND qu.tenant_id = ?
+     LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH' AND du.tenant_id = ?
+     LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
+     WHERE ${where.join(' AND ')} ${search.sql} ${dvD.sql}
      ORDER BY d.created_at DESC LIMIT 100`,
-    params
+    [...dvB.params, ...dvP.params, ...joinTenantParams, ...params, ...dvD.params]
   );
-  res.json(await withOrderLines(orders));
+  res.json(await withOrderLines(orders, tenantId, undefined, req));
 }
 
 /**
@@ -223,7 +286,9 @@ export async function listMine(req: Request, res: Response): Promise<void> {
  * the reserved QR labels and puts the stock back on the shelf.
  */
 export async function cancel(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { id } = req.params;
+  const dv = divisionWhere(req);
   const rawRemarks = req.body.admin_remarks ?? req.body.remarks;
   const remarks = rawRemarks === null || rawRemarks === undefined ? '' : String(rawRemarks).trim();
   if (!remarks) {
@@ -233,8 +298,8 @@ export async function cancel(req: Request, res: Response): Promise<void> {
   try {
     const result = await withTransaction(async (conn) => {
       const [orders] = await conn.execute<RowDataPacket[]>(
-        'SELECT * FROM dispatch_orders WHERE id = ? FOR UPDATE',
-        [id]
+        `SELECT * FROM dispatch_orders WHERE id = ? AND tenant_id = ? ${dv.sql} FOR UPDATE`,
+        [id, tenantId, ...dv.params]
       );
       if (orders.length === 0) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
       const order = orders[0];
@@ -253,8 +318,8 @@ export async function cancel(req: Request, res: Response): Promise<void> {
       // Loading must not have started: the batch is already on the truck.
       const [loadingBatches] = await conn.execute<RowDataPacket[]>(
         `SELECT id, batch_number, status FROM batches
-         WHERE id IN (?) AND status NOT IN ('QC_PASSED', 'DISPATCH_APPROVED') LIMIT 1`,
-        [releaseBatchIds]
+         WHERE id IN (?) AND tenant_id = ? AND status NOT IN ('QC_PASSED', 'DISPATCH_APPROVED') ${dv.sql} LIMIT 1`,
+        [releaseBatchIds, tenantId, ...dv.params]
       );
       if (loadingBatches.length > 0) {
         throw new SyncConflictError('Loading has already started for this order. It cannot be cancelled.', {
@@ -265,33 +330,34 @@ export async function cancel(req: Request, res: Response): Promise<void> {
 
       await conn.execute(
         `UPDATE dispatch_orders SET status = 'CANCELLED', admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND status = 'APPROVED'`,
-        [remarks, id]
+         WHERE id = ? AND status = 'APPROVED' AND tenant_id = ? ${dv.sql}`,
+        [remarks, id, tenantId, ...dv.params]
       );
       // Release the reserved QR labels so the stock becomes orderable again.
       await conn.execute(
-        'UPDATE qr_labels SET dispatch_order_id = NULL WHERE dispatch_order_id = ? AND batch_id IN (?)',
-        [id, releaseBatchIds]
+        `UPDATE qr_labels SET dispatch_order_id = NULL WHERE dispatch_order_id = ? AND batch_id IN (?) AND tenant_id = ? ${dv.sql}`,
+        [id, releaseBatchIds, tenantId, ...dv.params]
       );
       for (const batchId of releaseBatchIds) {
         await conn.execute(
           `UPDATE batches SET status = 'QC_PASSED', updated_at = CURRENT_TIMESTAMP(3)
-           WHERE id = ? AND status = 'DISPATCH_APPROVED'`,
-          [batchId]
+           WHERE id = ? AND status = 'DISPATCH_APPROVED' AND tenant_id = ? ${dv.sql}`,
+          [batchId, tenantId, ...dv.params]
         );
       }
       // The order took these units out of the stock when it was created, so
       // cancelling it has to put them back on the shelf.
       if (order.stock_reserved_at_order) {
-        await restoreOrderStock(conn, order);
+        await restoreOrderStock(conn, order, tenantId, req);
       }
       await conn.execute(
-        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-         VALUES (?, ?, ?, 'DISPATCH_ORDER_CANCELLED', ?)`,
-        [req.user!.userId, req.user!.name, req.user!.role, `Dispatch order #${id} cancelled for batch #${order.batch_id}`]
+        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+         VALUES (?, ?, ?, 'DISPATCH_ORDER_CANCELLED', ?, ?, ?)`,
+        [req.user!.userId, req.user!.name, req.user!.role, `Dispatch order #${id} cancelled for batch #${order.batch_id}`, tenantId, divisionStamp(req)]
       );
-      return { message: 'Dispatch order cancelled', status: 'CANCELLED' };
+      return { message: 'Dispatch order cancelled', status: 'CANCELLED', order_id: id };
     });
+    publish(req, 'dispatch.order-status', { status: 'CANCELLED', orderId: id });
     res.json(result);
   } catch (error) {
     errorResponse(res, error, 'Could not cancel dispatch order');
@@ -307,7 +373,8 @@ type PackingListResult =
  * stock when the dispatch order was created, so they have to go back when the
  * order is called off or the unit is recalled to the shelf.
  */
-async function restoreOrderStock(conn: PoolConnection, order: any): Promise<void> {
+async function restoreOrderStock(conn: PoolConnection, order: any, tenantId: string | number, req?: Request): Promise<void> {
+  const dv = req ? divisionWhere(req) : { sql: '', params: [] };
   const lines = parseOrderLines(order.order_lines);
   if (!lines.length) lines.push({ batch_id: order.batch_id, quantity: order.quantity });
   const totals = new Map<number, number>();
@@ -315,8 +382,8 @@ async function restoreOrderStock(conn: PoolConnection, order: any): Promise<void
     const quantity = Number(line?.quantity ?? 0);
     if (!quantity) continue;
     const [batches] = await conn.execute<RowDataPacket[]>(
-      'SELECT product_id FROM batches WHERE id = ?',
-      [line?.batch_id]
+      `SELECT product_id FROM batches WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+      [line?.batch_id, tenantId, ...dv.params]
     );
     const productId = Number(batches[0]?.product_id);
     if (!productId) continue;
@@ -324,14 +391,22 @@ async function restoreOrderStock(conn: PoolConnection, order: any): Promise<void
   }
   for (const [productId, quantity] of totals) {
     await conn.execute(
-      'UPDATE products SET quantity = COALESCE(quantity, 0) + ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
-      [quantity, productId]
+      `UPDATE products SET quantity = COALESCE(quantity, 0) + ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+      [quantity, productId, tenantId, ...dv.params]
     );
   }
 }
 
 async function buildPackingListData(req: Request): Promise<PackingListResult> {
+  const tenantId = req.user!.tenantId;
   const { id } = req.params;
+  const dvD = divisionWhere(req, 'd.division_id');
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
+  const dvS = divisionWhere(req, 's.division_id');
+  const dvG = divisionWhere(req, 'g.division_id');
+  const dvDR = divisionWhere(req, 'dr.division_id');
+  const dv = divisionWhere(req);
   const orders = await query<RowDataPacket[]>(
     `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom,
             COALESCE(s.location_code, b.storage_location) AS storage_location,
@@ -340,39 +415,39 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
             q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
             c.name AS client_name,
             (SELECT du.name FROM dispatch_records dr
-             LEFT JOIN dispatch_users du ON du.id = dr.dispatcher_id
-             WHERE dr.dispatch_order_id = d.id ORDER BY dr.created_at DESC LIMIT 1) AS dispatched_by
+             LEFT JOIN dispatch_users du ON du.id = dr.dispatcher_id AND du.tenant_id = ?
+             WHERE dr.dispatch_order_id = d.id AND dr.tenant_id = ? ${dvDR.sql} ORDER BY dr.created_at DESC LIMIT 1) AS dispatched_by
      FROM dispatch_orders d
-     JOIN batches b ON d.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     LEFT JOIN vendors v ON v.id = b.vendor_id
-     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
-     LEFT JOIN dispatch_users u ON d.raised_by = u.id
-     LEFT JOIN admins a ON d.admin_id = a.id
-     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN'
-     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC'
-     LEFT JOIN clients c ON c.id = d.client_id
-     WHERE d.id = ?
+     JOIN batches b ON d.batch_id = b.id ${dvB.sql}
+     JOIN products p ON b.product_id = p.id ${dvP.sql}
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id AND s.tenant_id = ? ${dvS.sql}
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
+     LEFT JOIN vendors v ON v.id = b.vendor_id AND v.tenant_id = ?
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id AND q.tenant_id = ?
+     LEFT JOIN dispatch_users u ON d.raised_by = u.id AND u.tenant_id = ?
+     LEFT JOIN admins a ON d.admin_id = a.id AND a.tenant_id = ?
+     LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN' AND aa.tenant_id = ?
+     LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC' AND qu.tenant_id = ?
+     LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
+     WHERE d.tenant_id = ? AND b.tenant_id = ? AND p.tenant_id = ? ${dvD.sql} AND d.id = ?
        AND d.status IN ('APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED')
        AND (? <> 'DISPATCH' OR d.raised_by = ?)`,
-    [id, req.user!.role, req.user!.userId]
+    [tenantId, tenantId, ...dvDR.params, ...dvB.params, ...dvP.params, tenantId, ...dvS.params, tenantId, ...dvG.params, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, ...dvD.params, id, req.user!.role, req.user!.userId]
   );
   if (orders.length === 0) {
     return { ok: false, statusCode: 404, error: 'Approved dispatch order not found' };
   }
   const order = orders[0];
   const storedItems = await query<RowDataPacket[]>(
-    'SELECT * FROM packing_list_items WHERE dispatch_order_id = ? ORDER BY id ASC',
-    [id]
+    `SELECT * FROM packing_list_items WHERE dispatch_order_id = ? AND tenant_id = ? ${dv.sql} ORDER BY id ASC`,
+    [id, tenantId, ...dv.params]
   );
   // Map each batch line to the human-readable QR IDs (e.g. QRJ-20261113-...)
   // that were assigned to the order, so the packing list shows the QR label
   // text instead of the batch-level QC barcode.
   const qrRows = await query<RowDataPacket[]>(
-    'SELECT batch_id, qr_value FROM qr_labels WHERE dispatch_order_id = ? ORDER BY batch_id ASC, serial_no ASC',
-    [id]
+    `SELECT batch_id, qr_value FROM qr_labels WHERE dispatch_order_id = ? AND tenant_id = ? ${dv.sql} ORDER BY batch_id ASC, serial_no ASC`,
+    [id, tenantId, ...dv.params]
   );
   const qrByBatch = new Map<string, string[]>();
   for (const row of qrRows) {
@@ -405,10 +480,10 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
     ? await query<RowDataPacket[]>(
         `SELECT b.id AS batch_id, COALESCE(g.name, p.grade) AS grade_name
          FROM batches b
-         JOIN products p ON b.product_id = p.id
-         LEFT JOIN grades g ON g.id = b.grade_id
-         WHERE b.id IN (?)`,
-        [itemBatchIds]
+         JOIN products p ON b.product_id = p.id ${dvP.sql}
+         LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
+         WHERE b.tenant_id = ? AND p.tenant_id = ? AND b.id IN (?) ${dvB.sql}`,
+        [...dvP.params, tenantId, ...dvG.params, tenantId, tenantId, itemBatchIds, ...dvB.params]
       )
     : [];
   const gradeNameByBatch = new Map<string, string | null>(
@@ -440,7 +515,7 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
       raised_by_name: order.raised_by_name || null,
       approver_name: order.approver_name || null,
       admin_remarks: order.admin_remarks || null,
-      client: order.client_id ? await getClient(order.client_id) : null,
+      client: order.client_id ? await getClient(order.client_id, tenantId) : null,
       client_name: order.client_name || null,
       driver_name: order.driver_name,
       driver_phone: order.driver_phone || null,
@@ -469,9 +544,11 @@ async function buildPackingListData(req: Request): Promise<PackingListResult> {
  *   the shelf
  */
 export async function recallQr(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const qrValue = String(req.body?.qr_value ?? '').trim();
   const reason = String(req.body?.reason ?? '').trim().slice(0, 1000);
   const condition = String(req.body?.condition ?? '').trim().toUpperCase();
+  const dv = divisionWhere(req);
   if (!qrValue || !reason || !['DAMAGED', 'HOLD', 'RETURN_TO_STOCK'].includes(condition)) {
     res.status(400).json({ error: 'Provide a valid QR code, reason and condition', code: 'INVALID_RECALL_DETAILS' });
     return;
@@ -479,8 +556,8 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
   try {
     const result = await withTransaction(async (conn) => {
       const [labels] = await conn.execute<RowDataPacket[]>(
-        'SELECT * FROM qr_labels WHERE qr_value = ? FOR UPDATE',
-        [qrValue]
+        `SELECT * FROM qr_labels WHERE qr_value = ? AND tenant_id = ? ${dv.sql} FOR UPDATE`,
+        [qrValue, tenantId, ...dv.params]
       );
       if (labels.length === 0) throw new SyncError('QR label not found', 'QR_NOT_FOUND', 404);
       const label = labels[0];
@@ -488,8 +565,8 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
         throw new SyncError('This QR label is not assigned to a dispatch order', 'QR_NOT_IN_ORDER', 409);
       }
       const [orders] = await conn.execute<RowDataPacket[]>(
-        'SELECT * FROM dispatch_orders WHERE id = ? FOR UPDATE',
-        [label.dispatch_order_id]
+        `SELECT * FROM dispatch_orders WHERE id = ? AND tenant_id = ? ${dv.sql} FOR UPDATE`,
+        [label.dispatch_order_id, tenantId, ...dv.params]
       );
       if (orders.length === 0) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
       const order = orders[0];
@@ -510,8 +587,8 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
         (line: any) => Number(line?.batch_id) !== Number(label.batch_id),
       );
       await conn.execute(
-        'UPDATE dispatch_orders SET order_lines = ?, quantity = ?, remarks = ?, admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
-        [JSON.stringify(remainingLines), Math.max(0, Number(order.quantity || 0) - 1), reason, reason, order.id]
+        `UPDATE dispatch_orders SET order_lines = ?, quantity = ?, remarks = ?, admin_remarks = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+        [JSON.stringify(remainingLines), Math.max(0, Number(order.quantity || 0) - 1), reason, reason, order.id, tenantId, ...dv.params]
       );
 
       if (condition === 'RETURN_TO_STOCK') {
@@ -519,45 +596,45 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
         await conn.execute(
           `UPDATE qr_labels SET dispatch_order_id = NULL, recall_status = NULL, recall_condition = NULL,
              recall_reason = NULL, recalled_by = NULL, recalled_at = NULL
-           WHERE id = ?`,
-          [label.id]
+           WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+          [label.id, tenantId, ...dv.params]
         );
         await conn.execute(
-          "UPDATE batches SET status = 'QC_PASSED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'DISPATCH_APPROVED'",
-          [label.batch_id]
+          `UPDATE batches SET status = 'QC_PASSED', updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'DISPATCH_APPROVED' AND tenant_id = ? ${dv.sql}`,
+          [label.batch_id, tenantId, ...dv.params]
         );
         // The unit left the stock when the order was created, so it goes back
         // on the shelf now.
         if (order.stock_reserved_at_order) {
           const [batches] = await conn.execute<RowDataPacket[]>(
-            'SELECT product_id FROM batches WHERE id = ?',
-            [label.batch_id]
+            `SELECT product_id FROM batches WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+            [label.batch_id, tenantId, ...dv.params]
           );
           const productId = Number(batches[0]?.product_id);
           if (productId) {
             await conn.execute(
-              'UPDATE products SET quantity = COALESCE(quantity, 0) + 1, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?',
-              [productId]
+              `UPDATE products SET quantity = COALESCE(quantity, 0) + 1, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+              [productId, tenantId, ...dv.params]
             );
           }
           await conn.execute(
-            'UPDATE dispatch_orders SET returned_to_stock_quantity = COALESCE(returned_to_stock_quantity, 0) + 1 WHERE id = ?',
-            [order.id]
+            `UPDATE dispatch_orders SET returned_to_stock_quantity = COALESCE(returned_to_stock_quantity, 0) + 1 WHERE id = ? AND tenant_id = ? ${dv.sql}`,
+            [order.id, tenantId, ...dv.params]
           );
         }
       } else {
         await conn.execute(
           `UPDATE qr_labels SET recall_status = 'RECALLED', recall_condition = ?, recall_reason = ?,
              recalled_by = ?, recalled_at = CURRENT_TIMESTAMP(3)
-           WHERE id = ? AND (recall_status IS NULL OR recall_status <> 'RECALLED')`,
-          [condition, reason, String(req.user!.userId), label.id]
+           WHERE id = ? AND tenant_id = ? ${dv.sql} AND (recall_status IS NULL OR recall_status <> 'RECALLED')`,
+          [condition, reason, String(req.user!.userId), label.id, tenantId, ...dv.params]
         );
       }
 
       await conn.execute(
-        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-         VALUES (?, ?, ?, 'DISPATCH_QR_RECALLED', ?)`,
-        [req.user!.userId, req.user!.name, req.user!.role, `QR ${qrValue} recalled from dispatch order ${order.id}; condition ${condition}; reason: ${reason}`]
+        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+         VALUES (?, ?, ?, 'DISPATCH_QR_RECALLED', ?, ?, ?)`,
+        [req.user!.userId, req.user!.name, req.user!.role, `QR ${qrValue} recalled from dispatch order ${order.id}; condition ${condition}; reason: ${reason}`, tenantId, divisionStamp(req)]
       );
 
       return {
@@ -602,10 +679,10 @@ export async function getPackingListPdf(req: Request, res: Response): Promise<vo
   }
 }
 
-async function getClient(id: number): Promise<Record<string, unknown> | null> {
+async function getClient(id: number, tenantId: string | number): Promise<Record<string, unknown> | null> {
   const clients = await query<RowDataPacket[]>(
-    'SELECT id, name, contact_person, email, phone, address, gst_number FROM clients WHERE id = ?',
-    [id]
+    'SELECT id, name, contact_person, email, phone, address, gst_number FROM clients WHERE id = ? AND tenant_id = ?',
+    [id, tenantId]
   );
   return clients[0] || null;
 }

@@ -49,6 +49,7 @@ function normalizeRole(value: string | undefined): UserTypeInfo | null {
 async function logActivity(req: Request, action: string, description: string): Promise<void> {
   const ctx = await getContext();
   await ctx.insert('activity_logs', {
+    tenant_id: req.user?.tenantId,
     user_name: req.user?.name || 'System',
     user_role: req.user?.role || 'ADMIN',
     action,
@@ -56,7 +57,7 @@ async function logActivity(req: Request, action: string, description: string): P
   });
 }
 
-function publicUser(row: Record<string, any>, role: string): Record<string, unknown> {
+function publicUser(row: Record<string, any>, role: string, divisionName?: string | null): Record<string, unknown> {
   return {
     id: row.id,
     name: row.name,
@@ -64,7 +65,35 @@ function publicUser(row: Record<string, any>, role: string): Record<string, unkn
     role,
     is_active: Number(row.is_active) === 1 ? 1 : 0,
     created_at: row.created_at,
+    division_id: row.division_id ?? null,
+    division_name: divisionName ?? null,
   };
+}
+
+/** Batch-resolve division names for rows that carry division_id. */
+async function divisionNames(
+  ctx: Awaited<ReturnType<typeof getContext>>,
+  rows: Record<string, any>[],
+  tenantId: string | number
+): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.map((row) => row.division_id).filter((id) => id !== null && id !== undefined))];
+  if (ids.length === 0) return new Map();
+  const divisions = await ctx.find('divisions', { _id: { $in: ids }, tenant_id: tenantId }, { projection: { _id: 1, name: 1 } });
+  return new Map(divisions.map((division: any) => [String(division.id), division.name]));
+}
+
+/** Resolve the division to assign (or null), validated against the caller's tenant. */
+async function resolveDivision(
+  ctx: Awaited<ReturnType<typeof getContext>>,
+  value: unknown,
+  tenantId: string | number
+): Promise<{ id: string | number | null; error?: string }> {
+  if (value === null || value === undefined || value === '') return { id: null };
+  if (!isValidId(value)) return { id: null, error: 'Select a valid division' };
+  const division = await ctx.findOne('divisions', { id: value as string, tenant_id: tenantId }, { projection: { _id: 0, id: 1, is_active: 1 } });
+  if (!division) return { id: null, error: 'Division not found' };
+  if (Number(division.is_active) !== 1) return { id: null, error: 'That division is deactivated' };
+  return { id: division.id };
 }
 
 export async function listAllUsers(req: Request, res: Response): Promise<void> {
@@ -73,14 +102,16 @@ export async function listAllUsers(req: Request, res: Response): Promise<void> {
     Object.values(USER_TYPES).map(async info => {
       const rows = await ctx.find(info.table, { tenant_id: req.user?.tenantId, email: { $not: /^__role_archive_/i } }, {
         sort: { created_at: -1 },
-        projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1 },
+        projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1, division_id: 1 },
       });
       return rows.map(row => publicUser(row, info.role));
     })
   );
 
-  const users = results
-    .flat()
+  const flat = results.flat();
+  const names = await divisionNames(ctx, flat, req.user!.tenantId);
+  const users = flat
+    .map((row: any) => ({ ...row, division_name: row.division_id ? names.get(String(row.division_id)) ?? null : null }))
     .sort((a, b) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime());
 
   res.json(users);
@@ -93,9 +124,10 @@ export async function listUsers(req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
   const users = await ctx.find(info.table, { tenant_id: req.user?.tenantId, email: { $not: /^__role_archive_/i } }, {
     sort: { created_at: -1 },
-    projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1 },
+    projection: { _id: 0, id: 1, name: 1, email: 1, is_active: 1, created_at: 1, division_id: 1 },
   });
-  res.json(users.map(row => publicUser(row, info.role)));
+  const names = await divisionNames(ctx, users, req.user!.tenantId);
+  res.json(users.map(row => publicUser(row, info.role, row.division_id ? names.get(String(row.division_id)) ?? null : null)));
 }
 
 export async function addUser(req: Request, res: Response): Promise<void> {
@@ -114,6 +146,14 @@ export async function addUser(req: Request, res: Response): Promise<void> {
 
   const ctx = await getContext();
   try {
+    // ADMIN sees every division, so a division assignment is only meaningful
+    // for QC / DISPATCH users; it is validated against this tenant.
+    const wantsDivision = info.role !== 'ADMIN' && req.body?.division_id !== undefined && req.body?.division_id !== '';
+    const division = wantsDivision
+      ? await resolveDivision(ctx, req.body.division_id, req.user!.tenantId)
+      : { id: null };
+    if (division.error) { res.status(400).json({ error: division.error }); return; }
+
     const normalizedEmail = email.trim().toLowerCase();
     if (await emailExists(normalizedEmail, req.user!.tenantId)) {
       res.status(400).json({ error: 'Email already exists' });
@@ -122,13 +162,14 @@ export async function addUser(req: Request, res: Response): Promise<void> {
     const hash = await bcrypt.hash(password, 10);
     const id = await ctx.insert(info.table, {
       tenant_id: req.user!.tenantId,
+      division_id: division.id,
       name: name.trim(),
       email: normalizedEmail,
       password_hash: hash,
       is_active: 1,
     });
     await logActivity(req, 'USER_CREATED', `${info.role} user "${name}" (${email}) created`);
-    res.status(201).json({ id, name, email, role: info.role, is_active: 1 });
+    res.status(201).json({ id, name, email, role: info.role, is_active: 1, division_id: division.id });
   } catch (err: any) {
     if (isDuplicateKey(err)) {
       res.status(400).json({ error: 'Email already exists' });
@@ -158,6 +199,17 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  const ctx = await getContext();
+  // Division assignment is only meaningful for QC / DISPATCH; admins see all divisions.
+  const wantsDivision = req.body?.division_id !== undefined;
+  let division: { id: string | number | null; error?: string } = { id: null };
+  if (wantsDivision && targetInfo.role !== 'ADMIN') {
+    division = await resolveDivision(ctx, req.body.division_id, req.user!.tenantId);
+    if (division.error) { res.status(400).json({ error: division.error }); return; }
+  } else if (wantsDivision && targetInfo.role === 'ADMIN') {
+    division = { id: null };
+  }
+
   const normalizedEmail = email.trim().toLowerCase();
   if (await emailExists(normalizedEmail, req.user!.tenantId, { table: info.table, id })) {
     res.status(400).json({ error: 'Email already exists' });
@@ -166,9 +218,10 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
 
   try {
     if (targetInfo.table === info.table) {
-      const ctx = await getContext();
+      const update: Record<string, any> = { name: name.trim(), email: normalizedEmail };
+      if (wantsDivision) update.division_id = division.id;
       const result = await ctx.updateOne(info.table, { id, tenant_id: req.user!.tenantId }, {
-        $set: { name: name.trim(), email: normalizedEmail },
+        $set: update,
       });
       if (result.matchedCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
     } else {
@@ -177,6 +230,7 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
         if (!source) return null;
         const targetId = await ctx.insert(targetInfo.table, {
           tenant_id: req.user!.tenantId,
+          division_id: wantsDivision ? division.id : (source.division_id ?? null),
           name: name.trim(),
           email: normalizedEmail,
           password_hash: source.password_hash,

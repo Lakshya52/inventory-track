@@ -169,7 +169,10 @@ export async function me(_req: Request, res: Response): Promise<void> {
     return;
   }
   const rows = await query<RowDataPacket[]>(
-    `SELECT id, name, email, is_active, created_at, tenant_id FROM \`${_req.user.table}\` WHERE id = ? AND tenant_id = ?`,
+    `SELECT u.id, u.name, u.email, u.is_active, u.created_at, u.tenant_id, u.division_id, d.name AS division_name
+       FROM \`${_req.user.table}\` u
+       LEFT JOIN divisions d ON d.id = u.division_id
+      WHERE u.id = ? AND u.tenant_id = ?`,
     [_req.user.userId, _req.user.tenantId]
   );
   if (rows.length === 0) {
@@ -180,5 +183,5 @@ export async function me(_req: Request, res: Response): Promise<void> {
     res.status(403).json({ error: 'Account is deactivated. Contact an administrator.' });
     return;
   }
-  res.json({ ...rows[0], tenantId: rows[0].tenant_id, role: _req.user.role });
+  res.json({ ...rows[0], tenantId: rows[0].tenant_id, divisionId: rows[0].division_id ?? null, divisionName: rows[0].division_name ?? null, role: _req.user.role });
 }

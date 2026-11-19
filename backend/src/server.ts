@@ -4,6 +4,7 @@ import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import { randomUUID } from 'crypto';
+import { createServer } from 'http';
 import authRoutes from './routes/auth';
 import productRoutes from './routes/products';
 import batchRoutes from './routes/batches';
@@ -24,10 +25,12 @@ import syncRoutes from './routes/sync';
 import productionRoutes from './routes/production';
 import loadingSessionRoutes from './routes/loadingSessions';
 import printerRoutes from './routes/printer';
+import divisionRoutes from './routes/divisions';
 import { errorHandler } from './middleware/errorHandler';
 import { rateLimit } from './middleware/rateLimit';
 import { ensureAdminSchema } from './config/schema';
 import { checkDatabase, closePool } from './config/database';
+import { initRealtime, shutdownRealtime } from './realtime/hub';
 import { qzSigningStatus } from './controllers/printerController';
 import { getUpload } from './controllers/uploadController';
 import { uploadTenantLogo } from './controllers/tenantUploadController';
@@ -91,6 +94,7 @@ app.use('/api/auth/login', rateLimit({
 app.use('/api/auth', authRoutes);
 app.post('/api/tenant-logo', uploadTenantLogo);
 app.use('/api/users', userRoutes);
+app.use('/api/divisions', divisionRoutes);
 app.use('/api/profile', profileRoutes());
 app.use('/api/products', productRoutes);
 app.use('/api/batches', batchRoutes);
@@ -128,7 +132,9 @@ let server: ReturnType<typeof app.listen> | null = null;
 async function start(): Promise<void> {
   await ensureAdminSchema();
   console.log(qzSigningStatus());
-  server = app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = createServer(app);
+  server = httpServer.listen(PORT, '0.0.0.0', () => {
+    initRealtime(httpServer);
     console.log(`Backend running on http://0.0.0.0:${PORT}`);
   });
 }
@@ -141,6 +147,7 @@ async function shutdown(signal: string): Promise<void> {
     await new Promise<void>((resolve) => server!.close(() => resolve()));
   }
   await closePool();
+  shutdownRealtime();
   clearTimeout(timer);
   process.exit(0);
 }

@@ -77,12 +77,17 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
           <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
         </div>
       ) : (
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-          <div>
-            <h2 className="section-title">Client Master</h2>
-            <p className="text-xs text-surface-500 mt-0.5">Manage corporate client accounts and delivery destinations ({clients.length} total)</p>
+        <div className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-xs sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-brand-100 text-brand-700">
+              <Building2 size={24} />
+            </div>
+            <div>
+              <h2 className="text-xl font-extrabold tracking-tight text-slate-900">Client Master</h2>
+              <p className="mt-0.5 text-sm text-slate-500">Manage corporate client accounts and delivery destinations ({clients.length} total)</p>
+            </div>
           </div>
-          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary shrink-0">
             <Plus size={16} /> Add Client
           </button>
         </div>

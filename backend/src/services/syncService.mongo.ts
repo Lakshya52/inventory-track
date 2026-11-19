@@ -19,6 +19,25 @@ import {
 import { batchQrStats, EntityId } from './queryService';
 import { nextDispatchOrderNumber } from './orderNumbers';
 
+/**
+ * Division visibility for sync payloads. Mirrors utils/division.ts, but the
+ * helpers there require an Express request while sync functions receive the
+ * decoded JWT payload, so the same filter is built here from `user`
+ * (ADMIN or unassigned users see everything tenant-wide).
+ */
+function divisionFilterFor(user: JwtPayload): Record<string, any> {
+  // ADMIN always sees everything; only an assigned QC/DISPATCH member is restricted.
+  if (user.role === 'ADMIN' || user.divisionId === undefined || user.divisionId === null) {
+    return {};
+  }
+  return { division_id: { $in: [user.divisionId, null] } };
+}
+
+/** division_id to stamp on newly created rows (null = shared / tenant-wide). */
+function divisionStampFor(user: JwtPayload): string | number | null {
+  return user.divisionId ?? null;
+}
+
 export class SyncError extends Error {
   constructor(
     message: string,
@@ -148,8 +167,11 @@ async function recordOperation(
 
 async function getBatchForUpdate(
   ctx: DbContext,
-  payload: Record<string, any>
+  payload: Record<string, any>,
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<Record<string, any>> {
+  const divisionScope = divisionFilterFor(user);
   const barcode = typeof payload.barcode_value === 'string' ? payload.barcode_value.trim() : '';
   const batchId = payload.batch_id;
   if (!barcode && !isValidId(batchId)) {
@@ -158,24 +180,24 @@ async function getBatchForUpdate(
 
   let batch: Record<string, any> | null = null;
   if (barcode) {
-    batch = await ctx.findOne('batches', { barcode_value: barcode }, { projection: { _id: 0 } });
+    batch = await ctx.findOne('batches', { barcode_value: barcode, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } });
     if (!batch) {
-      const label = await ctx.findOne('qr_labels', { qr_value: barcode }, {
+      const label = await ctx.findOne('qr_labels', { qr_value: barcode, tenant_id: tenantId, ...divisionScope }, {
         projection: { _id: 0, batch_id: 1 },
       });
       if (label) {
-        batch = await ctx.findOne('batches', { id: label.batch_id }, { projection: { _id: 0 } });
+        batch = await ctx.findOne('batches', { id: label.batch_id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } });
       }
     }
   } else {
-    batch = await ctx.findOne('batches', { id: batchId }, { projection: { _id: 0 } });
+    batch = await ctx.findOne('batches', { id: batchId, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } });
   }
   if (!batch) {
     throw new SyncError('Batch not found', 'BATCH_NOT_FOUND', 404);
   }
 
-  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } });
-  const stats = await batchQrStats(ctx, [batch.id as EntityId]);
+  const product = await ctx.findOne('products', { id: batch.product_id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } });
+  const stats = await batchQrStats(ctx, [batch.id as EntityId], tenantId, divisionScope);
   return {
     ...batch,
     product_name: product?.name ?? null,
@@ -224,17 +246,20 @@ function bulkBarcodes(payload: Record<string, any>): string[] {
 
 async function getBatchesForUpdate(
   ctx: DbContext,
-  barcodes: string[]
+  barcodes: string[],
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<Record<string, any>[]> {
+  const divisionScope = divisionFilterFor(user);
   if (barcodes.length === 0) {
     throw new SyncError('At least one QR code is required', 'BATCH_REFERENCE_REQUIRED');
   }
 
   const [labelRows, legacyRows] = await Promise.all([
-    ctx.find('qr_labels', { qr_value: { $in: barcodes } }, {
+    ctx.find('qr_labels', { qr_value: { $in: barcodes }, tenant_id: tenantId, ...divisionScope }, {
       projection: { _id: 0, qr_value: 1, batch_id: 1 },
     }),
-    ctx.find('batches', { barcode_value: { $in: barcodes } }, {
+    ctx.find('batches', { barcode_value: { $in: barcodes }, tenant_id: tenantId, ...divisionScope }, {
       projection: { _id: 0, barcode_value: 1, id: 1 },
     }),
   ]);
@@ -255,16 +280,16 @@ async function getBatchesForUpdate(
     seenBatchIds.add(key);
     batchIds.push(batchId);
   }
-  const batches = await ctx.find('batches', { id: { $in: batchIds } }, {
+  const batches = await ctx.find('batches', { id: { $in: batchIds }, tenant_id: tenantId, ...divisionScope }, {
     sort: { created_at: 1 },
     projection: { _id: 0 },
   });
   const productIds = batches.map((batch) => batch.product_id as EntityId);
   const products = productIds.length > 0
-    ? await ctx.find('products', { id: { $in: productIds } }, { projection: { _id: 0 } })
+    ? await ctx.find('products', { id: { $in: productIds }, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } })
     : [];
   const productMap = new Map(products.map((product) => [idKey(product.id), product]));
-  const stats = await batchQrStats(ctx, batchIds);
+  const stats = await batchQrStats(ctx, batchIds, tenantId, divisionScope);
   const enriched: Record<string, any>[] = batches.map((batch) => {
     const product = productMap.get(idKey(batch.product_id));
     return {
@@ -284,7 +309,7 @@ async function getBatchesForUpdate(
     codes.add(barcode);
     scannedCodes.set(batchId, codes);
   }
-  const expectedLabelRows = await ctx.find('qr_labels', { batch_id: { $in: batchIds } }, {
+  const expectedLabelRows = await ctx.find('qr_labels', { batch_id: { $in: batchIds }, tenant_id: tenantId, ...divisionScope }, {
     projection: { _id: 0, batch_id: 1, qr_value: 1 },
   });
   const expectedCodes = new Map<string, Set<string>>();
@@ -327,6 +352,8 @@ async function logActivity(
     user_role: user.role,
     action,
     description,
+    tenant_id: user.tenantId,
+    division_id: divisionStampFor(user),
   });
 }
 
@@ -339,12 +366,14 @@ async function logActivity(
 async function deductProductStock(
   ctx: DbContext,
   productId: EntityId,
-  quantity: number
+  quantity: number,
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<number | null> {
   if (!isValidId(productId) || !Number.isFinite(quantity) || quantity <= 0) {
     return null;
   }
-  const result = await ctx.findOneAndUpdate('products', { id: productId }, [
+  const result = await ctx.findOneAndUpdate('products', { id: productId, tenant_id: tenantId, ...divisionFilterFor(user) }, [
     {
       $set: {
         quantity: {
@@ -367,6 +396,8 @@ async function applyQcSubmit(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
+  const divisionScope = divisionFilterFor(user);
   if (!['QC', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only QC or admin users can submit QC results', 'FORBIDDEN', 403);
   }
@@ -378,7 +409,7 @@ async function applyQcSubmit(
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
 
-  const batch = await getBatchForUpdate(ctx, payload);
+  const batch = await getBatchForUpdate(ctx, payload, tenantId, user);
   if (Number(batch.qr_count) > 0) {
     throw new SyncConflictError('Scan every unit QR code in the batch before submitting QC', {
       batch_id: batch.id,
@@ -406,9 +437,11 @@ async function applyQcSubmit(
     client_operation_id: input.operation_id,
     client_created_at: toDate(input.client_timestamp),
     device_uuid: deviceUuid,
+    tenant_id: tenantId,
+    division_id: divisionStampFor(user),
   });
 
-  const update = await ctx.updateOne('batches', { id: batch.id, status: 'CREATED' }, {
+  const update = await ctx.updateOne('batches', { id: batch.id, status: 'CREATED', tenant_id: tenantId, ...divisionScope }, {
     $set: { status: newStatus },
   });
   if (update.matchedCount !== 1) {
@@ -445,6 +478,8 @@ async function applyQcSubmitBulk(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
+  const divisionScope = divisionFilterFor(user);
   if (!['QC', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only QC or admin users can submit QC results', 'FORBIDDEN', 403);
   }
@@ -456,7 +491,7 @@ async function applyQcSubmitBulk(
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
   const barcodes = bulkBarcodes(payload);
-  const batches = await getBatchesForUpdate(ctx, barcodes);
+  const batches = await getBatchesForUpdate(ctx, barcodes, tenantId, user);
 
   const invalid = batches.filter((batch) => String(batch.status) !== 'CREATED');
   if (invalid.length > 0) {
@@ -482,9 +517,11 @@ async function applyQcSubmitBulk(
       group_operation_id: input.operation_id,
       client_created_at: toDate(input.client_timestamp),
       device_uuid: deviceUuid,
+      tenant_id: tenantId,
+      division_id: divisionStampFor(user),
     });
     recordIds.push(recordId);
-    const update = await ctx.updateOne('batches', { id: batch.id, status: 'CREATED' }, {
+    const update = await ctx.updateOne('batches', { id: batch.id, status: 'CREATED', tenant_id: tenantId, ...divisionScope }, {
       $set: { status: newStatus },
     });
     if (update.matchedCount !== 1) {
@@ -525,11 +562,14 @@ async function applyQcSubmitBulk(
  */
 async function deductReservedStock(
   ctx: DbContext,
-  deductions: Map<string, { productId: EntityId; quantity: number }>
+  deductions: Map<string, { productId: EntityId; quantity: number }>,
+  tenantId: string | number,
+  user: JwtPayload
 ): Promise<void> {
+  const divisionScope = divisionFilterFor(user);
   for (const entry of deductions.values()) {
     if (!entry.quantity) continue;
-    await ctx.findOneAndUpdate('products', { id: entry.productId }, [
+    await ctx.findOneAndUpdate('products', { id: entry.productId, tenant_id: tenantId, ...divisionScope }, [
       {
         $set: {
           quantity: {
@@ -552,6 +592,8 @@ async function applyDispatchOrderRaise(
   deviceUuid: string | null,
   input: SyncOperationInput
 ): Promise<{ entityType: string; entityId: EntityId; data: Record<string, any> }> {
+  const tenantId = user.tenantId;
+  const divisionScope = divisionFilterFor(user);
   if (!['DISPATCH', 'ADMIN'].includes(user.role)) {
     throw new SyncError('Only dispatch or admin users can raise dispatch orders', 'FORBIDDEN', 403);
   }
@@ -559,7 +601,7 @@ async function applyDispatchOrderRaise(
   if (!isValidId(clientId)) {
     throw new SyncError('Select a client for this dispatch order', 'DISPATCH_CLIENT_REQUIRED');
   }
-  const client = await ctx.findOne('clients', { id: clientId, is_active: 1 }, { projection: { id: 1 } });
+  const client = await ctx.findOne('clients', { id: clientId, is_active: 1, tenant_id: tenantId }, { projection: { id: 1 } });
   if (!client) {
     throw new SyncError('Selected client is no longer active', 'CLIENT_NOT_FOUND', 404);
   }
@@ -571,7 +613,7 @@ async function applyDispatchOrderRaise(
     const assignments: Array<{ batchId: EntityId; labelIds: EntityId[] }> = [];
     const stockDeductions = new Map<string, { productId: EntityId; quantity: number }>();
     for (const line of requested) {
-      const batch = await getBatchForUpdate(ctx, { batch_id: line.batch_id });
+      const batch = await getBatchForUpdate(ctx, { batch_id: line.batch_id }, user.tenantId, user);
       const batchKey = idKey(batch.id);
       if (seen.has(batchKey)) throw new SyncError('A batch can appear only once in a dispatch order', 'DUPLICATE_ORDER_LINE');
       seen.add(batchKey);
@@ -588,12 +630,44 @@ async function applyDispatchOrderRaise(
       const recalled = await ctx.count('qr_labels', { batch_id: batch.id, recall_status: 'RECALLED' });
       const available = Math.max(0, Number(batch.quantity) - reserved - recalled);
       if (quantity > available) throw new SyncConflictError(`Only ${available} units remain for ${batch.product_name}`, { batch_id: batch.id, available_quantity: available, requested_quantity: quantity });
-      const labels = await ctx.find('qr_labels', { batch_id: batch.id, recall_status: { $ne: 'RECALLED' }, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { sort: { serial_no: 1 }, limit: quantity, projection: { _id: 0, id: 1 } });
-      if (labels.length !== quantity) throw new SyncConflictError(`Not enough unassigned QR labels remain for ${batch.product_name}`, { available_quantity: labels.length, requested_quantity: quantity });
-      const location = batch.shelf_location_id ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1, description: 1 } }) : null;
+      // When the picker chose exact QR codes, reserve precisely those instead
+      // of the first-N auto assignment.
+      const requestedLabelIds = Array.isArray(line.label_ids)
+        ? [...new Set(line.label_ids.map(Number).filter((value: number) => Number.isInteger(value) && value > 0))]
+        : null;
+      if (requestedLabelIds) {
+        if (requestedLabelIds.length !== quantity) {
+          throw new SyncError(`Select exactly ${quantity} QR code${quantity === 1 ? '' : 's'} for ${batch.product_name}`, 'LABEL_COUNT_MISMATCH');
+        }
+        const picked = await ctx.find('qr_labels', {
+          id: { $in: requestedLabelIds },
+          batch_id: batch.id,
+          tenant_id: tenantId,
+          ...divisionFilterFor(user),
+        }, { projection: { _id: 0, id: 1, qr_value: 1, print_count: 1, dispatch_order_id: 1, recall_status: 1 } });
+        if (picked.length !== requestedLabelIds.length) {
+          throw new SyncConflictError(`Some selected QR labels were not found in ${batch.batch_number}`, { batch_id: batch.id });
+        }
+        for (const label of picked) {
+          if (Number(label.print_count) < 1) {
+            throw new SyncConflictError(`QR ${label.qr_value} has not been printed yet`, { code: 'QR_NOT_PRINTED', qr_value: label.qr_value });
+          }
+          if (label.dispatch_order_id !== null && label.dispatch_order_id !== undefined) {
+            throw new SyncConflictError(`QR ${label.qr_value} is already reserved by another order`, { code: 'QR_ALREADY_ASSIGNED', qr_value: label.qr_value });
+          }
+          if (label.recall_status && String(label.recall_status).toUpperCase() === 'RECALLED') {
+            throw new SyncConflictError(`QR ${label.qr_value} is recalled and cannot be dispatched`, { code: 'QR_RECALLED', qr_value: label.qr_value });
+          }
+        }
+        assignments.push({ batchId: batch.id as EntityId, labelIds: requestedLabelIds as any });
+      } else {
+        const labels = await ctx.find('qr_labels', { batch_id: batch.id, recall_status: { $ne: 'RECALLED' }, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { sort: { serial_no: 1 }, limit: quantity, projection: { _id: 0, id: 1 } });
+        if (labels.length !== quantity) throw new SyncConflictError(`Not enough unassigned QR labels remain for ${batch.product_name}`, { available_quantity: labels.length, requested_quantity: quantity });
+        assignments.push({ batchId: batch.id as EntityId, labelIds: labels.map((label) => label.id as EntityId) });
+      }
+      const location = batch.shelf_location_id ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id, tenant_id: user.tenantId, ...divisionFilterFor(user) }, { projection: { _id: 0, location_code: 1, description: 1 } }) : null;
       const lineSnapshot = { batch_id: batch.id, batch_number: batch.parent_batch_number || batch.batch_number, product_name: batch.product_name, product_sku: batch.product_sku, quantity, uom: batch.uom, location: location?.location_code || batch.storage_location || 'N/A', location_code: location?.location_code ?? null, location_description: location?.description ?? null };
       lines.push(lineSnapshot);
-      assignments.push({ batchId: batch.id as EntityId, labelIds: labels.map((label) => label.id as EntityId) });
       const productKey = idKey(batch.product_id);
       const existing = stockDeductions.get(productKey);
       stockDeductions.set(productKey, {
@@ -611,15 +685,15 @@ async function applyDispatchOrderRaise(
       container_number: typeof input.payload.container_number === 'string' ? input.payload.container_number.trim().slice(0, 100) || null : null,
     };
     const orderNumber = await nextDispatchOrderNumber(ctx, user.tenantId);
-    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_number: orderNumber, order_lines: lines, tenant_id: user.tenantId, raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), scheduled_dispatch_at: scheduledDispatchAt(input.payload.scheduled_dispatch_at), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
+    const orderId = await ctx.insert('dispatch_orders', { batch_id: lines[0].batch_id, order_number: orderNumber, order_lines: lines, tenant_id: user.tenantId, division_id: divisionStampFor(user), raised_by: user.userId, status: 'APPROVED', admin_id: null, approved_by_role: 'DISPATCH', approved_by_id: user.userId, approved_at: now(), client_id: clientId, quantity: total, stock_reserved_at_order: now(), scheduled_dispatch_at: scheduledDispatchAt(input.payload.scheduled_dispatch_at), client_operation_id: input.operation_id, client_created_at: toDate(input.client_timestamp), device_uuid: deviceUuid, ...transport, dispatched_at: null });
     for (const assignment of assignments) for (const labelId of assignment.labelIds) {
       const assigned = await ctx.updateOne('qr_labels', { id: labelId, batch_id: assignment.batchId, $or: [{ dispatch_order_id: { $exists: false } }, { dispatch_order_id: null }] }, { $set: { dispatch_order_id: orderId } });
       if (assigned.matchedCount !== 1) throw new SyncConflictError('A QR label was assigned to another order. Refresh and retry.', { batch_id: assignment.batchId });
     }
-    for (const line of lines) await ctx.insert('packing_list_items', { dispatch_order_id: orderId, ...line });
+    for (const line of lines) await ctx.insert('packing_list_items', { dispatch_order_id: orderId, tenant_id: user.tenantId, division_id: divisionStampFor(user), ...line });
     // The ordered units leave the stock as soon as the order is created, so
     // their QR labels stop being available stock from here on.
-    await deductReservedStock(ctx, stockDeductions);
+    await deductReservedStock(ctx, stockDeductions, user.tenantId, user);
     // No approval step: the order is released for loading the moment it is
     // raised, so the batch goes straight to DISPATCH_APPROVED.
     for (const line of lines) {
@@ -628,7 +702,7 @@ async function applyDispatchOrderRaise(
     await logActivity(ctx, user, 'DISPATCH_ORDER_CREATED', `Dispatch order ${orderId} created with ${lines.length} product lines and ${total} units, ready for loading`);
     return { entityType: 'dispatch_order', entityId: orderId, data: { id: orderId, order_number: orderNumber, batch_id: lines[0].batch_id, batch_number: lines.length === 1 ? lines[0].batch_number : `Multi-product order`, product_name: lines.length === 1 ? lines[0].product_name : `${lines.length} products`, quantity: total, items: lines, status: 'APPROVED' } };
   }
-  const batch = await getBatchForUpdate(ctx, input.payload);
+  const batch = await getBatchForUpdate(ctx, input.payload, user.tenantId, user);
   const requestedQuantity = Number(input.payload.quantity);
   if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) {
     throw new SyncError('Enter a whole-number dispatch quantity greater than zero', 'INVALID_DISPATCH_QUANTITY');
@@ -696,6 +770,7 @@ async function applyDispatchOrderRaise(
 
   const orderNumber = await nextDispatchOrderNumber(ctx, user.tenantId);
   const orderId = await ctx.insert('dispatch_orders', {
+    tenant_id: user.tenantId,
     batch_id: batch.id,
     order_number: orderNumber,
     raised_by: user.userId,
@@ -719,6 +794,7 @@ async function applyDispatchOrderRaise(
     client_created_at: toDate(input.client_timestamp),
     device_uuid: deviceUuid,
     dispatched_at: null,
+    division_id: divisionStampFor(user),
   });
 
   for (const label of labels) {
@@ -730,12 +806,12 @@ async function applyDispatchOrderRaise(
   // their QR labels stop being available stock from here on.
   await deductReservedStock(ctx, new Map([
     [idKey(batch.product_id), { productId: batch.product_id as EntityId, quantity: requestedQuantity }],
-  ]));
+  ]), user.tenantId, user);
 
   // Freeze the packing list at raise time, because there is no approval step
   // left to freeze it later.
   const singleLocation = batch.shelf_location_id
-    ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1, description: 1 } })
+    ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id, tenant_id: user.tenantId, ...divisionFilterFor(user) }, { projection: { _id: 0, location_code: 1, description: 1 } })
     : null;
   await ctx.insert('packing_list_items', {
     dispatch_order_id: orderId,
@@ -749,6 +825,8 @@ async function applyDispatchOrderRaise(
     location: singleLocation?.location_code || batch.storage_location || 'N/A',
     location_code: singleLocation?.location_code ?? null,
     location_description: singleLocation?.description ?? null,
+    tenant_id: user.tenantId,
+    division_id: divisionStampFor(user),
   });
 
   // No approval step: the order is released for loading the moment it is
@@ -789,7 +867,7 @@ async function applyDispatchConfirm(
   const payload = input.payload;
   const remarks = typeof payload.remarks === 'string' ? payload.remarks.slice(0, 4000) : null;
   const images = imageList(payload);
-  const batch = await getBatchForUpdate(ctx, payload);
+  const batch = await getBatchForUpdate(ctx, payload, user.tenantId, user);
   if (Number(batch.quantity) > 1) {
     throw new SyncConflictError('Scan every unit QR code in the batch before completing dispatch', {
       batch_id: batch.id,
@@ -859,6 +937,8 @@ async function applyDispatchConfirm(
     client_operation_id: input.operation_id,
     client_created_at: toDate(input.client_timestamp),
     device_uuid: deviceUuid,
+    tenant_id: user.tenantId,
+    division_id: divisionStampFor(user),
   });
 
   const update = await ctx.updateOne('batches', { id: batch.id, status: batch.status }, {
@@ -876,7 +956,7 @@ async function applyDispatchConfirm(
   }
 
   const dispatchedQuantity = Number(batch.quantity) || 0;
-  const remainingStock = stockReservedAtOrder ? null : await deductProductStock(ctx, batch.product_id as EntityId, dispatchedQuantity);
+  const remainingStock = stockReservedAtOrder ? null : await deductProductStock(ctx, batch.product_id as EntityId, dispatchedQuantity, user.tenantId, user);
 
   await logActivity(
     ctx,
@@ -926,7 +1006,7 @@ async function applyDispatchConfirmBulk(
   const hasRequestedOrderId = requestedOrderId !== undefined &&
     requestedOrderId !== null &&
     String(requestedOrderId).trim() !== '';
-  const batches = await getBatchesForUpdate(ctx, barcodes);
+  const batches = await getBatchesForUpdate(ctx, barcodes, user.tenantId, user);
 
   const directAllowed = payload.direct === true &&
     (user.role === 'ADMIN' || process.env.ALLOW_DIRECT_DISPATCH === 'true');
@@ -1004,6 +1084,8 @@ async function applyDispatchConfirmBulk(
       group_operation_id: input.operation_id,
       client_created_at: toDate(input.client_timestamp),
       device_uuid: deviceUuid,
+      tenant_id: user.tenantId,
+      division_id: divisionStampFor(user),
     });
     recordIds.push(recordId);
 
@@ -1021,7 +1103,7 @@ async function applyDispatchConfirmBulk(
     }
 
     const dispatchedQuantity = Number(batch.quantity) || 0;
-    const remainingStock = stockReservedAtOrder ? null : await deductProductStock(ctx, batch.product_id as EntityId, dispatchedQuantity);
+    const remainingStock = stockReservedAtOrder ? null : await deductProductStock(ctx, batch.product_id as EntityId, dispatchedQuantity, user.tenantId, user);
     if (remainingStock !== null) {
       stockDeductions.push({
         batch_id: batch.id as EntityId,

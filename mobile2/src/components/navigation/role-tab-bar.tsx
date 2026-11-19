@@ -74,11 +74,13 @@ export function RoleTabBar({ state, navigateToTab, descriptors, items }: RoleTab
 			/>
 
 			<View
-				className="w-full self-center px-5"
+				className="w-fit self-center px-5"
 				style={{ maxWidth: MAX_WIDTH }}
 			>
 				{/* Included 'will-change-variable' to guarantee zero layout flash or warnings */}
-				<View className="h-[72px] flex-row items-center w-full justify-between rounded-full bg-navy px-3 shadow-sm will-change-variable">
+				<View className="h-[72px] w-fit flex-row items-center justify-between rounded-full bg-navy px-3 shadow-sm will-change-variable" style={{
+					minWidth: 200,
+				}}>
 					{items.map((item) => {
 						const focused = activeName === item.name;
 						const Icon = item.icon;

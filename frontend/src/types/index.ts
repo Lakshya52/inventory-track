@@ -6,7 +6,7 @@ export type BatchStatus = 'PENDING_QC' | 'QC_PASSED' | 'QC_FAILED'
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
   | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
 
-export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
+export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED' | 'RECALLED';
 export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 
 export interface LoadingSession {
@@ -56,6 +56,21 @@ export interface User {
   created_at?: string;
   tenantId?: EntityId;
   tenant?: Tenant;
+  division_id?: EntityId | null;
+  division_name?: string | null;
+  divisionId?: EntityId | null;
+  divisionName?: string | null;
+}
+
+export interface Division {
+  id: EntityId;
+  tenant_id?: EntityId;
+  name: string;
+  is_active: number;
+  created_at?: string;
+  updated_at?: string;
+  users?: number;
+  products?: number;
 }
 
 export interface Tenant {

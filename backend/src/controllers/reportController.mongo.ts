@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { endOfDay, getContext, idKey, parseDateValue, startOfDay } from '../config/database';
 import { mapByIds } from '../services/queryService';
+import { divisionFilter } from '../utils/division';
 
 function dateRange(req: Request): Record<string, Date> | null {
   const from = req.query.from as string | undefined;
@@ -17,8 +18,10 @@ function dateRange(req: Request): Record<string, Date> | null {
   return Object.keys(range).length > 0 ? range : null;
 }
 
-export async function summary(_req: Request, res: Response): Promise<void> {
+export async function summary(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
+  const division = divisionFilter(req);
 
   const [
     totalProducts,
@@ -43,30 +46,33 @@ export async function summary(_req: Request, res: Response): Promise<void> {
     activeDispatchCount,
     inventory,
   ] = await Promise.all([
-    ctx.count('products'),
-    ctx.count('batches'),
-    ctx.count('qc_records'),
-    ctx.count('qc_records', { result: 'PASS' }),
+    ctx.count('products', { tenant_id: tenantId, is_active: 1, ...division }),
+    ctx.count('batches', { tenant_id: tenantId, ...division }),
+    ctx.count('qc_records', { tenant_id: tenantId, ...division }),
+    ctx.count('qc_records', { result: 'PASS', tenant_id: tenantId, ...division }),
     Promise.resolve(0),
     // SRS v2 removes the manual QC queue: every batch is born QC-passed.
     Promise.resolve(0),
-    ctx.count('dispatch_records'),
-    ctx.count('dispatch_records', { created_at: { $gte: startOfDay() } }),
-    ctx.count('dispatch_orders'),
-    ctx.count('dispatch_orders', { status: 'APPROVED' }),
+    ctx.count('dispatch_records', { tenant_id: tenantId, ...division }),
+    ctx.count('dispatch_records', { created_at: { $gte: startOfDay() }, tenant_id: tenantId, ...division }),
+    ctx.count('dispatch_orders', { tenant_id: tenantId, ...division }),
+    ctx.count('dispatch_orders', { status: 'APPROVED', tenant_id: tenantId, ...division }),
     ctx.count('dispatch_orders', {
       status: { $in: ['APPROVED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'] },
+      tenant_id: tenantId,
+      ...division,
     }),
-    ctx.count('dispatch_orders', { status: { $in: ['REJECTED', 'CANCELLED'] } }),
-    ctx.count('shelf_locations'),
-    ctx.count('shelf_locations', { is_active: 1 }),
-    ctx.count('admins'),
-    ctx.count('qc_users'),
-    ctx.count('dispatch_users'),
-    ctx.count('admins', { is_active: 1 }),
-    ctx.count('qc_users', { is_active: 1 }),
-    ctx.count('dispatch_users', { is_active: 1 }),
+    ctx.count('dispatch_orders', { status: { $in: ['REJECTED', 'CANCELLED'] }, tenant_id: tenantId, ...division }),
+    ctx.count('shelf_locations', { tenant_id: tenantId, ...division }),
+    ctx.count('shelf_locations', { is_active: 1, tenant_id: tenantId, ...division }),
+    ctx.count('admins', { tenant_id: tenantId }),
+    ctx.count('qc_users', { tenant_id: tenantId }),
+    ctx.count('dispatch_users', { tenant_id: tenantId }),
+    ctx.count('admins', { is_active: 1, tenant_id: tenantId }),
+    ctx.count('qc_users', { is_active: 1, tenant_id: tenantId }),
+    ctx.count('dispatch_users', { is_active: 1, tenant_id: tenantId }),
     ctx.aggregate('products', [
+      { $match: { tenant_id: tenantId, is_active: 1, ...division } },
       {
         $group: {
           _id: null,
@@ -101,8 +107,10 @@ export async function summary(_req: Request, res: Response): Promise<void> {
 }
 
 export async function qcReport(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const filter: Record<string, any> = {};
+  const division = divisionFilter(req);
+  const filter: Record<string, any> = { tenant_id: tenantId, ...division };
   const range = dateRange(req);
   if (range) filter.created_at = range;
   // SRS v2 records auto-pass only; ignore any legacy FAIL filter.
@@ -114,13 +122,15 @@ export async function qcReport(req: Request, res: Response): Promise<void> {
     projection: { _id: 0 },
   });
 
-  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => idKey(record.batch_id)));
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => idKey(record.batch_id)), tenantId, division);
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => idKey(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    division
   );
-  const testers = await mapByIds<Record<string, any>>(ctx, 'qc_users', records.map((record) => idKey(record.tester_id)));
+  const testers = await mapByIds<Record<string, any>>(ctx, 'qc_users', records.map((record) => idKey(record.tester_id)), tenantId);
 
   res.json(records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
@@ -145,8 +155,10 @@ export async function qcReport(req: Request, res: Response): Promise<void> {
 }
 
 export async function dispatchReport(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const filter: Record<string, any> = {};
+  const division = divisionFilter(req);
+  const filter: Record<string, any> = { tenant_id: tenantId, ...division };
   const range = dateRange(req);
   if (range) filter.created_at = range;
 
@@ -156,25 +168,30 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
     projection: { _id: 0 },
   });
 
-  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => idKey(record.batch_id)));
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', records.map((record) => idKey(record.batch_id)), tenantId, division);
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => idKey(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    division
   );
   const dispatchers = await mapByIds<Record<string, any>>(
     ctx,
     'dispatch_users',
-    records.map((record) => idKey(record.dispatcher_id))
+    records.map((record) => idKey(record.dispatcher_id)),
+    tenantId
   );
   const orders = await mapByIds<Record<string, any>>(
     ctx,
     'dispatch_orders',
-    records.map((record) => idKey(record.dispatch_order_id))
+    records.map((record) => idKey(record.dispatch_order_id)),
+    tenantId,
+    division
   );
-  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', [...orders.values()].map((order) => idKey(order.client_id)));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => idKey(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => idKey(batch.bag_quantity_id)));
+  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', [...orders.values()].map((order) => idKey(order.client_id)), tenantId);
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => idKey(batch.grade_id)), tenantId, division);
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => idKey(batch.bag_quantity_id)), tenantId);
 
   res.json(records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
@@ -209,8 +226,10 @@ export async function dispatchReport(req: Request, res: Response): Promise<void>
 }
 
 export async function dispatchRequests(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const filter: Record<string, any> = {};
+  const division = divisionFilter(req);
+  const filter: Record<string, any> = { tenant_id: tenantId, ...division };
   const range = dateRange(req);
   if (range) filter.created_at = range;
   if ([
@@ -225,22 +244,25 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
     projection: { _id: 0 },
   });
 
-  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', orders.map((order) => idKey(order.batch_id)));
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', orders.map((order) => idKey(order.batch_id)), tenantId, division);
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => idKey(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    division
   );
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => idKey(batch.grade_id)));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => idKey(batch.bag_quantity_id)));
-  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', orders.map((order) => idKey(order.client_id)));
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => idKey(batch.grade_id)), tenantId, division);
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => idKey(batch.bag_quantity_id)), tenantId);
+  const clients = await mapByIds<Record<string, any>>(ctx, 'clients', orders.map((order) => idKey(order.client_id)), tenantId);
   const raisedBy = await mapByIds<Record<string, any>>(
     ctx,
     'dispatch_users',
-    orders.map((order) => idKey(order.raised_by))
+    orders.map((order) => idKey(order.raised_by)),
+    tenantId
   );
-  const admins = await mapByIds<Record<string, any>>(ctx, 'admins', orders.map((order) => idKey(order.admin_id)));
-  const approvers = await mapByIds<Record<string, any>>(ctx, 'qc_users', orders.map((order) => idKey(order.approved_by_id)));
+  const admins = await mapByIds<Record<string, any>>(ctx, 'admins', orders.map((order) => idKey(order.admin_id)), tenantId);
+  const approvers = await mapByIds<Record<string, any>>(ctx, 'qc_users', orders.map((order) => idKey(order.approved_by_id)), tenantId);
 
   res.json(orders.map((order) => {
     const batch = batches.get(idKey(order.batch_id));
@@ -288,11 +310,14 @@ export async function dispatchRequests(req: Request, res: Response): Promise<voi
   }));
 }
 
-export async function inventory(_req: Request, res: Response): Promise<void> {
+export async function inventory(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
+  const division = divisionFilter(req);
   const [products, batchStats] = await Promise.all([
-    ctx.find('products', {}, { sort: { name: 1 }, projection: { _id: 0 } }),
+    ctx.find('products', { tenant_id: tenantId, is_active: 1, ...division }, { sort: { name: 1 }, projection: { _id: 0 } }),
     ctx.aggregate('batches', [
+      { $match: { tenant_id: tenantId, ...division } },
       {
         $group: {
           _id: '$product_id',
@@ -342,8 +367,10 @@ export async function inventory(_req: Request, res: Response): Promise<void> {
 }
 
 export async function batchesReport(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const filter: Record<string, any> = {};
+  const division = divisionFilter(req);
+  const filter: Record<string, any> = { tenant_id: tenantId, ...division };
   const range = dateRange(req);
   if (range) filter.created_at = range;
   if (req.query.status) filter.status = req.query.status;
@@ -356,7 +383,9 @@ export async function batchesReport(req: Request, res: Response): Promise<void> 
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    rows.map((batch) => idKey(batch.product_id))
+    rows.map((batch) => idKey(batch.product_id)),
+    tenantId,
+    division
   );
 
   res.json(rows.map((batch) => {

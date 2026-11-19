@@ -1,8 +1,8 @@
 import { apiRequest, setAccessToken } from './api';
-import type { AuthSession, AuthUser } from './auth-types';
+import type { AuthSession, AuthTenant, AuthUser } from './auth-types';
 import { clearSession, loadSession, saveSession } from './storage';
 
-export type { AuthSession, AuthUser, BackendRole } from './auth-types';
+export type { AuthSession, AuthTenant, AuthUser, BackendRole } from './auth-types';
 
 /** POST /auth/login — the backend checks admins, qc_users and dispatch_users. */
 export async function login(email: string, password: string): Promise<AuthSession> {
@@ -41,6 +41,11 @@ export async function restoreSession(): Promise<AuthSession | null> {
     setAccessToken(null);
     return null;
   }
+}
+
+/** GET /auth/tenant — organization (name, logo) for the signed-in account. */
+export async function fetchTenant(): Promise<AuthTenant> {
+  return apiRequest<AuthTenant>('/auth/tenant');
 }
 
 /** Best-effort server logout, then always clears the local session. */

@@ -15,6 +15,7 @@ import {
 	X,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import DivisionContextNote from "../components/DivisionContextNote";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
@@ -290,6 +291,7 @@ function WarehouseForm({
 				onSubmit={(event) => void onSubmit(event, values)}
 				className="space-y-4"
 			>
+				<DivisionContextNote />
 				<Field label="Location name">
 					<input
 						className="input"

@@ -68,10 +68,12 @@ const CREATED_AT_COLLECTIONS = new Set([
   'activity_logs',
   'devices',
   'refresh_tokens',
+  'divisions',
 ]);
 
 const UPDATED_AT_COLLECTIONS = new Set([
   'tenants',
+  'divisions',
   'products',
   'shelf_locations',
   'clients',

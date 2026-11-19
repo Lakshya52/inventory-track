@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { User } from '../types';
+import { Division, EntityId, User } from '../types';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { formatDate } from '../utils/dateFormat';
 import {
@@ -49,13 +49,15 @@ export default function Users() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
+  const [divisions, setDivisions] = useState<Division[]>([]);
+
   const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({ name: '', email: '', password: '', role: 'QC' as RoleValue });
+  const [addForm, setAddForm] = useState({ name: '', email: '', password: '', role: 'QC' as RoleValue, division_id: '' as EntityId | '' });
   const [addError, setAddError] = useState('');
   const [saving, setSaving] = useState(false);
 
   const [editUser, setEditUser] = useState<User | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'QC' as RoleValue });
+  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'QC' as RoleValue, division_id: '' as EntityId | '' });
   const [editError, setEditError] = useState('');
 
   const [passwordUser, setPasswordUser] = useState<User | null>(null);
@@ -71,8 +73,18 @@ export default function Users() {
     }
   };
 
+  const loadDivisions = async () => {
+    try {
+      setDivisions(await api.divisions.list());
+    } catch {
+      // Divisions are optional — keep the dropdown empty rather than failing user management.
+      setDivisions([]);
+    }
+  };
+
   useEffect(() => {
     void loadUsers();
+    void loadDivisions();
   }, []);
 
   // Listen for Escape key to close modals
@@ -111,10 +123,10 @@ export default function Users() {
     setAddError('');
     setSaving(true);
     try {
-      await api.users.add({ ...addForm, name: addForm.name.trim(), email: addForm.email.trim().toLowerCase() });
+      await api.users.add({ ...addForm, division_id: addForm.division_id === '' || addForm.role === 'ADMIN' ? null : addForm.division_id, name: addForm.name.trim(), email: addForm.email.trim().toLowerCase() });
       await loadUsers();
       setShowAdd(false);
-      setAddForm({ name: '', email: '', password: '', role: 'QC' });
+      setAddForm({ name: '', email: '', password: '', role: 'QC', division_id: '' });
       setNotice('User added successfully');
     } catch (err: any) {
       setAddError(err.message);
@@ -125,7 +137,7 @@ export default function Users() {
 
   const openEdit = (u: User) => {
     setEditUser(u);
-    setEditForm({ name: u.name, email: u.email, role: u.role as RoleValue });
+    setEditForm({ name: u.name, email: u.email, role: u.role as RoleValue, division_id: u.division_id ?? '' });
     setEditError('');
   };
 
@@ -139,6 +151,7 @@ export default function Users() {
         name: editForm.name.trim(),
         email: editForm.email.trim().toLowerCase(),
         role: editForm.role,
+        division_id: editForm.division_id === '' || editForm.role === 'ADMIN' ? null : editForm.division_id,
       });
       await loadUsers();
       setEditUser(null);
@@ -316,6 +329,7 @@ export default function Users() {
               <tr>
                 <th className="px-6 py-4">User Details</th>
                 <th className="px-6 py-4">Assigned Role</th>
+                <th className="px-6 py-4">Division</th>
                 <th className="px-6 py-4">Account Status</th>
                 <th className="px-6 py-4">Created Date</th>
                 <th className="px-6 py-4 text-right">Actions</th>
@@ -357,6 +371,16 @@ export default function Users() {
                       <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${roleBadge.bg}`}>
                         {roleBadge.label}
                       </span>
+                    </td>
+
+                    <td className="px-6 py-4">
+                      {u.role === 'ADMIN' || !u.division_name ? (
+                        <span className="text-xs text-slate-400 font-medium">All divisions</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-brand-50 text-brand-800 border border-brand-200 max-w-[160px] truncate" title={u.division_name}>
+                          {u.division_name}
+                        </span>
+                      )}
                     </td>
 
                     <td className="px-6 py-4">
@@ -478,6 +502,27 @@ export default function Users() {
                 </select>
               </div>
 
+              {addForm.role !== 'ADMIN' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
+                    Division
+                  </label>
+                  <select
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    value={addForm.division_id === '' ? '' : String(addForm.division_id)}
+                    onChange={(e) => setAddForm({ ...addForm, division_id: (e.target.value || '') as EntityId | '' })}
+                  >
+                    <option value="">All Divisions (tenant-wide)</option>
+                    {divisions.filter((d) => d.is_active === 1).map((division) => (
+                      <option key={division.id} value={String(division.id)}>
+                        {division.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-500 mt-1.5">The member will see only their division's products, batches, warehouses and orders. Admins see all divisions.</p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
                   Full Name *
@@ -586,6 +631,27 @@ export default function Users() {
                   <p className="text-xs text-slate-400 mt-1">You cannot change your own admin role.</p>
                 )}
               </div>
+
+              {editForm.role !== 'ADMIN' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
+                    Division
+                  </label>
+                  <select
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    value={editForm.division_id === '' ? '' : String(editForm.division_id)}
+                    onChange={(e) => setEditForm({ ...editForm, division_id: (e.target.value || '') as EntityId | '' })}
+                  >
+                    <option value="">All Divisions (tenant-wide)</option>
+                    {divisions.filter((d) => d.is_active === 1).map((division) => (
+                      <option key={division.id} value={String(division.id)}>
+                        {division.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-500 mt-1.5">The member will see only their division's products, batches, warehouses and orders.</p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">

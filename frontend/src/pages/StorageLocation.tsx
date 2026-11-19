@@ -14,6 +14,7 @@ import {
 	X,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import DivisionContextNote from "../components/DivisionContextNote";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
@@ -244,6 +245,7 @@ function RackForm({
 				onSubmit={(event) => void onSubmit(event, values)}
 				className="space-y-4"
 			>
+				<DivisionContextNote />
 				{!isEditing && <label className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
 					<span><span className="block text-sm font-bold text-slate-800">Create multiple racks</span><span className="text-xs text-slate-500">Use one name pattern and dimensions for this location.</span></span>
 					<input type="checkbox" checked={values.bulk} onChange={(event) => setValues((current) => ({ ...current, bulk: event.target.checked }))} className="h-4 w-4 accent-indigo-600" />

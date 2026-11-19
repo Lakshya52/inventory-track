@@ -76,9 +76,9 @@ export default function QrJobsScreen() {
       const htmlLabels = await Promise.all(labelRows.map(async (label) => {
         const value = String(label.qr_value || label.code || '');
         const svg = await QRCode.toString(value, { type: 'svg', margin: 1, width: 150 });
-        return `<article><div class="qr">${svg}</div><b>${String(label.batch_number || details?.job?.job_code || selectedJob?.job_code || '').replace(/[&<>]/g, '')}</b><small>${value.replace(/[&<>]/g, '')}</small></article>`;
+        return `<article><div class="qr">${svg}</div><div class="value">${value.replace(/[&<>]/g, '')}</div><b>${String(label.batch_number || details?.job?.job_code || selectedJob?.job_code || '').replace(/[&<>]/g, '')}</b></article>`;
       }));
-      const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{font-family:Arial;margin:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}article{border:1px dashed #64748b;padding:8px;text-align:center;page-break-inside:avoid;display:flex;flex-direction:column;align-items:center;gap:4px}.qr svg{width:100px;height:100px}small{font-size:8px;word-break:break-all}</style></head><body>${htmlLabels.join('')}</body></html>`;
+      const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{font-family:Arial;margin:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}article{border:1px dashed #64748b;padding:8px;text-align:center;page-break-inside:avoid;display:flex;flex-direction:column;align-items:center;gap:4px}.qr svg{width:100px;height:100px}.value{font-size:15px;font-weight:800;letter-spacing:0.5px;word-break:break-all;color:#0f172a}b{font-size:11px}</style></head><body>${htmlLabels.join('')}</body></html>`;
       const file = await Print.printToFileAsync({ html });
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: 'Print or share QR labels' });
       else await Print.printAsync({ html });

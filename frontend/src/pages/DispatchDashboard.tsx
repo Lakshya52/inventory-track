@@ -16,6 +16,7 @@ import {
 	Truck,
 } from "lucide-react";
 import { api } from "../services/api";
+import { subscribe } from "../services/realtime";
 
 const WORKFLOW = [
 	{
@@ -73,10 +74,10 @@ export default function DispatchDashboard() {
 	const load = useCallback(async () => {
 		setError("");
 		try {
-			const [ownOrders, allBatches, jobs, activeLoads, dispatchedToday] =
+			const [ownOrders, pendingQcBatches, jobs, activeLoads, dispatchedToday] =
 				await Promise.all([
 					api.dispatchOrders.mine(),
-					api.batches.list(),
+					api.batches.recent({ status: "PENDING_QC", limit: 50 }),
 					api.qc.qrJobs.list(),
 					api.loadingSessions.active(),
 					api.dispatch.today(),
@@ -89,7 +90,7 @@ export default function DispatchDashboard() {
 						order.product_name,
 				),
 			);
-			setBatches(allBatches);
+			setBatches(pendingQcBatches);
 			setQrJobs(jobs.items || []);
 			setLoadingSessions(Array.isArray(activeLoads) ? activeLoads : []);
 			setToday(Array.isArray(dispatchedToday) ? dispatchedToday : []);
@@ -102,6 +103,12 @@ export default function DispatchDashboard() {
 
 	useEffect(() => {
 		void load();
+		const unsubscribe = subscribe((event) => {
+			if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed') {
+				void load();
+			}
+		});
+		return () => unsubscribe();
 	}, [load]);
 
 	const openOrders = useMemo(

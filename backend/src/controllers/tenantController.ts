@@ -147,6 +147,8 @@ export async function registerTenant(req: Request, res: Response): Promise<void>
       const { tenant: insertedTenant, user: insertedUser } = await withTransaction(async mongoCtx => {
         const tenantId = await mongoCtx.insert('tenants', { name, email, email_key: email, phone, logo_url: logoUrl, slug, is_active: 1 });
         const userId = await mongoCtx.insert('admins', { tenant_id: tenantId, name: adminName, email, password_hash: passwordHash, is_active: 1 });
+        // Every workspace gets its own internal 'Self' vendor for own-stock flows.
+        await mongoCtx.insert('vendors', { vendor_code: 'SELF', name: 'Self', category: 'Internal', is_active: 1, tenant_id: tenantId });
         await mongoCtx.insert('refresh_tokens', {
           token_hash: refreshTokenHash,
           user_id: userId,
@@ -167,6 +169,8 @@ export async function registerTenant(req: Request, res: Response): Promise<void>
         const tenantId = tenant.insertId as number;
         const [admin] = await conn.execute<any>('INSERT INTO admins (tenant_id, name, email, password_hash, is_active) VALUES (?, ?, ?, ?, 1)', [tenantId, adminName, email, passwordHash]);
         const userId = admin.insertId as number;
+        // Every workspace gets its own internal 'Self' vendor for own-stock flows.
+        await conn.execute('INSERT INTO vendors (vendor_code, name, category, is_active, tenant_id) VALUES (?, ?, ?, ?, ?)', ['SELF', 'Self', 'Internal', 1, tenantId]);
         await conn.execute(
           'INSERT INTO refresh_tokens (token_hash, user_id, user_role, user_table, device_uuid, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
           [refreshTokenHash, userId, 'ADMIN', 'admins', null, refreshExpiresAt]

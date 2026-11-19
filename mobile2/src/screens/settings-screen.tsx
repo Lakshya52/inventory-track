@@ -103,8 +103,9 @@ function describeOfflineOperation(op: OfflineSyncOperation): string {
 
 export function SettingsScreen() {
   const router = useRouter();
-  const { user, role, signOut, updateProfile } = useRole();
+  const { user, role, tenant, signOut, updateProfile } = useRole();
   const profile = user ?? roleProfiles[role];
+  const companyName = tenant?.name?.trim() || profile.company;
 
   const [editOpen, setEditOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
@@ -335,7 +336,7 @@ export function SettingsScreen() {
 {/* if user role is admin then only show company management */}
       {profile.role === 'admin' && (
         <BottomSheet visible={companyOpen} onClose={() => setCompanyOpen(false)} title="Manage Company">
-          <SheetInfoRow icon={Building2} title={profile.company} subtitle="Registered organisation" />
+          <SheetInfoRow icon={Building2} title={companyName} subtitle="Registered organisation" />
           <SheetInfoRow icon={Building2} title="KLJ Industrial Estate" subtitle="Plot 24, Mumbai, Maharashtra" />
           <SheetInfoRow icon={Building2} title="GSTIN" subtitle="27AAACK1234L1ZX" />
           <SheetInfoRow icon={Building2} title="Workspace" subtitle="Admin · ProductScanning" />

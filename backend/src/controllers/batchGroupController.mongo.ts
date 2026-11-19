@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { getContext, parseDateValue, withTransaction } from '../config/database';
+import { divisionFilter, divisionStamp } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 type InputLine = { product_id: string; quantity: number; package_quantity: number; uom: string; shelf_location_id: string; warehouse_id: string; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
 
@@ -39,16 +41,18 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Each product can appear only once in a batch' }); return;
   }
   const ctx = await getContext();
+  const df = divisionFilter(req);
+  const stamp = divisionStamp(req);
   // Idempotency: a retried submission with the same client_operation_id
   // returns the batch that was already created instead of a duplicate.
   const operationId = typeof req.body?.client_operation_id === 'string'
     ? req.body.client_operation_id.trim().slice(0, 64)
     : '';
   if (operationId) {
-    const existing = await ctx.findOne('batch_groups', { client_operation_id: operationId, tenant_id: req.user!.tenantId }, { projection: { _id: 0 } });
+    const existing = await ctx.findOne('batch_groups', { client_operation_id: operationId, tenant_id: req.user!.tenantId, ...df }, { projection: { _id: 0 } });
     if (existing) {
-      const existingBatches = await ctx.find('batches', { batch_group_id: existing.group_key }, { sort: { batch_number: 1 }, projection: { _id: 0 } });
-      const existingLabels = await ctx.find('qr_labels', { batch_id: { $in: existingBatches.map((batch: any) => batch.id) } }, { sort: { serial_no: 1 }, projection: { _id: 0 } });
+      const existingBatches = await ctx.find('batches', { batch_group_id: existing.group_key, tenant_id: req.user!.tenantId, ...df }, { sort: { batch_number: 1 }, projection: { _id: 0 } });
+      const existingLabels = await ctx.find('qr_labels', { batch_id: { $in: existingBatches.map((batch: any) => batch.id) }, tenant_id: req.user!.tenantId, ...df }, { sort: { serial_no: 1 }, projection: { _id: 0 } });
       res.status(200).json({
         id: existing.group_key,
         batch_group_id: existing.group_key,
@@ -66,10 +70,10 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   }
   const productMap = new Map<string, any>();
   for (const item of items) {
-    const product = await ctx.findOne('products', { id: item.product_id }, { projection: { _id: 0, id: 1, name: 1, sku: 1, price: 1 } });
+    const product = await ctx.findOne('products', { id: item.product_id, tenant_id: req.user!.tenantId, is_active: 1, ...df }, { projection: { _id: 0, id: 1, name: 1, sku: 1, price: 1 } });
     if (!product) { res.status(404).json({ error: `Product ${item.product_id} was not found` }); return; }
     const warehouse = item.warehouse_id
-      ? await ctx.findOne('warehouses', { id: item.warehouse_id, tenant_id: req.user!.tenantId, is_active: 1 }, { projection: { _id: 0, id: 1, name: 1, capacity: 1 } })
+      ? await ctx.findOne('warehouses', { id: item.warehouse_id, tenant_id: req.user!.tenantId, is_active: 1, ...df }, { projection: { _id: 0, id: 1, name: 1, capacity: 1 } })
       : null;
     if (!warehouse) { res.status(400).json({ error: `Select an active godown for ${product.name}` }); return; }
     productMap.set(item.product_id, { ...product, warehouse_id: String(warehouse.id), warehouse_name: warehouse.name });
@@ -80,7 +84,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   const batchNumber = `BATCH-${dateStamp}-${randomBytes(3).toString('hex').toUpperCase()}`;
   try {
     const created = await withTransaction(async (tx) => {
-      const racks = await tx.find('storage_racks', { tenant_id: req.user!.tenantId }, { sort: { rack_code: 1 } });
+      const racks = await tx.find('storage_racks', { tenant_id: req.user!.tenantId, ...df }, { sort: { rack_code: 1 } });
       const selectedCells = new Map<string, any>();
       const warehouseCells = new Map<string, any[]>();
       for (const rack of racks as any[]) {
@@ -101,12 +105,13 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
       }
       const touchedRackIds = [...new Set(items.flatMap((item) => (warehouseCells.get(productMap.get(item.product_id).warehouse_id) || []).map((cell: any) => cell.rack_id)))];
       for (const rackId of touchedRackIds) {
-        await tx.updateOne('storage_racks', { id: rackId, tenant_id: req.user!.tenantId }, { $inc: { stock_version: 1 } });
+        await tx.updateOne('storage_racks', { id: rackId, tenant_id: req.user!.tenantId, ...df }, { $inc: { stock_version: 1 } });
       }
       const occupiedBatches = await tx.find('batches', {
         tenant_id: req.user!.tenantId,
         shelf_location_id: { $in: [...selectedCells.keys()] },
         status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
+        ...df,
       });
       const occupiedLocations = new Set(occupiedBatches
         .filter((batch: any) => Number(batch.quantity || 0) > Number(batch.dispatched_quantity || 0) + Number(batch.recalled_quantity || 0))
@@ -130,12 +135,13 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         requestedByWarehouse.set(warehouseId, (requestedByWarehouse.get(warehouseId) || 0) + item.quantity);
       }
       for (const [warehouseId, requested] of requestedByWarehouse) {
-        const warehouse = await tx.findOne('warehouses', { id: warehouseId, tenant_id: req.user!.tenantId });
+        const warehouse = await tx.findOne('warehouses', { id: warehouseId, tenant_id: req.user!.tenantId, ...df });
         const cells = (warehouseCells.get(warehouseId) || []).map((cell: any) => String(cell.shelf_location_id));
         const stored = cells.length ? await tx.find('batches', {
           tenant_id: req.user!.tenantId,
           shelf_location_id: { $in: cells },
           status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
+          ...df,
         }) : [];
         const current = stored.reduce((sum: number, batch: any) => sum + Math.max(0, Number(batch.quantity || 0) - Number(batch.dispatched_quantity || 0) - Number(batch.recalled_quantity || 0)), 0);
         if (warehouse && current + requested > Number(warehouse.capacity)) {
@@ -146,6 +152,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         group_key: groupId, batch_number: batchNumber, tenant_id: req.user!.tenantId, created_by: req.user!.userId,
         product_count: items.length, total_quantity: items.reduce((sum, item) => sum + item.quantity, 0), status: 'PENDING_QC',
         ...(operationId ? { client_operation_id: operationId } : {}),
+        division_id: stamp,
       });
       const lines: any[] = [];
       const allLabels: any[] = [];
@@ -158,6 +165,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
           job_code: jobCode, product_id: item.product_id, quantity: item.quantity,
           created_by: req.user!.userId, created_by_role: req.user!.role,
           tenant_id: req.user!.tenantId,
+          division_id: stamp,
         });
         const docs: any[] = [];
         for (const [serial, location] of (locationsByProduct.get(item.product_id) || []).entries()) {
@@ -170,11 +178,14 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
             expiry_date: parseDateValue(item.expiry_date),
             unit_price: item.unit_price || Number(product.price) || 0, shelf_location_id: location.shelf_location_id,
             storage_location: location.location_code, status: 'PENDING_QC', barcode_value: `QC:${randomUUID()}`,
+            division_id: stamp,
           });
           docs.push({
+            tenant_id: req.user!.tenantId,
             print_job_id: jobId, batch_id: childId,
             qr_value: `${jobCode}-${String(serial + 1).padStart(4, '0')}`,
             serial_no: serial + 1, print_count: 0, last_printed_at: null,
+            division_id: stamp,
           });
         }
         const labelIds = await tx.insertMany('qr_labels', docs);
@@ -203,10 +214,11 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         }));
         allLabels.push(...labels);
       }
-      await tx.insert('activity_logs', { user_id: req.user!.userId, user_name: req.user!.name, user_role: req.user!.role, action: 'BATCH_CREATED', description: `Batch ${batchNumber} created with ${items.length} products and ${allLabels.length} units; waiting for QC review` });
+      await tx.insert('activity_logs', { tenant_id: req.user!.tenantId, user_id: req.user!.userId, user_name: req.user!.name, user_role: req.user!.role, action: 'BATCH_CREATED', description: `Batch ${batchNumber} created with ${items.length} products and ${allLabels.length} units; waiting for QC review`, division_id: stamp });
       return { lines, allLabels };
     });
     res.status(201).json({ id: groupId, batch_group_id: groupId, batch_number: batchNumber, product_count: items.length, total_quantity: created.allLabels.length, batches: created.lines, labels: created.allLabels, status: 'PENDING_QC', message: `Batch ${batchNumber} created with ${items.length} products and sent to QC for review.` });
+    publish(req, 'batch.created', { id: groupId, batch_group_id: groupId, batch_number: batchNumber, product_count: items.length, total_quantity: created.allLabels.length, status: 'PENDING_QC' });
   } catch (error: any) {
     console.error('Could not create product batch group', error);
     res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not create the batch' });

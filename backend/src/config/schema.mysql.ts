@@ -93,6 +93,39 @@ async function addUniqueIndexIfMissing(
   );
 }
 
+async function dropIndexIfExists(table: string, index: string): Promise<void> {
+  if (await indexExists(table, index)) {
+    await execute(`ALTER TABLE \`${table}\` DROP INDEX \`${index}\``);
+  }
+}
+
+async function tableExists(table: string): Promise<boolean> {
+  const rows = await query<RowDataPacket[]>(
+    `SELECT TABLE_NAME FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
+    [table],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Replace a legacy globally-unique index with a tenant-scoped composite unique
+ * index so separate workspaces can reuse the same SKU, barcode, order number,
+ * etc. Idempotent: each legacy global index is dropped at most once.
+ */
+async function tenantScopedUnique(
+  table: string,
+  legacyGlobalIndexes: string[],
+  tenantIndex: string,
+  columns: string,
+): Promise<void> {
+  if (!(await tableExists(table))) return;
+  for (const legacy of legacyGlobalIndexes) {
+    await dropIndexIfExists(table, legacy);
+  }
+  await addUniqueIndexIfMissing(table, tenantIndex, columns);
+}
+
 /**
  * Idempotent startup migration. It keeps existing installations upgradeable
  * without a destructive seed. Every statement must be safe to run repeatedly.
@@ -167,6 +200,7 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing('qc_users', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addColumnIfMissing('dispatch_users', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addColumnIfMissing('products', 'tenant_id', 'BIGINT UNSIGNED NULL');
+  await addColumnIfMissing('products', 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('batches', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addColumnIfMissing('qc_records', 'tenant_id', 'BIGINT UNSIGNED NULL');
   await addColumnIfMissing('dispatch_records', 'tenant_id', 'BIGINT UNSIGNED NULL');
@@ -202,6 +236,7 @@ export async function ensureAdminSchema(): Promise<void> {
 
   // Existing print jobs belong to the workspace of the batch they printed.
   // Backfill so tenant-scoped print-job queries keep returning the old stock.
+  await addColumnIfMissing("batches", "qr_printed_at", "DATETIME(3) NULL");
   await execute(
     `UPDATE qr_print_jobs j
      SET j.tenant_id = (
@@ -261,6 +296,8 @@ export async function ensureAdminSchema(): Promise<void> {
   await addColumnIfMissing("dispatch_orders", "driver_phone", "VARCHAR(32) NULL");
   await addColumnIfMissing("dispatch_orders", "stock_reserved_at_order", "DATETIME(3) NULL");
   await addColumnIfMissing("dispatch_orders", "returned_to_stock_quantity", "INT UNSIGNED NULL");
+  await addColumnIfMissing("dispatch_orders", "recalled_quantity", "INT UNSIGNED NOT NULL DEFAULT 0");
+  await addColumnIfMissing("dispatch_orders", "reload_pending", "INT UNSIGNED NOT NULL DEFAULT 0");
   await addColumnIfMissing("dispatch_orders", "quantity", "INT UNSIGNED NULL");
   await addColumnIfMissing("qr_labels", "dispatch_order_id", "INT NULL");
   await addColumnIfMissing("qr_labels", "recall_status", "VARCHAR(20) NULL");
@@ -318,9 +355,6 @@ export async function ensureAdminSchema(): Promise<void> {
   );
   await addColumnIfMissing("batches", "batch_group_id", "CHAR(36) NULL");
   await addColumnIfMissing("batches", "parent_batch_number", "VARCHAR(100) NULL");
-  // Timestamp of the first successful QR print for this batch. A dispatch
-  // order may only be raised for a batch whose labels were physically printed.
-  await addColumnIfMissing("batches", "qr_printed_at", "DATETIME(3) NULL");
   await addIndexIfMissing("batches", "idx_batches_group", "batch_group_id");
 
   // Dispatch creates batches as PENDING_QC. Older installs used a narrow ENUM
@@ -423,9 +457,13 @@ export async function ensureAdminSchema(): Promise<void> {
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  await execute(`INSERT INTO vendors (vendor_code, name, category, is_active)
-    VALUES ('SELF', 'Self', 'Internal', 1)
-    ON DUPLICATE KEY UPDATE name = 'Self', category = 'Internal', is_active = 1`);
+  // Every workspace gets its own internal 'Self' vendor. For the legacy
+  // workspace this is created here; fresh workspaces get theirs at registration.
+  if (legacyTenantId) {
+    await execute(`INSERT INTO vendors (vendor_code, name, category, is_active, tenant_id)
+    VALUES ('SELF', 'Self', 'Internal', 1, ?)
+    ON DUPLICATE KEY UPDATE name = 'Self', category = 'Internal', is_active = 1`, [legacyTenantId]);
+  }
 
   await execute(`CREATE TABLE IF NOT EXISTS grades (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -644,11 +682,8 @@ export async function ensureAdminSchema(): Promise<void> {
   if (Number(qrValueColumn[0]?.CHARACTER_MAXIMUM_LENGTH) !== 1000) {
     await execute("ALTER TABLE qr_labels MODIFY COLUMN qr_value VARCHAR(1000) NOT NULL");
   }
-  await addUniqueIndexIfMissing(
-    "qr_labels",
-    "uq_qr_label_value",
-    "qr_value(191)",
-  );
+  // The legacy global uq_qr_label_value index is dropped and replaced by a
+  // tenant-scoped composite further down in this migration.
 
   await execute(`CREATE TABLE IF NOT EXISTS uoms (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -665,7 +700,20 @@ export async function ensureAdminSchema(): Promise<void> {
   }
 
   // Query indexes for the operational screens and sync cursors.
+  await addIndexIfMissing("products", "idx_products_active", "is_active");
   await addIndexIfMissing("products", "idx_products_updated", "updated_at");
+  // Compound indexes — tenant and (where applicable) division scope is leading,
+  // then active flag / sort key. Unblocks keyset pagination and covering scans.
+  await addIndexIfMissing("products", "idx_products_tenant_division_active_updated", "tenant_id, division_id, is_active, updated_at");
+  await addIndexIfMissing("batches", "idx_batches_tenant_division_updated", "tenant_id, division_id, updated_at");
+  await addIndexIfMissing("batch_groups", "idx_batch_groups_tenant_division_created", "tenant_id, division_id, created_at");
+  await addIndexIfMissing("qc_records", "idx_qc_records_tenant_division_created", "tenant_id, division_id, created_at");
+  await addIndexIfMissing("dispatch_orders", "idx_dispatch_orders_tenant_division_created", "tenant_id, division_id, created_at");
+  await addIndexIfMissing("dispatch_records", "idx_dispatch_records_tenant_division_created", "tenant_id, division_id, created_at");
+  await addIndexIfMissing("qr_labels", "idx_qr_labels_tenant_division_batch", "tenant_id, division_id, batch_id");
+  await addIndexIfMissing("qr_print_jobs", "idx_qr_print_jobs_tenant_division_created", "tenant_id, division_id, created_at");
+  await addIndexIfMissing("loading_sessions", "idx_loading_sessions_tenant_division_updated", "tenant_id, division_id, updated_at");
+  await addIndexIfMissing("packing_list_items", "idx_packing_list_items_tenant_division_created", "tenant_id, division_id, created_at");
   await addIndexIfMissing(
     "batches",
     "idx_batches_status_updated",
@@ -754,18 +802,82 @@ export async function ensureAdminSchema(): Promise<void> {
     "idx_batches_shelf_location",
     "shelf_location_id",
   );
+  // Tenant isolation: bring every business table into tenant scope. New columns
+  // are backfilled from the related parent (batch / dispatch order) when one
+  // exists, otherwise to the legacy workspace, so pre-existing data stays
+  // reachable from the installation's original tenant.
+  for (const table of ['qr_labels', 'fix_records', 'packing_list_items', 'grades', 'bag_quantities', 'uoms', 'devices', 'device_sync_state', 'sync_operations']) {
+    if (!(await tableExists(table))) continue;
+    await addColumnIfMissing(table, 'tenant_id', 'BIGINT UNSIGNED NULL');
+    await addIndexIfMissing(table, `idx_${table}_tenant`, 'tenant_id');
+  }
+  // production_users is a legacy table carried by some deployments: if it
+  // exists, scope it too so listFixRecords' tenant-filtered LEFT JOIN works.
+  if (await tableExists('production_users')) {
+    await addColumnIfMissing('production_users', 'tenant_id', 'BIGINT UNSIGNED NULL');
+    await addIndexIfMissing('production_users', 'idx_production_users_tenant', 'tenant_id');
+  }
+  if (await tableExists('qr_labels')) {
+    await execute(`UPDATE qr_labels l JOIN batches b ON l.batch_id = b.id SET l.tenant_id = b.tenant_id WHERE l.tenant_id IS NULL`);
+  }
+  if (await tableExists('fix_records')) {
+    await execute(`UPDATE fix_records f JOIN batches b ON f.batch_id = b.id SET f.tenant_id = b.tenant_id WHERE f.tenant_id IS NULL`);
+  }
+  if (await tableExists('packing_list_items')) {
+    await execute(`UPDATE packing_list_items i JOIN dispatch_orders o ON i.dispatch_order_id = o.id SET i.tenant_id = o.tenant_id WHERE i.tenant_id IS NULL`);
+  }
+  if (legacyTenantId) {
+    for (const table of ['qr_labels', 'fix_records', 'packing_list_items', 'grades', 'bag_quantities', 'uoms', 'devices', 'device_sync_state', 'sync_operations', 'batch_groups']) {
+      if (!(await tableExists(table))) continue;
+      await execute(`UPDATE \`${table}\` SET tenant_id = ? WHERE tenant_id IS NULL`, [legacyTenantId]);
+    }
+    // Legacy production_users table carried by some deployments (listFixRecords joins it).
+    if (await tableExists('production_users')) {
+      await execute(`UPDATE production_users SET tenant_id = ? WHERE tenant_id IS NULL`, [legacyTenantId]);
+    }
+  }
+  // Tenant-scoped uniqueness replaces the legacy global unique keys.
+  await tenantScopedUnique('products', ['sku'], 'uq_products_tenant_sku', 'tenant_id, sku');
+  await tenantScopedUnique('shelf_locations', ['location_code'], 'uq_locations_tenant_code', 'tenant_id, location_code');
+  await tenantScopedUnique('vendors', ['vendor_code'], 'uq_vendors_tenant_code', 'tenant_id, vendor_code');
+  await tenantScopedUnique('batches', ['barcode_value'], 'uq_batches_tenant_barcode', 'tenant_id, barcode_value');
+  await tenantScopedUnique('qr_print_jobs', ['job_code'], 'uq_qr_jobs_tenant_code', 'tenant_id, job_code');
+  await tenantScopedUnique('batch_groups', ['batch_number'], 'uq_batch_groups_tenant_number', 'tenant_id, batch_number');
+  await tenantScopedUnique('qr_labels', ['uq_qr_label_value'], 'uq_qr_label_tenant_value', 'tenant_id, qr_value(191)');
+  await tenantScopedUnique('grades', ['name'], 'uq_grades_tenant_name', 'tenant_id, name');
+  await tenantScopedUnique('uoms', ['name'], 'uq_uoms_tenant_name', 'tenant_id, name');
+  await tenantScopedUnique('bag_quantities', ['name'], 'uq_bag_quantities_tenant_name', 'tenant_id, name');
+  await addIndexIfMissing('activity_logs', 'idx_activity_tenant_created', 'tenant_id, created_at');
+
   // Human-readable order numbers for dispatch orders (DO-<YYYY>-<n>),
   // allocated per tenant + year in a counters table.
   await addColumnIfMissing("dispatch_orders", "order_number", "VARCHAR(20) NULL");
-  await addUniqueIndexIfMissing(
-    "dispatch_orders",
-    "uq_orders_order_number",
-    "order_number",
-  );
+  // Order numbers are allocated per tenant, so uniqueness must be per tenant too.
+  await tenantScopedUnique("dispatch_orders", ["uq_orders_order_number"], "uq_orders_tenant_number", "tenant_id, order_number");
   await execute(`CREATE TABLE IF NOT EXISTS counters (
     counter_key VARCHAR(160) NOT NULL PRIMARY KEY,
     seq BIGINT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  // Divisions: optional manufacturing units within a tenant. Adds the
+  // divisions table and a nullable division_id on every division-scoped
+  // table; NULL means shared tenant-wide visibility (legacy rows and
+  // records created by tenant-wide users).
+  await execute(`CREATE TABLE IF NOT EXISTS divisions (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_divisions_tenant_name (tenant_id, name),
+    KEY idx_divisions_tenant (tenant_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await addColumnIfMissing('storage_racks', 'stock_version', 'BIGINT UNSIGNED NOT NULL DEFAULT 0');
+  for (const table of ['admins', 'qc_users', 'dispatch_users', 'products', 'grades', 'batches', 'batch_groups', 'qc_records', 'dispatch_records', 'dispatch_orders', 'fix_records', 'packing_list_items', 'qr_labels', 'qr_print_jobs', 'warehouses', 'storage_racks', 'shelf_locations', 'activity_logs']) {
+    if (!(await tableExists(table))) continue;
+    await addColumnIfMissing(table, 'division_id', 'BIGINT UNSIGNED NULL');
+    await addIndexIfMissing(table, `idx_${table}_division`, 'division_id');
+  }
   await backfillDispatchOrderNumbers();
 }

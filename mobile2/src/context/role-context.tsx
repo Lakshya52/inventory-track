@@ -8,8 +8,8 @@ import {
   type PropsWithChildren,
 } from 'react';
 
-import { login, logout, restoreSession } from '@/services/auth';
-import type { AuthUser } from '@/services/auth-types';
+import { fetchTenant, login, logout, restoreSession } from '@/services/auth';
+import type { AuthTenant, AuthUser } from '@/services/auth-types';
 import type { AppUser, Role } from '@/types';
 
 /**
@@ -89,17 +89,21 @@ export function toAppUser(authUser: AuthUser): AppUser {
 type RoleContextValue = {
   user: AppUser | null;
   role: Role;
+  /** Organization the signed-in account belongs to (name, logo). Null until loaded / signed out. */
+  tenant: AuthTenant | null;
   /** True while the saved session is being restored on app launch. */
   isRestoring: boolean;
   signIn: (email: string, password: string) => Promise<Role>;
   signOut: () => Promise<void>;
   updateProfile: (values: Partial<AppUser>) => void;
+  refreshTenant: () => Promise<void>;
 };
 
 const RoleContext = createContext<RoleContextValue | null>(null);
 
 export function RoleProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<AppUser | null>(null);
+  const [tenant, setTenant] = useState<AuthTenant | null>(null);
   const [isRestoring, setIsRestoring] = useState(true);
 
   useEffect(() => {
@@ -109,6 +113,14 @@ export function RoleProvider({ children }: PropsWithChildren) {
       .then((session) => {
         if (active && session) {
           setUser(toAppUser(session.user));
+          // Tenant (organization name + logo) is a separate request; don't block session restore.
+          fetchTenant()
+            .then((nextTenant) => {
+              if (active) setTenant(nextTenant);
+            })
+            .catch(() => {
+              // The header falls back to cached profile data when the tenant cannot be loaded.
+            });
         }
       })
       .finally(() => {
@@ -124,21 +136,31 @@ export function RoleProvider({ children }: PropsWithChildren) {
     () => ({
       user,
       role: user?.role ?? 'admin',
+      tenant,
       isRestoring,
       signIn: async (email: string, password: string) => {
         const session = await login(email, password);
         const appUser = toAppUser(session.user);
         setUser(appUser);
+        try {
+          setTenant(await fetchTenant());
+        } catch {
+          // Login itself succeeded; leave the tenant unset and let the header fall back.
+        }
         return appUser.role;
       },
       signOut: async () => {
         await logout();
         setUser(null);
+        setTenant(null);
       },
       updateProfile: (values) =>
         setUser((current) => (current ? { ...current, ...values } : current)),
+      refreshTenant: async () => {
+        setTenant(await fetchTenant());
+      },
     }),
-    [user, isRestoring],
+    [user, tenant, isRestoring],
   );
 
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;

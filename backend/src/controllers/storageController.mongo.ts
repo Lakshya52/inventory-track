@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { getContext, isValidId, withTransaction } from '../config/database';
+import { divisionFilter, divisionStamp } from '../utils/division';
 
 function validName(value: unknown): string { return typeof value === 'string' ? value.trim().slice(0, 120) : ''; }
 function positiveInt(value: unknown, max: number): number { const n = Number(value); return Number.isInteger(n) && n > 0 && n <= max ? n : 0; }
@@ -8,22 +9,24 @@ function locationCodeFor(warehouse: string, rack: string, row: number, column: n
   return `${clean(warehouse, 38)}-${clean(rack, 34)}-S${row}-P${column}`.slice(0, 100);
 }
 
-async function warehouseSnapshot(tenantId: string | number, warehouseId: string) {
+async function warehouseSnapshot(req: Request, warehouseId: string) {
+  const tenantId = req.user!.tenantId;
+  const df = divisionFilter(req);
   const ctx = await getContext();
-  const warehouse = await ctx.findOne('warehouses', { id: warehouseId, tenant_id: tenantId });
+  const warehouse = await ctx.findOne('warehouses', { id: warehouseId, tenant_id: tenantId, ...df });
   if (!warehouse) return null;
-  const racks = await ctx.find('storage_racks', { tenant_id: tenantId, warehouse_id: warehouseId }, { sort: { rack_code: 1 } });
+  const racks = await ctx.find('storage_racks', { tenant_id: tenantId, warehouse_id: warehouseId, ...df }, { sort: { rack_code: 1 } });
   const locationIds = racks.flatMap((rack: any) => rack.cells || []).map((cell: any) => cell.shelf_location_id).filter(Boolean);
-  const batches = locationIds.length ? await ctx.find('batches', { tenant_id: tenantId, shelf_location_id: { $in: locationIds }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] } }) : [];
+  const batches = locationIds.length ? await ctx.find('batches', { tenant_id: tenantId, shelf_location_id: { $in: locationIds }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] }, ...df }) : [];
   const productIds = [...new Set(batches.map((batch: any) => batch.product_id).filter(Boolean))];
-  const products = productIds.length ? await ctx.find('products', { tenant_id: tenantId, id: { $in: productIds } }) : [];
+  const products = productIds.length ? await ctx.find('products', { tenant_id: tenantId, id: { $in: productIds }, ...df }) : [];
   const productsById = new Map(products.map((product: any) => [String(product.id), product]));
   const locationToBatches = new Map<string, any[]>();
   for (const batch of batches) {
     const key = String(batch.shelf_location_id);
     locationToBatches.set(key, [...(locationToBatches.get(key) || []), batch]);
   }
-  const locations = locationIds.length ? await ctx.find('shelf_locations', { tenant_id: tenantId, id: { $in: locationIds } }) : [];
+  const locations = locationIds.length ? await ctx.find('shelf_locations', { tenant_id: tenantId, id: { $in: locationIds }, ...df }) : [];
   const locationCodes = new Map(locations.map((row: any) => [String(row.id), row.location_code]));
   const enrichedRacks = await Promise.all(racks.map(async (rack: any) => {
     const cells = await Promise.all((rack.cells || []).map(async (cell: any) => {
@@ -35,7 +38,7 @@ async function warehouseSnapshot(tenantId: string | number, warehouseId: string)
       const cellCode = `${rack.rack_code}-${shelf}-${position}`;
       const existingLocationCode = locationCodes.get(String(cell.shelf_location_id));
       if (existingLocationCode && existingLocationCode !== locationCode) {
-        await ctx.updateOne('shelf_locations', { id: cell.shelf_location_id, tenant_id: tenantId }, { $set: { location_code: locationCode, description: `${warehouse.name} · ${rack.rack_code} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rack.rack_code, shelf: `${shelf}-${position}` } });
+        await ctx.updateOne('shelf_locations', { id: cell.shelf_location_id, tenant_id: tenantId, ...df }, { $set: { location_code: locationCode, description: `${warehouse.name} · ${rack.rack_code} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rack.rack_code, shelf: `${shelf}-${position}` } });
       }
       return { ...cell, cell_code: cellCode, location_code: locationCode, occupied: used > 0, used_capacity: used, batches: stored.map((batch: any) => {
         const product = productsById.get(String(batch.product_id));
@@ -73,25 +76,27 @@ async function warehouseSnapshot(tenantId: string | number, warehouseId: string)
 
 export async function listWarehouses(req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
-  const rows = await ctx.find('warehouses', { tenant_id: req.user!.tenantId }, { sort: { name: 1 } });
-  const data = await Promise.all(rows.map((row: any) => warehouseSnapshot(req.user!.tenantId, String(row.id))));
+  const rows = await ctx.find('warehouses', { tenant_id: req.user!.tenantId, ...divisionFilter(req) }, { sort: { name: 1 } });
+  const data = await Promise.all(rows.map((row: any) => warehouseSnapshot(req, String(row.id))));
   res.json(data.filter(Boolean));
 }
 
 export async function listInventory(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
+  const df = divisionFilter(req);
   const ctx = await getContext();
   const batches = await ctx.find('batches', {
     tenant_id: tenantId,
     status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
+    ...df,
   }, { sort: { created_at: -1 } });
   const [products, grades, bagQuantities, locations, racks, warehouses] = await Promise.all([
-    ctx.find('products', { tenant_id: tenantId }),
-    ctx.find('grades', {}),
+    ctx.find('products', { tenant_id: tenantId, ...df }),
+    ctx.find('grades', { ...df }),
     ctx.find('bag_quantities', {}),
-    ctx.find('shelf_locations', { tenant_id: tenantId }),
-    ctx.find('storage_racks', { tenant_id: tenantId }),
-    ctx.find('warehouses', { tenant_id: tenantId }),
+    ctx.find('shelf_locations', { tenant_id: tenantId, ...df }),
+    ctx.find('storage_racks', { tenant_id: tenantId, ...df }),
+    ctx.find('warehouses', { tenant_id: tenantId, ...df }),
   ]);
   const productsById = new Map(products.map((row: any) => [String(row.id), row]));
   const gradesById = new Map(grades.map((row: any) => [String(row.id), row]));
@@ -145,15 +150,15 @@ export async function createWarehouse(req: Request, res: Response): Promise<void
   const name = validName(req.body.name); const capacity = positiveInt(req.body.capacity, 1_000_000_000);
   if (!name || !capacity) { res.status(400).json({ error: 'Enter a warehouse name and a positive capacity.' }); return; }
   const ctx = await getContext();
-  const existing = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+  const existing = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, ...divisionFilter(req), name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
   if (existing) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
-  const id = await ctx.insert('warehouses', { tenant_id: req.user!.tenantId, name, capacity, is_active: 1 });
-  res.status(201).json(await warehouseSnapshot(req.user!.tenantId, id));
+  const id = await ctx.insert('warehouses', { tenant_id: req.user!.tenantId, name, capacity, is_active: 1, division_id: divisionStamp(req) });
+  res.status(201).json(await warehouseSnapshot(req, id));
 }
 
 export async function getWarehouse(req: Request, res: Response): Promise<void> {
   if (!isValidId(req.params.id)) { res.status(400).json({ error: 'Invalid storage location.' }); return; }
-  const warehouse = await warehouseSnapshot(req.user!.tenantId, req.params.id);
+  const warehouse = await warehouseSnapshot(req, req.params.id);
   if (!warehouse) { res.status(404).json({ error: 'Storage location not found.' }); return; }
   res.json(warehouse);
 }
@@ -163,17 +168,18 @@ export async function updateWarehouse(req: Request, res: Response): Promise<void
   const name = validName(req.body.name); const capacity = positiveInt(req.body.capacity, 1_000_000_000);
   if (!name || !capacity) { res.status(400).json({ error: 'Enter a warehouse name and positive capacity.' }); return; }
   const ctx = await getContext();
-  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId });
+  const df = divisionFilter(req);
+  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df });
   if (!warehouse) { res.status(404).json({ error: 'Storage location not found.' }); return; }
-  const duplicates = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, id: { $ne: req.params.id }, name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+  const duplicates = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, id: { $ne: req.params.id }, ...df, name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
   if (duplicates) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
-  const snapshot = await warehouseSnapshot(req.user!.tenantId, req.params.id);
+  const snapshot = await warehouseSnapshot(req, req.params.id);
   const occupied = Number(snapshot?.occupied_capacity || 0);
   const positions = (snapshot?.racks || []).reduce((sum: number, rack: any) => sum + (rack.cells || []).length, 0);
   if (capacity < positions) { res.status(409).json({ error: `Capacity cannot be below the ${positions} storage positions already configured.` }); return; }
   if (capacity < occupied) { res.status(409).json({ error: `Capacity cannot be below the ${occupied} units currently stored.` }); return; }
-  await ctx.updateOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId }, { $set: { name, capacity } });
-  res.json(await warehouseSnapshot(req.user!.tenantId, req.params.id));
+  await ctx.updateOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df }, { $set: { name, capacity } });
+  res.json(await warehouseSnapshot(req, req.params.id));
 }
 
 export async function listWarehouseRacks(req: Request, res: Response): Promise<void> { await getWarehouse(req, res); }
@@ -183,15 +189,16 @@ export async function createRack(req: Request, res: Response): Promise<void> {
   const rackCode = validName(req.body.name); const rows = positiveInt(req.body.rows, 30); const columns = positiveInt(req.body.columns, 30);
   if (!rackCode || !rows || !columns || rows * columns > 300) { res.status(400).json({ error: 'Enter a rack name and dimensions with no more than 300 cells.' }); return; }
   const ctx = await getContext();
-  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId });
+  const df = divisionFilter(req);
+  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df });
   if (!warehouse) { res.status(404).json({ error: 'Storage location not found.' }); return; }
-  const exists = await ctx.findOne('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, rack_code: rackCode });
+  const exists = await ctx.findOne('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, rack_code: rackCode, ...df });
   if (exists) { res.status(409).json({ error: 'That rack name already exists in this storage location.' }); return; }
   let rackId: string;
   try {
     rackId = await withTransaction(async tx => {
-      await tx.updateOne('warehouses', { id: warehouse.id, tenant_id: req.user!.tenantId }, { $set: { capacity: warehouse.capacity } });
-      const currentRacks = await tx.find('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id });
+      await tx.updateOne('warehouses', { id: warehouse.id, tenant_id: req.user!.tenantId, ...df }, { $set: { capacity: warehouse.capacity } });
+      const currentRacks = await tx.find('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, ...df });
       const currentPositions = currentRacks.reduce((sum: number, rack: any) => sum + (Array.isArray(rack.cells) ? rack.cells.length : 0), 0);
       if (currentPositions + rows * columns > Number(warehouse.capacity)) {
         throw Object.assign(new Error(`This godown can have at most ${warehouse.capacity} positions. It already has ${currentPositions}.`), { statusCode: 409 });
@@ -201,16 +208,16 @@ export async function createRack(req: Request, res: Response): Promise<void> {
         const shelf = `S${row}`;
         const position = `P${column}`;
         const locationCode = locationCodeFor(warehouse.name, rackCode, row, column);
-        const locationId = await tx.insert('shelf_locations', { tenant_id: req.user!.tenantId, location_code: locationCode, description: `${warehouse.name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rackCode, shelf: `${shelf}-${position}`, is_active: 1 });
+        const locationId = await tx.insert('shelf_locations', { tenant_id: req.user!.tenantId, location_code: locationCode, description: `${warehouse.name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rackCode, shelf: `${shelf}-${position}`, is_active: 1, division_id: warehouse.division_id ?? null });
         cells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: locationId, location_code: locationCode });
       }
-      return tx.insert('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, rack_code: rackCode, rows, columns, cells });
+      return tx.insert('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, rack_code: rackCode, rows, columns, cells, division_id: divisionStamp(req) });
     });
   } catch (error: any) {
     res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not create rack.' });
     return;
   }
-  const updated = await warehouseSnapshot(req.user!.tenantId, String(warehouse.id));
+  const updated = await warehouseSnapshot(req, String(warehouse.id));
   res.status(201).json(updated?.racks.find((rack: any) => String(rack.id) === rackId));
 }
 
@@ -222,11 +229,12 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
   if (!rackCode || !rows || !columns || rows * columns > 300) { res.status(400).json({ error: 'Enter a rack name and dimensions with no more than 300 cells.' }); return; }
 
   const ctx = await getContext();
-  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId });
+  const df = divisionFilter(req);
+  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df });
   if (!warehouse) { res.status(404).json({ error: 'Storage location not found.' }); return; }
-  const rack = await ctx.findOne('storage_racks', { id: req.params.rackId, warehouse_id: warehouse.id, tenant_id: req.user!.tenantId });
+  const rack = await ctx.findOne('storage_racks', { id: req.params.rackId, warehouse_id: warehouse.id, tenant_id: req.user!.tenantId, ...df });
   if (!rack) { res.status(404).json({ error: 'Rack not found.' }); return; }
-  const duplicate = await ctx.findOne('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, id: { $ne: rack.id }, rack_code: { $regex: `^${rackCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+  const duplicate = await ctx.findOne('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, id: { $ne: rack.id }, ...df, rack_code: { $regex: `^${rackCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
   if (duplicate) { res.status(409).json({ error: 'That rack name already exists in this storage location.' }); return; }
 
   const oldRows = Number(rack.rows || rack.rows_count || 0);
@@ -235,7 +243,7 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
   const oldCells = (rack.cells || []) as any[];
   const oldLocationIds = oldCells.map((cell) => cell.shelf_location_id).filter(Boolean);
   if (dimensionsChanged && oldLocationIds.length) {
-    const batches = await ctx.find('batches', { tenant_id: req.user!.tenantId, shelf_location_id: { $in: oldLocationIds }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] } });
+    const batches = await ctx.find('batches', { tenant_id: req.user!.tenantId, shelf_location_id: { $in: oldLocationIds }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] }, ...df });
     const hasStock = batches.some((batch: any) => Number(batch.quantity || 0) > Number(batch.dispatched_quantity || 0) + Number(batch.recalled_quantity || 0));
     if (hasStock) { res.status(409).json({ error: 'Move or dispatch the stock before changing rack dimensions.' }); return; }
   }
@@ -243,8 +251,8 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
   let cells: any[];
   try {
     cells = await withTransaction(async (tx) => {
-    await tx.updateOne('warehouses', { id: warehouse.id, tenant_id: req.user!.tenantId }, { $set: { capacity: warehouse.capacity } });
-    const currentRacks = await tx.find('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id });
+    await tx.updateOne('warehouses', { id: warehouse.id, tenant_id: req.user!.tenantId, ...df }, { $set: { capacity: warehouse.capacity } });
+    const currentRacks = await tx.find('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, ...df });
     const currentPositions = currentRacks.reduce((sum: number, current: any) =>
       sum + (String(current.id) === String(rack.id) ? 0 : (Array.isArray(current.cells) ? current.cells.length : 0)), 0);
     if (currentPositions + rows * columns > Number(warehouse.capacity)) {
@@ -252,12 +260,12 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
     }
     const nextCells: any[] = [];
     if (dimensionsChanged) {
-      await tx.deleteMany('shelf_locations', { tenant_id: req.user!.tenantId, id: { $in: oldLocationIds } });
+      await tx.deleteMany('shelf_locations', { tenant_id: req.user!.tenantId, id: { $in: oldLocationIds }, ...df });
       for (let row = 1; row <= rows; row++) for (let column = 1; column <= columns; column++) {
         const shelf = `S${row}`;
         const position = `P${column}`;
         const locationCode = locationCodeFor(warehouse.name, rackCode, row, column);
-        const locationId = await tx.insert('shelf_locations', { tenant_id: req.user!.tenantId, location_code: locationCode, description: `${warehouse.name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rackCode, shelf: `${shelf}-${position}`, is_active: 1 });
+        const locationId = await tx.insert('shelf_locations', { tenant_id: req.user!.tenantId, location_code: locationCode, description: `${warehouse.name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rackCode, shelf: `${shelf}-${position}`, is_active: 1, division_id: warehouse.division_id ?? null });
         nextCells.push({ row, column, cell_code: `${rackCode}-${shelf}-${position}`, shelf_location_id: locationId, location_code: locationCode });
       }
     } else {
@@ -265,11 +273,11 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
         const shelf = `S${cell.row}`;
         const position = `P${cell.column}`;
         const locationCode = locationCodeFor(warehouse.name, rackCode, cell.row, cell.column);
-        await tx.updateOne('shelf_locations', { id: cell.shelf_location_id, tenant_id: req.user!.tenantId }, { $set: { location_code: locationCode, description: `${warehouse.name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rackCode, shelf: `${shelf}-${position}` } });
+        await tx.updateOne('shelf_locations', { id: cell.shelf_location_id, tenant_id: req.user!.tenantId, ...df }, { $set: { location_code: locationCode, description: `${warehouse.name} · ${rackCode} · Shelf ${shelf}, Position ${position}`, warehouse: warehouse.name, rack: rackCode, shelf: `${shelf}-${position}` } });
         nextCells.push({ ...cell, cell_code: `${rackCode}-${shelf}-${position}`, location_code: locationCode });
       }
     }
-    await tx.updateOne('storage_racks', { id: rack.id, warehouse_id: warehouse.id, tenant_id: req.user!.tenantId }, { $set: { rack_code: rackCode, rows, columns, cells: nextCells } });
+    await tx.updateOne('storage_racks', { id: rack.id, warehouse_id: warehouse.id, tenant_id: req.user!.tenantId, ...df }, { $set: { rack_code: rackCode, rows, columns, cells: nextCells } });
     return nextCells;
     });
   } catch (error: any) {
@@ -277,22 +285,23 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const updated = await warehouseSnapshot(req.user!.tenantId, String(warehouse.id));
+  const updated = await warehouseSnapshot(req, String(warehouse.id));
   res.json(updated?.racks.find((item: any) => String(item.id) === String(rack.id)) || { ...rack, rack_code: rackCode, rows, columns, cells });
 }
 
 export async function removeRack(req: Request, res: Response): Promise<void> {
   if (!isValidId(req.params.id) || !isValidId(req.params.rackId)) { res.status(400).json({ error: 'Invalid rack.' }); return; }
   const ctx = await getContext();
-  const rack = await ctx.findOne('storage_racks', { id: req.params.rackId, warehouse_id: req.params.id, tenant_id: req.user!.tenantId });
+  const df = divisionFilter(req);
+  const rack = await ctx.findOne('storage_racks', { id: req.params.rackId, warehouse_id: req.params.id, tenant_id: req.user!.tenantId, ...df });
   if (!rack) { res.status(404).json({ error: 'Rack not found.' }); return; }
   const ids = (rack.cells || []).map((cell: any) => cell.shelf_location_id).filter(Boolean);
-  const candidateBatches = ids.length ? await ctx.find('batches', { tenant_id: req.user!.tenantId, shelf_location_id: { $in: ids }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] } }) : [];
+  const candidateBatches = ids.length ? await ctx.find('batches', { tenant_id: req.user!.tenantId, shelf_location_id: { $in: ids }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] }, ...df }) : [];
   const occupied = candidateBatches.some((batch: any) => Number(batch.quantity || 0) > Number(batch.dispatched_quantity || 0) + Number(batch.recalled_quantity || 0));
   if (occupied) { res.status(409).json({ error: 'This rack contains stock and cannot be removed.' }); return; }
   await withTransaction(async tx => {
-    await tx.deleteMany('shelf_locations', { tenant_id: req.user!.tenantId, id: { $in: ids } });
-    await tx.deleteOne('storage_racks', { id: rack.id, tenant_id: req.user!.tenantId });
+    await tx.deleteMany('shelf_locations', { tenant_id: req.user!.tenantId, id: { $in: ids }, ...df });
+    await tx.deleteOne('storage_racks', { id: rack.id, tenant_id: req.user!.tenantId, ...df });
   });
   res.json({ id: rack.id, deleted: true });
 }

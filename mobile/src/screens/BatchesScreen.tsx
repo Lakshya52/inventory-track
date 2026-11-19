@@ -135,10 +135,10 @@ async function labelSetsHtml(sets: { job: QrPrintJob; labels: QrLabel[] }[]): Pr
       <article class="label">
         <div class="brand">ACEONE INVENTORY</div>
         <div class="qr">${qrSvg}</div>
+        <div class="value">${escapeHtml(label.qr_value)}</div>
         <div class="product">${escapeHtml(job.product_name)}</div>
         <div class="batch">${escapeHtml(label.batch_number || '')}</div>
         <div class="serial">Unit ${label.serial_no} of ${total}</div>
-        <div class="code">${escapeHtml(label.qr_value)}</div>
       </article>`;
   }));
   return `
@@ -151,12 +151,12 @@ async function labelSetsHtml(sets: { job: QrPrintJob; labels: QrLabel[] }[]): Pr
           .sheet { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8mm; }
           .label { min-height: 62mm; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; padding: 4mm; display: flex; flex-direction: column; align-items: center; text-align: center; page-break-inside: avoid; }
           .brand { font-size: 8px; font-weight: 700; letter-spacing: 1px; color: #4f46e5; }
-          .qr { width: 34mm; height: 34mm; margin: 2mm 0; }
+          .qr { width: 32mm; height: 32mm; margin: 2mm 0 1mm; }
           .qr svg { width: 100%; height: 100%; }
+          .value { font-size: 13px; font-weight: 800; letter-spacing: 0.4px; color: #0f172a; overflow-wrap: anywhere; margin-bottom: 1mm; }
           .product { font-size: 10px; font-weight: 700; }
           .batch { font-size: 9px; margin-top: 1mm; }
-          .serial, .code { color: #475569; font-size: 7px; margin-top: 1mm; }
-          .code { overflow-wrap: anywhere; }
+          .serial { color: #475569; font-size: 7px; margin-top: 1mm; }
         </style>
       </head>
       <body><main class="sheet">${cards.join('')}</main></body>

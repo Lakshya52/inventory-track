@@ -29,7 +29,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     }
 
     const rows = await query<RowDataPacket[]>(
-      `SELECT id, is_active, tenant_id FROM ${decoded.table} WHERE id = ?`,
+      `SELECT id, is_active, tenant_id, division_id FROM ${decoded.table} WHERE id = ?`,
       [decoded.userId]
     );
     if (rows.length === 0) {
@@ -44,8 +44,40 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       res.status(401).json({ error: 'Invalid or expired token' });
       return;
     }
+    // Division-locked non-admin users cannot operate in a deactivated division.
+    if (decoded.role !== 'ADMIN' && rows[0].division_id) {
+      const divisions = await query<RowDataPacket[]>(
+        'SELECT is_active FROM divisions WHERE id = ? AND tenant_id = ? LIMIT 1',
+        [rows[0].division_id, decoded.tenantId]
+      );
+      if (divisions.length === 0 || Number(divisions[0].is_active) !== 1) {
+        res.status(403).json({ error: 'Your division is deactivated — contact your administrator.' });
+        return;
+      }
+    }
 
-    req.user = decoded;
+    // Division selection for the single ADMIN — any other role keeps its own
+    // assigned division (or none). Admins can narrow the whole request to one
+    // division with the `X-Division-Id` header ('all' or absent = tenant-wide).
+    let divisionId = rows[0].division_id ?? null;
+    const selection = String(req.headers['x-division-id'] ?? '').trim();
+    if (decoded.role === 'ADMIN') {
+      if (!selection || selection === 'all') {
+        divisionId = null;
+      } else {
+        const [selected] = await query<RowDataPacket[]>(
+          'SELECT id FROM divisions WHERE id = ? AND tenant_id = ? LIMIT 1',
+          [selection, decoded.tenantId]
+        );
+        if (!selected) {
+          res.status(403).json({ error: 'Division not found in this organization' });
+          return;
+        }
+        divisionId = selected.id;
+      }
+    }
+
+    req.user = { ...decoded, divisionId };
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });

@@ -3,6 +3,7 @@ import { DbContext, daysAgo, getContext, idKey, startOfDay } from '../config/dat
 import { applyOperation, registerDevice, touchDeviceSync } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import { batchAgeMinutes, batchQrValues, mapByIds, mapNames } from '../services/queryService';
+import { divisionFilter } from '../utils/division';
 
 function parseCursor(value: unknown): number {
   if (value === undefined || value === null || value === '') return 0;
@@ -58,18 +59,22 @@ async function rowsForPull(
   };
 }
 
-async function enrichBatches(ctx: DbContext, batches: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichBatches(ctx: DbContext, batches: Record<string, any>[], tenantId: string | number, divisionScope?: Record<string, any>): Promise<Record<string, any>[]> {
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => idKey(batch.product_id))
+    batches.map((batch) => idKey(batch.product_id)),
+    tenantId,
+    divisionScope
   );
   const locations = await mapByIds<Record<string, any>>(
     ctx,
     'shelf_locations',
-    batches.map((batch) => batch.shelf_location_id)
+    batches.map((batch) => batch.shelf_location_id),
+    tenantId,
+    divisionScope
   );
-  const qrValues = await batchQrValues(ctx, batches.map((batch) => idKey(batch.id)));
+  const qrValues = await batchQrValues(ctx, batches.map((batch) => idKey(batch.id)), tenantId, divisionScope);
 
   return batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
@@ -94,16 +99,20 @@ async function enrichBatches(ctx: DbContext, batches: Record<string, any>[]): Pr
   });
 }
 
-async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[], tenantId: string | number, divisionScope?: Record<string, any>): Promise<Record<string, any>[]> {
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => idKey(record.batch_id))
+    records.map((record) => idKey(record.batch_id)),
+    tenantId,
+    divisionScope
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => idKey(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    divisionScope
   );
   return records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
@@ -117,19 +126,23 @@ async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[]): 
   });
 }
 
-async function enrichDispatchOrders(ctx: DbContext, orders: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichDispatchOrders(ctx: DbContext, orders: Record<string, any>[], tenantId: string | number, divisionScope?: Record<string, any>): Promise<Record<string, any>[]> {
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    orders.map((order) => idKey(order.batch_id))
+    orders.map((order) => idKey(order.batch_id)),
+    tenantId,
+    divisionScope
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => idKey(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    divisionScope
   );
-  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => idKey(order.raised_by)));
-  const clients = await mapNames(ctx, 'clients', orders.map((order) => idKey(order.client_id)));
+  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => idKey(order.raised_by)), tenantId);
+  const clients = await mapNames(ctx, 'clients', orders.map((order) => idKey(order.client_id)), tenantId);
 
   return orders.map((order) => {
     const batch = batches.get(idKey(order.batch_id));
@@ -146,16 +159,20 @@ async function enrichDispatchOrders(ctx: DbContext, orders: Record<string, any>[
   });
 }
 
-async function enrichDispatchRecords(ctx: DbContext, records: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichDispatchRecords(ctx: DbContext, records: Record<string, any>[], tenantId: string | number, divisionScope?: Record<string, any>): Promise<Record<string, any>[]> {
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => idKey(record.batch_id))
+    records.map((record) => idKey(record.batch_id)),
+    tenantId,
+    divisionScope
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => idKey(batch.product_id))
+    [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    divisionScope
   );
   return records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
@@ -171,7 +188,9 @@ async function enrichDispatchRecords(ctx: DbContext, records: Record<string, any
 
 async function workQueue(
   ctx: DbContext,
-  role: string
+  role: string,
+  tenantId: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Record<string, any>[]> {
   let filter: Record<string, any>;
   let sortField: string;
@@ -190,7 +209,7 @@ async function workQueue(
     sortField = 'updated_at';
   }
 
-  const batches = await ctx.find('batches', filter, {
+  const batches = await ctx.find('batches', { ...filter, tenant_id: tenantId, ...(divisionScope ?? {}) }, {
     sort: { [sortField]: 1 },
     limit: 200,
     projection: { _id: 0 },
@@ -198,11 +217,13 @@ async function workQueue(
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => idKey(batch.product_id))
+    batches.map((batch) => idKey(batch.product_id)),
+    tenantId,
+    divisionScope
   );
   // The work queue is re-sent on every pull (no cursor), so carrying the unit
   // QR codes here lets devices repair any batch cache that lost its labels.
-  const qrValues = await batchQrValues(ctx, batches.map((batch) => idKey(batch.id)));
+  const qrValues = await batchQrValues(ctx, batches.map((batch) => idKey(batch.id)), tenantId, divisionScope);
 
   return batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
@@ -245,6 +266,7 @@ export async function push(req: Request, res: Response): Promise<void> {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
+  const tenantId = req.user!.tenantId;
   const operations = Array.isArray(req.body?.operations) ? req.body.operations : null;
   if (!operations) {
     res.status(400).json({ error: 'operations must be an array' });
@@ -274,7 +296,7 @@ export async function push(req: Request, res: Response): Promise<void> {
 
   const failed = results.filter((result) => result.status === 'FAILED').length;
   const conflicts = results.filter((result) => result.status === 'CONFLICT').length;
-  await touchDeviceSync(deviceUuid, 'push', failed || conflicts ? `${failed} failed, ${conflicts} conflicts` : null);
+  await touchDeviceSync(deviceUuid, 'push', failed || conflicts ? `${failed} failed, ${conflicts} conflicts` : null, tenantId);
 
   const operationIssues = results
     .filter((result) => result.status === 'FAILED' || result.status === 'CONFLICT')
@@ -313,22 +335,24 @@ export async function pull(req: Request, res: Response): Promise<void> {
     return;
   }
   const user = req.user;
+  const tenantId = req.user!.tenantId;
   const since = parseCursor(req.query.since);
   const limit = parseLimit(req.query.limit, 500);
   const querySince = Math.max(0, since - 5000);
   const deviceUuid = typeof req.query.device_uuid === 'string' ? req.query.device_uuid : null;
   const ctx = await getContext();
+  const division = divisionFilter(req);
 
-  const products = await rowsForPull(ctx, 'products', { updated_at: { $gt: new Date(querySince) } }, 'updated_at', limit);
-  const locations = await rowsForPull(ctx, 'shelf_locations', { updated_at: { $gt: new Date(querySince) } }, 'updated_at', limit);
-  const clients = await rowsForPull(ctx, 'clients', { updated_at: { $gt: new Date(querySince) } }, 'updated_at', limit);
+  const products = await rowsForPull(ctx, 'products', { updated_at: { $gt: new Date(querySince) }, tenant_id: tenantId, is_active: 1, ...division }, 'updated_at', limit);
+  const locations = await rowsForPull(ctx, 'shelf_locations', { updated_at: { $gt: new Date(querySince) }, tenant_id: tenantId, ...division }, 'updated_at', limit);
+  const clients = await rowsForPull(ctx, 'clients', { updated_at: { $gt: new Date(querySince) }, tenant_id: tenantId }, 'updated_at', limit);
 
-  const batchRows = await ctx.find('batches', { updated_at: { $gt: new Date(querySince) } }, {
+  const batchRows = await ctx.find('batches', { updated_at: { $gt: new Date(querySince) }, tenant_id: tenantId, ...division }, {
     sort: { updated_at: 1 },
     limit,
     projection: { _id: 0 },
   });
-  const enrichedBatchRows = (await enrichBatches(ctx, batchRows))
+  const enrichedBatchRows = (await enrichBatches(ctx, batchRows, tenantId, division))
     .map((batch) => ({ ...batch, _updated_ms: updatedMs(batch.updated_at) }));
   const batches: PullPage = {
     rows: enrichedBatchRows,
@@ -338,35 +362,37 @@ export async function pull(req: Request, res: Response): Promise<void> {
 
   let qcRecords: PullPage = { rows: [], hasMore: false, lastMs: 0 };
   if (user.role === 'QC' || user.role === 'ADMIN') {
-    const filter: Record<string, any> = { created_at: { $gt: new Date(querySince) } };
+    const filter: Record<string, any> = { created_at: { $gt: new Date(querySince) }, tenant_id: tenantId, ...division };
     if (user.role === 'QC') filter.tester_id = user.userId;
     const page = await rowsForPull(ctx, 'qc_records', filter, 'created_at', limit);
-    qcRecords = { ...page, rows: await enrichQcRecords(ctx, page.rows) };
+    qcRecords = { ...page, rows: await enrichQcRecords(ctx, page.rows, tenantId, division) };
   }
 
   let dispatchOrders: PullPage = { rows: [], hasMore: false, lastMs: 0 };
   if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
-    const filter: Record<string, any> = { updated_at: { $gt: new Date(querySince) } };
+    const filter: Record<string, any> = { updated_at: { $gt: new Date(querySince) }, tenant_id: tenantId, ...division };
     if (user.role === 'DISPATCH') filter.raised_by = user.userId;
     const page = await rowsForPull(ctx, 'dispatch_orders', filter, 'updated_at', limit);
-    dispatchOrders = { ...page, rows: await enrichDispatchOrders(ctx, page.rows) };
+    dispatchOrders = { ...page, rows: await enrichDispatchOrders(ctx, page.rows, tenantId, division) };
   }
 
   let dispatchRecords: PullPage = { rows: [], hasMore: false, lastMs: 0 };
   if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
-    const filter: Record<string, any> = { created_at: { $gt: new Date(querySince) } };
+    const filter: Record<string, any> = { created_at: { $gt: new Date(querySince) }, tenant_id: tenantId, ...division };
     if (user.role === 'DISPATCH') filter.dispatcher_id = user.userId;
     const page = await rowsForPull(ctx, 'dispatch_records', filter, 'created_at', limit);
-    dispatchRecords = { ...page, rows: await enrichDispatchRecords(ctx, page.rows) };
+    dispatchRecords = { ...page, rows: await enrichDispatchRecords(ctx, page.rows, tenantId, division) };
   }
 
-  const workQueueRows = await workQueue(ctx, user.role);
+  const workQueueRows = await workQueue(ctx, user.role, tenantId, division);
 
   let myOrders: Record<string, any>[] = [];
   if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
     const filter: Record<string, any> = {
       status: { $in: ['PENDING', 'APPROVED'] },
       dispatched_at: null,
+      tenant_id: tenantId,
+      ...division,
     };
     if (user.role === 'DISPATCH') filter.raised_by = user.userId;
     const orders = await ctx.find('dispatch_orders', filter, {
@@ -374,15 +400,15 @@ export async function pull(req: Request, res: Response): Promise<void> {
       limit: 100,
       projection: { _id: 0 },
     });
-    myOrders = await enrichDispatchOrders(ctx, orders);
+    myOrders = await enrichDispatchOrders(ctx, orders, tenantId, division);
   }
 
   const [pendingQcCount, readyCount, pendingOrderCount, myTestsToday, myDispatchesToday] = await Promise.all([
-    ctx.count('dispatch_orders', { status: 'PENDING' }),
-    ctx.count('batches', { status: 'QC_PASSED' }),
-    ctx.count('dispatch_orders', { status: 'PENDING' }),
-    ctx.count('qc_records', { tester_id: user.userId, created_at: { $gte: startOfDay() } }),
-    ctx.count('dispatch_records', { dispatcher_id: user.userId, created_at: { $gte: startOfDay() } }),
+    ctx.count('dispatch_orders', { status: 'PENDING', tenant_id: tenantId, ...division }),
+    ctx.count('batches', { status: 'QC_PASSED', tenant_id: tenantId, ...division }),
+    ctx.count('dispatch_orders', { status: 'PENDING', tenant_id: tenantId, ...division }),
+    ctx.count('qc_records', { tester_id: user.userId, created_at: { $gte: startOfDay() }, tenant_id: tenantId, ...division }),
+    ctx.count('dispatch_records', { dispatcher_id: user.userId, created_at: { $gte: startOfDay() }, tenant_id: tenantId, ...division }),
   ]);
 
   const pages = [products, locations, clients, batches, qcRecords, dispatchOrders, dispatchRecords];
@@ -404,7 +430,7 @@ export async function pull(req: Request, res: Response): Promise<void> {
     ? Math.max(since, Math.min(...limitedLast) - 1)
     : maxLast;
 
-  await touchDeviceSync(deviceUuid, 'pull', null);
+  await touchDeviceSync(deviceUuid, 'pull', null, tenantId);
 
   console.info('[sync] pull completed', JSON.stringify({
     request_id: (req as Request & { requestId?: string }).requestId || null,
@@ -454,18 +480,20 @@ export async function status(req: Request, res: Response): Promise<void> {
     return;
   }
   const deviceUuid = typeof req.query.device_uuid === 'string' ? req.query.device_uuid : null;
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
 
   const [device, syncState, operationCounts] = await Promise.all([
     deviceUuid
-      ? ctx.findOne('devices', { device_uuid: deviceUuid }, { projection: { _id: 0 } })
+      ? ctx.findOne('devices', { device_uuid: deviceUuid, tenant_id: tenantId }, { projection: { _id: 0 } })
       : null,
     deviceUuid
-      ? ctx.findOne('device_sync_state', { device_uuid: deviceUuid }, { projection: { _id: 0 } })
+      ? ctx.findOne('device_sync_state', { device_uuid: deviceUuid, tenant_id: tenantId }, { projection: { _id: 0 } })
       : null,
     ctx.aggregate('sync_operations', [
       {
         $match: {
+          tenant_id: tenantId,
           user_role: req.user.role,
           user_id: req.user.userId,
           server_timestamp: { $gt: daysAgo(7) },

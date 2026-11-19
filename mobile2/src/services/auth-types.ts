@@ -16,3 +16,14 @@ export type AuthSession = {
   refreshExpiresAt?: string;
   user: AuthUser;
 };
+
+/** Organization (tenant) the signed-in account belongs to, as returned by GET /auth/tenant. */
+export type AuthTenant = {
+  id: number | string;
+  name: string;
+  email: string;
+  phone: string;
+  logoUrl: string | null;
+  slug: string;
+  updatedAt?: string | null;
+};

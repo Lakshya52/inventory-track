@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { api } from '../services/api';
+import { subscribe } from '../services/realtime';
 import { useAuth } from '../contexts/AuthContext';
 import { AdminStats } from '../types';
 import { formatDate } from '../utils/dateFormat';
@@ -90,6 +91,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     void loadData();
+    const unsubscribe = subscribe((event) => {
+      if (event.type === 'batch.created' || event.type === 'qc.decision' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed') {
+        void loadData();
+      }
+    });
+    return () => unsubscribe();
   }, []);
 
   // Poll active loading sessions every 6 seconds so truck progress updates live

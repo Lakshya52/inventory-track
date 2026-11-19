@@ -3,28 +3,34 @@ import { query, execute } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 
 export async function list(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const where = ['tenant_id = ?'];
+  if (req.user?.role !== 'ADMIN') where.push('is_active = 1');
   const clients = await query<RowDataPacket[]>(
-    `SELECT * FROM clients ${req.user?.role === 'ADMIN' ? '' : 'WHERE is_active = 1'} ORDER BY name`
+    `SELECT * FROM clients WHERE ${where.join(' AND ')} ORDER BY name`,
+    [tenantId]
   );
   res.json(clients);
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { name, contact_person, email, phone, address, gst_number } = req.body;
   if (!name) { res.status(400).json({ error: 'Client name is required' }); return; }
   const result = await execute(
-    'INSERT INTO clients (name, contact_person, email, phone, address, gst_number) VALUES (?, ?, ?, ?, ?, ?)',
-    [name, contact_person || null, email || null, phone || null, address || null, gst_number || null]
+    'INSERT INTO clients (name, contact_person, email, phone, address, gst_number, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [name, contact_person || null, email || null, phone || null, address || null, gst_number || null, tenantId]
   );
-  await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
-    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_CREATED', `Client "${name}" created`]);
+  await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id) VALUES (?, ?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_CREATED', `Client "${name}" created`, tenantId]);
   res.status(201).json({ id: result.insertId, name, contact_person, email, phone, address, gst_number });
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { id } = req.params;
   const { name, contact_person, email, phone, address, gst_number, is_active } = req.body;
-  const existing = await query<RowDataPacket[]>('SELECT * FROM clients WHERE id = ?', [id]);
+  const existing = await query<RowDataPacket[]>('SELECT * FROM clients WHERE id = ? AND tenant_id = ?', [id, tenantId]);
   if (existing.length === 0) {
     res.status(404).json({ error: 'Client not found' });
     return;
@@ -36,7 +42,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   }
   const active = is_active === undefined ? existing[0].is_active : Number(is_active) === 1 ? 1 : 0;
   await execute(
-    'UPDATE clients SET name = ?, contact_person = ?, email = ?, phone = ?, address = ?, gst_number = ?, is_active = ? WHERE id = ?',
+    'UPDATE clients SET name = ?, contact_person = ?, email = ?, phone = ?, address = ?, gst_number = ?, is_active = ? WHERE id = ? AND tenant_id = ?',
     [
       nextName,
       contact_person === undefined ? existing[0].contact_person : contact_person || null,
@@ -46,22 +52,24 @@ export async function update(req: Request, res: Response): Promise<void> {
       gst_number === undefined ? existing[0].gst_number : gst_number || null,
       active,
       id,
+      tenantId,
     ]
   );
-  await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
-    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_UPDATED', `Client "${nextName}" updated`]);
+  await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id) VALUES (?, ?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_UPDATED', `Client "${nextName}" updated`, tenantId]);
   res.json({ message: 'Client updated' });
 }
 
 export async function remove(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { id } = req.params;
-  const clients = await query<RowDataPacket[]>('SELECT name, is_active FROM clients WHERE id = ?', [id]);
+  const clients = await query<RowDataPacket[]>('SELECT name, is_active FROM clients WHERE id = ? AND tenant_id = ?', [id, tenantId]);
   if (clients.length === 0) {
     res.status(404).json({ error: 'Client not found' });
     return;
   }
-  await execute('UPDATE clients SET is_active = 0 WHERE id = ?', [id]);
-  await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
-    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_DEACTIVATED', `Client "${clients[0].name}" deactivated`]);
+  await execute('UPDATE clients SET is_active = 0 WHERE id = ? AND tenant_id = ?', [id, tenantId]);
+  await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id) VALUES (?, ?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_DEACTIVATED', `Client "${clients[0].name}" deactivated`, tenantId]);
   res.json({ message: 'Client deactivated' });
 }

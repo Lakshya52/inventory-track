@@ -2,17 +2,21 @@ import { Request, Response } from 'express';
 import { getContext, isValidId } from '../config/database';
 
 export async function list(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const filter = req.user?.role === 'ADMIN' ? {} : { is_active: 1 };
+  const filter: Record<string, any> = { tenant_id: tenantId };
+  if (req.user?.role !== 'ADMIN') filter.is_active = 1;
   const clients = await ctx.find('clients', filter, { sort: { name: 1 }, projection: { _id: 0 } });
   res.json(clients);
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { name, contact_person, email, phone, address, gst_number } = req.body;
   if (!name) { res.status(400).json({ error: 'Client name is required' }); return; }
   const ctx = await getContext();
   const id = await ctx.insert('clients', {
+    tenant_id: tenantId,
     name,
     contact_person: contact_person || null,
     email: email || null,
@@ -22,6 +26,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     is_active: 1,
   });
   await ctx.insert('activity_logs', {
+    tenant_id: tenantId,
     user_name: req.user?.name || 'System',
     user_role: req.user?.role || 'ADMIN',
     action: 'CLIENT_CREATED',
@@ -31,11 +36,12 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid client id' }); return; }
   const { name, contact_person, email, phone, address, gst_number, is_active } = req.body;
   const ctx = await getContext();
-  const existing = await ctx.findOne('clients', { id });
+  const existing = await ctx.findOne('clients', { id, tenant_id: tenantId });
   if (!existing) {
     res.status(404).json({ error: 'Client not found' });
     return;
@@ -46,7 +52,7 @@ export async function update(req: Request, res: Response): Promise<void> {
     return;
   }
   const active = is_active === undefined ? existing.is_active : Number(is_active) === 1 ? 1 : 0;
-  await ctx.updateOne('clients', { id }, {
+  await ctx.updateOne('clients', { id, tenant_id: tenantId }, {
     $set: {
       name: nextName,
       contact_person: contact_person === undefined ? existing.contact_person : contact_person || null,
@@ -58,6 +64,7 @@ export async function update(req: Request, res: Response): Promise<void> {
     },
   });
   await ctx.insert('activity_logs', {
+    tenant_id: tenantId,
     user_name: req.user?.name || 'System',
     user_role: req.user?.role || 'ADMIN',
     action: 'CLIENT_UPDATED',
@@ -67,16 +74,18 @@ export async function update(req: Request, res: Response): Promise<void> {
 }
 
 export async function remove(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid client id' }); return; }
   const ctx = await getContext();
-  const client = await ctx.findOne('clients', { id }, { projection: { name: 1, is_active: 1 } });
+  const client = await ctx.findOne('clients', { id, tenant_id: tenantId }, { projection: { name: 1, is_active: 1 } });
   if (!client) {
     res.status(404).json({ error: 'Client not found' });
     return;
   }
-  await ctx.updateOne('clients', { id }, { $set: { is_active: 0 } });
+  await ctx.updateOne('clients', { id, tenant_id: tenantId }, { $set: { is_active: 0 } });
   await ctx.insert('activity_logs', {
+    tenant_id: tenantId,
     user_name: req.user?.name || 'System',
     user_role: req.user?.role || 'ADMIN',
     action: 'CLIENT_DEACTIVATED',

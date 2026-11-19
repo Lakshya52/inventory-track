@@ -3,6 +3,7 @@ import { query } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 import { applyOperation, registerDevice, touchDeviceSync } from '../services/syncService';
 import { SyncOperationInput } from '../types';
+import { divisionWhere } from '../utils/division';
 
 function parseCursor(value: unknown): number {
   if (value === undefined || value === null || value === '') return 0;
@@ -62,6 +63,7 @@ export async function push(req: Request, res: Response): Promise<void> {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
+  const tenantId = req.user!.tenantId;
   const operations = Array.isArray(req.body?.operations) ? req.body.operations : null;
   if (!operations) {
     res.status(400).json({ error: 'operations must be an array' });
@@ -91,7 +93,7 @@ export async function push(req: Request, res: Response): Promise<void> {
 
   const failed = results.filter((result) => result.status === 'FAILED').length;
   const conflicts = results.filter((result) => result.status === 'CONFLICT').length;
-  await touchDeviceSync(deviceUuid, 'push', failed || conflicts ? `${failed} failed, ${conflicts} conflicts` : null);
+  await touchDeviceSync(deviceUuid, 'push', failed || conflicts ? `${failed} failed, ${conflicts} conflicts` : null, tenantId);
 
   const operationIssues = results
     .filter((result) => result.status === 'FAILED' || result.status === 'CONFLICT')
@@ -130,37 +132,43 @@ export async function pull(req: Request, res: Response): Promise<void> {
     return;
   }
   const user = req.user;
+  const tenantId = req.user!.tenantId;
   const since = parseCursor(req.query.since);
   const limit = parseLimit(req.query.limit, 500);
   // Re-read a small overlap window so timestamp precision or concurrent
   // writes cannot make a device miss a change. Clients dedupe by id.
   const querySince = Math.max(0, since - 5000);
   const deviceUuid = typeof req.query.device_uuid === 'string' ? req.query.device_uuid : null;
+  const dv = divisionWhere(req);
+  const dvL = divisionWhere(req, 'l.division_id');
+  const dvS = divisionWhere(req, 's.division_id');
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
 
   const products = await rowsForPull(
     `SELECT p.*, UNIX_TIMESTAMP(p.updated_at) * 1000 AS _updated_ms
      FROM products p
-     WHERE UNIX_TIMESTAMP(p.updated_at) * 1000 > ?
+     WHERE UNIX_TIMESTAMP(p.updated_at) * 1000 > ? AND p.tenant_id = ? AND p.is_active = 1${dv.sql}
      ORDER BY p.updated_at ASC LIMIT ?`,
-    [querySince],
+    [querySince, tenantId, ...dv.params],
     limit
   );
 
   const locations = await rowsForPull(
     `SELECT s.*, UNIX_TIMESTAMP(s.updated_at) * 1000 AS _updated_ms
      FROM shelf_locations s
-     WHERE UNIX_TIMESTAMP(s.updated_at) * 1000 > ?
+     WHERE UNIX_TIMESTAMP(s.updated_at) * 1000 > ? AND s.tenant_id = ?${dv.sql}
      ORDER BY s.updated_at ASC LIMIT ?`,
-    [querySince],
+    [querySince, tenantId, ...dv.params],
     limit
   );
 
   const clients = await rowsForPull(
     `SELECT c.*, UNIX_TIMESTAMP(c.updated_at) * 1000 AS _updated_ms
      FROM clients c
-     WHERE UNIX_TIMESTAMP(c.updated_at) * 1000 > ?
+     WHERE UNIX_TIMESTAMP(c.updated_at) * 1000 > ? AND c.tenant_id = ?
      ORDER BY c.updated_at ASC LIMIT ?`,
-    [querySince],
+    [querySince, tenantId],
     limit
   );
 
@@ -170,13 +178,13 @@ export async function pull(req: Request, res: Response): Promise<void> {
             p.hazard_classification, p.storage_conditions, p.manufacturer,
             p.physical_state, p.hsn_code, p.price AS product_price,
             s.location_code,
-            (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
+            (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvL.sql}) AS unit_qr_codes,
             UNIX_TIMESTAMP(b.updated_at) * 1000 AS _updated_ms
      FROM batches b JOIN products p ON b.product_id = p.id
-     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
-     WHERE UNIX_TIMESTAMP(b.updated_at) * 1000 > ?
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id AND s.tenant_id = ?${dvS.sql}
+     WHERE UNIX_TIMESTAMP(b.updated_at) * 1000 > ? AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
      ORDER BY b.updated_at ASC LIMIT ?`,
-    [querySince],
+    [tenantId, ...dvL.params, tenantId, ...dvS.params, querySince, tenantId, ...dvB.params, tenantId, ...dvP.params],
     limit
   );
 
@@ -184,15 +192,16 @@ export async function pull(req: Request, res: Response): Promise<void> {
     rows: [], hasMore: false, lastMs: 0,
   };
   if (user.role === 'QC' || user.role === 'ADMIN') {
+    const dvQ = divisionWhere(req, 'q.division_id');
     const mine = user.role === 'QC' ? 'AND q.tester_id = ?' : '';
-    const params = user.role === 'QC' ? [querySince, user.userId] : [querySince];
+    const params = [querySince, tenantId, ...dvQ.params, tenantId, ...dvB.params, tenantId, ...dvP.params, ...(user.role === 'QC' ? [user.userId] : [])];
     qcRecords = await rowsForPull(
       `SELECT q.*, b.batch_number, b.barcode_value, p.name AS product_name,
               UNIX_TIMESTAMP(q.created_at) * 1000 AS _updated_ms
        FROM qc_records q
        JOIN batches b ON q.batch_id = b.id
        JOIN products p ON b.product_id = p.id
-       WHERE UNIX_TIMESTAMP(q.created_at) * 1000 > ? ${mine}
+       WHERE UNIX_TIMESTAMP(q.created_at) * 1000 > ? AND q.tenant_id = ?${dvQ.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql} ${mine}
        ORDER BY q.created_at ASC LIMIT ?`,
       params,
       limit
@@ -203,8 +212,9 @@ export async function pull(req: Request, res: Response): Promise<void> {
     rows: [], hasMore: false, lastMs: 0,
   };
   if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
+    const dvD = divisionWhere(req, 'd.division_id');
     const mine = user.role === 'DISPATCH' ? 'AND d.raised_by = ?' : '';
-    const params = user.role === 'DISPATCH' ? [querySince, user.userId] : [querySince];
+    const params = [tenantId, tenantId, querySince, tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params, ...(user.role === 'DISPATCH' ? [user.userId] : [])];
     dispatchOrders = await rowsForPull(
       `SELECT d.*, b.batch_number, b.barcode_value, p.name AS product_name,
               p.sku AS product_sku, u.name AS raised_by_name, c.name AS client_name,
@@ -212,9 +222,9 @@ export async function pull(req: Request, res: Response): Promise<void> {
        FROM dispatch_orders d
        JOIN batches b ON d.batch_id = b.id
        JOIN products p ON b.product_id = p.id
-       LEFT JOIN dispatch_users u ON d.raised_by = u.id
-       LEFT JOIN clients c ON c.id = d.client_id
-       WHERE UNIX_TIMESTAMP(d.updated_at) * 1000 > ? ${mine}
+       LEFT JOIN dispatch_users u ON d.raised_by = u.id AND u.tenant_id = ?
+       LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
+       WHERE UNIX_TIMESTAMP(d.updated_at) * 1000 > ? AND d.tenant_id = ?${dvD.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql} ${mine}
        ORDER BY d.updated_at ASC LIMIT ?`,
       params,
       limit
@@ -225,15 +235,16 @@ export async function pull(req: Request, res: Response): Promise<void> {
     rows: [], hasMore: false, lastMs: 0,
   };
   if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
+    const dvDR = divisionWhere(req, 'dr.division_id');
     const mine = user.role === 'DISPATCH' ? 'AND dr.dispatcher_id = ?' : '';
-    const params = user.role === 'DISPATCH' ? [querySince, user.userId] : [querySince];
+    const params = [querySince, tenantId, ...dvDR.params, tenantId, ...dvB.params, tenantId, ...dvP.params, ...(user.role === 'DISPATCH' ? [user.userId] : [])];
     dispatchRecords = await rowsForPull(
       `SELECT dr.*, b.batch_number, b.barcode_value, p.name AS product_name,
               UNIX_TIMESTAMP(dr.created_at) * 1000 AS _updated_ms
        FROM dispatch_records dr
        JOIN batches b ON dr.batch_id = b.id
        JOIN products p ON b.product_id = p.id
-       WHERE UNIX_TIMESTAMP(dr.created_at) * 1000 > ? ${mine}
+       WHERE UNIX_TIMESTAMP(dr.created_at) * 1000 > ? AND dr.tenant_id = ?${dvDR.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql} ${mine}
        ORDER BY dr.created_at ASC LIMIT ?`,
       params,
       limit
@@ -246,68 +257,75 @@ export async function pull(req: Request, res: Response): Promise<void> {
       `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
               p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
               p.hazard_classification, p.storage_conditions,
-              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
+              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvL.sql}) AS unit_qr_codes,
               TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.status = 'CREATED'
-       ORDER BY b.created_at ASC LIMIT 200`
+       WHERE b.status = 'CREATED' AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+       ORDER BY b.created_at ASC LIMIT 200`,
+      [tenantId, ...dvL.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
     );
   } else if (user.role === 'DISPATCH') {
     workQueue = await query<RowDataPacket[]>(
       `SELECT b.*, p.name AS product_name, p.sku AS product_sku,
-              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
+              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvL.sql}) AS unit_qr_codes,
               TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.status IN ('QC_PASSED', 'DISPATCH_REJECTED', 'DISPATCH_APPROVED')
-       ORDER BY b.updated_at ASC LIMIT 200`
+       WHERE b.status IN ('QC_PASSED', 'DISPATCH_REJECTED', 'DISPATCH_APPROVED') AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+       ORDER BY b.updated_at ASC LIMIT 200`,
+      [tenantId, ...dvL.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
     );
   } else {
     workQueue = await query<RowDataPacket[]>(
       `SELECT b.*, p.name AS product_name, p.sku AS product_sku,
-              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id) AS unit_qr_codes,
+              (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvL.sql}) AS unit_qr_codes,
               TIMESTAMPDIFF(MINUTE, b.updated_at, NOW()) AS age_minutes
        FROM batches b JOIN products p ON b.product_id = p.id
-       WHERE b.status IN ('CREATED', 'QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED')
-       ORDER BY b.updated_at ASC LIMIT 200`
+       WHERE b.status IN ('CREATED', 'QC_PASSED', 'DISPATCH_ORDER_RAISED', 'DISPATCH_APPROVED') AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+       ORDER BY b.updated_at ASC LIMIT 200`,
+      [tenantId, ...dvL.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
     );
   }
 
   let myOrders: RowDataPacket[] = [];
   if (user.role === 'DISPATCH' || user.role === 'ADMIN') {
+    const dvD = divisionWhere(req, 'd.division_id');
     const mine = user.role === 'DISPATCH' ? 'AND d.raised_by = ?' : '';
-    const params = user.role === 'DISPATCH' ? [user.userId] : [];
+    const params = [tenantId, tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params, ...(user.role === 'DISPATCH' ? [user.userId] : [])];
     myOrders = await query<RowDataPacket[]>(
       `SELECT d.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku,
               c.name AS client_name
        FROM dispatch_orders d
        JOIN batches b ON d.batch_id = b.id
        JOIN products p ON b.product_id = p.id
-       LEFT JOIN clients c ON c.id = d.client_id
+       LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
        WHERE d.status IN ('PENDING', 'APPROVED')
-         AND d.dispatched_at IS NULL ${mine}
+         AND d.dispatched_at IS NULL AND d.tenant_id = ?${dvD.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql} ${mine}
        ORDER BY d.created_at DESC LIMIT 100`,
       params
     );
   }
 
   const [pendingQcCount] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS count FROM batches WHERE status = 'CREATED'`
+    `SELECT COUNT(*) AS count FROM batches WHERE status = 'CREATED' AND tenant_id = ?${dv.sql}`,
+    [tenantId, ...dv.params]
   );
   const [readyCount] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS count FROM batches WHERE status IN ('QC_PASSED', 'DISPATCH_REJECTED')`
+    `SELECT COUNT(*) AS count FROM batches WHERE status IN ('QC_PASSED', 'DISPATCH_REJECTED') AND tenant_id = ?${dv.sql}`,
+    [tenantId, ...dv.params]
   );
   const [pendingOrderCount] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING'`
+    `SELECT COUNT(*) AS count FROM dispatch_orders WHERE status = 'PENDING' AND tenant_id = ?${dv.sql}`,
+    [tenantId, ...dv.params]
   );
   const [myTestsToday] = await query<RowDataPacket[]>(
     `SELECT COUNT(*) AS count FROM qc_records
-     WHERE tester_id = ? AND created_at >= CURDATE()`,
-    [user.userId]
+     WHERE tester_id = ? AND created_at >= CURDATE() AND tenant_id = ?${dv.sql}`,
+    [user.userId, tenantId, ...dv.params]
   );
   const [myDispatchesToday] = await query<RowDataPacket[]>(
     `SELECT COUNT(*) AS count FROM dispatch_records
-     WHERE dispatcher_id = ? AND created_at >= CURDATE()`,
-    [user.userId]
+     WHERE dispatcher_id = ? AND created_at >= CURDATE() AND tenant_id = ?${dv.sql}`,
+    [user.userId, tenantId, ...dv.params]
   );
 
   const pages = [products, locations, clients, batches, qcRecords, dispatchOrders, dispatchRecords];
@@ -329,7 +347,7 @@ export async function pull(req: Request, res: Response): Promise<void> {
     ? Math.max(since, Math.min(...limitedLast) - 1)
     : maxLast;
 
-  await touchDeviceSync(deviceUuid, 'pull', null);
+  await touchDeviceSync(deviceUuid, 'pull', null, tenantId);
 
   console.info('[sync] pull completed', JSON.stringify({
     request_id: (req as Request & { requestId?: string }).requestId || null,
@@ -378,18 +396,19 @@ export async function status(req: Request, res: Response): Promise<void> {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
+  const tenantId = req.user!.tenantId;
   const deviceUuid = typeof req.query.device_uuid === 'string' ? req.query.device_uuid : null;
   const deviceRows = deviceUuid
-    ? await query<RowDataPacket[]>('SELECT * FROM devices WHERE device_uuid = ? LIMIT 1', [deviceUuid])
+    ? await query<RowDataPacket[]>('SELECT * FROM devices WHERE device_uuid = ? AND tenant_id = ? LIMIT 1', [deviceUuid, tenantId])
     : [];
   const stateRows = deviceUuid
-    ? await query<RowDataPacket[]>('SELECT * FROM device_sync_state WHERE device_uuid = ? LIMIT 1', [deviceUuid])
+    ? await query<RowDataPacket[]>('SELECT * FROM device_sync_state WHERE device_uuid = ? AND tenant_id = ? LIMIT 1', [deviceUuid, tenantId])
     : [];
   const operationCounts = await query<RowDataPacket[]>(
     `SELECT status, COUNT(*) AS count FROM sync_operations
-     WHERE user_role = ? AND user_id = ? AND server_timestamp > DATE_SUB(NOW(3), INTERVAL 7 DAY)
+     WHERE user_role = ? AND user_id = ? AND server_timestamp > DATE_SUB(NOW(3), INTERVAL 7 DAY) AND tenant_id = ?
      GROUP BY status`,
-    [req.user.role, req.user.userId]
+    [req.user.role, req.user.userId, tenantId]
   );
 
   res.json({

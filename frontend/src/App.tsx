@@ -67,6 +67,7 @@ export default function App() {
 
         {/* Admin management */}
         <Route path="/users" element={<ProtectedRoute roles={['ADMIN']}><Users /></ProtectedRoute>} />
+        <Route path="/divisions" element={<Navigate to="/masters?tab=divisions" replace />} />
         <Route path="/shelf-locations" element={<ProtectedRoute roles={['ADMIN', 'QC']}><ShelfLocations /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute roles={['ADMIN']}><Reports /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute roles={['ADMIN', 'QC', 'DISPATCH']}><Settings /></ProtectedRoute>} />
@@ -84,8 +85,8 @@ export default function App() {
         <Route path="/qc-dashboard" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCDashboard /></ProtectedRoute>} />
 
         {/* Dispatch */}
-        <Route path="/dispatch" element={<ProtectedRoute roles={['DISPATCH']}><DispatchScan /></ProtectedRoute>} />
-        <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
+        <Route path="/dispatch" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchScan /></ProtectedRoute>} />
+        <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
         <Route path="/dispatch/batches" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchBatches /></ProtectedRoute>} />
         <Route path="/dispatch/qr-labels" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><QRLabels /></ProtectedRoute>} />
         <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}>{user?.role === 'DISPATCH' ? <DispatchWorkspaceOrders /> : <DispatchOrders />}</ProtectedRoute>} />

@@ -94,6 +94,16 @@ async function fetchWithSession(path: string, options: RequestInit = {}): Promis
   if (sentToken) headers.Authorization = `Bearer ${sentToken}`;
   else delete headers.Authorization;
 
+  // ADMIN division switch: the backend scopes the whole request to this division.
+  if (!isPublicAuthRequest) {
+    try {
+      const divisionSelection = localStorage.getItem('adminDivisionId');
+      if (divisionSelection && divisionSelection !== 'all') headers['X-Division-Id'] = divisionSelection;
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
   if (res.status !== 401 || isPublicAuthRequest) return res;
 
@@ -191,11 +201,20 @@ export const api = {
     update: (data: { name?: string; currentPassword?: string; newPassword?: string }) =>
       request<any>('/profile', { method: 'PUT', body: JSON.stringify(data) }),
   },
+  divisions: {
+    list: () => request<import('../types').Division[]>('/divisions'),
+    create: (name: string) =>
+      request<import('../types').Division>('/divisions', { method: 'POST', body: JSON.stringify({ name }) }),
+    update: (id: EntityId, data: { name?: string; is_active?: 0 | 1 }) =>
+      request<{ message: string }>(`/divisions/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id: EntityId) =>
+      request<{ message: string }>(`/divisions/${idPath(id)}`, { method: 'DELETE' }),
+  },
   users: {
     list: () => request<any[]>('/users'),
-    add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH' }) =>
+    add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH'; division_id?: EntityId | null }) =>
       request<any>('/users', { method: 'POST', body: JSON.stringify(data) }),
-    update: (type: string, id: EntityId, data: { name: string; email: string; role: Role }) =>
+    update: (type: string, id: EntityId, data: { name: string; email: string; role: Role; division_id?: EntityId | null }) =>
       request<any>(`/users/${type}/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     changePassword: (type: string, id: EntityId, password: string) =>
       request<any>(`/users/${type}/${idPath(id)}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
@@ -281,33 +300,63 @@ export const api = {
       }),
     renameFamily: (data: { currentName: string; name: string; description?: string }) =>
       request<any>('/products/family', { method: 'PUT', body: JSON.stringify(data) }),
+    deleteFamily: (name: string) =>
+      request<{ deleted: number; message: string }>(`/products/families/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    deactivateFamily: (name: string) =>
+      request<{ deactivated: number; alreadyDeactivated?: boolean; message: string }>(`/products/families/${encodeURIComponent(name)}/deactivate`, { method: 'POST' }),
+    reactivateFamily: (name: string) =>
+      request<{ reactivated: number; alreadyActive?: boolean; message: string }>(`/products/families/${encodeURIComponent(name)}/reactivate`, { method: 'POST' }),
     search: (q: string) => request<any[]>(`/products/search?q=${encodeURIComponent(q)}`),
+    families: (include?: 'inactive') =>
+      request<{ name: string; description: string | null; manufacturer: string | null; count: number; totalCount: number }[]>(
+        `/products/families${include === 'inactive' ? '?include=inactive' : ''}`
+      ),
+    familyProducts: (name: string, page = 1, limit = 100, q = '') =>
+      request<{ products: any[]; total: number; page: number; limit: number; totalPages: number }>(`/products/families/${encodeURIComponent(name)}/products?page=${page}&limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
+    nextSku: (name: string) => request<{ sku: string }>(`/products/next-sku?name=${encodeURIComponent(name)}`),
     update: (id: EntityId, data: any) => request<any>(`/products/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: EntityId) => request<any>(`/products/${idPath(id)}`, { method: 'DELETE' }),
-    importExcel: (file: File) => {
+    importTemplate: (division?: string | number | null) =>
+      fetchWithSession(`/products/import/template${division === undefined ? '' : `?division=${encodeURIComponent(String(division))}`}`).then(async res => {
+        if (!res.ok) { const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || 'Could not download the template'); }
+        return res.blob();
+      }),
+    importValidate: (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
-      return fetchWithSession('/products/import', { method: 'POST', body: formData }).then(async res => {
-        if (!res.ok) { const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || 'Import failed'); }
-        return res.json();
+      return fetchWithSession('/products/import/validate', { method: 'POST', body: formData }).then(async res => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'Validation failed');
+        return body as {
+          templateDivision: string | null;
+          summary: { total: number; valid: number; warnings: number; errors: number; duplicatesInFile: number; duplicatesInDb: number; noDivision: number; missingSku: number; missingManufacturer: number; defaults: number; missingUom: number };
+          rows: Array<{ row: number; division: string; product: string; grade: string; sku: string | null; manufacturer: string; description: string; status: 'valid' | 'warning' | 'error'; errors: string[]; warnings: string[] }>;
+        };
       });
     },
-    downloadSample: () => {
-      return fetchWithSession('/products/import/sample').then(async res => {
-        if (!res.ok) throw new Error('Download failed');
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'sample_products_import.xlsx';
-        a.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    importApply: (file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return fetchWithSession('/products/import/apply', { method: 'POST', body: formData }).then(async res => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'Import failed');
+        return body as { imported: number; skippedRows: number; failed: Array<{ row: number; message: string }>; summary: any };
       });
     },
   },
   batches: {
     list: (params?: { status?: string }) => {
       const suffix = params?.status ? `?status=${encodeURIComponent(params.status)}` : '';
+      return request<any[]>(`/batches${suffix}`);
+    },
+    // Bounded slice of recent batches (status filter, prefix search, tight
+    // limit). Use this instead of list() for screens that don't need history.
+    recent: (params?: { status?: string; limit?: number; q?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.status) search.set('status', params.status);
+      if (params?.q) search.set('q', params.q);
+      if (params?.limit) search.set('limit', String(params.limit));
+      const suffix = search.toString() ? `?${search.toString()}` : '';
       return request<any[]>(`/batches${suffix}`);
     },
     create: (data: {
@@ -418,8 +467,15 @@ export const api = {
     approvedOrders: () => request<any[]>('/dispatch/approved-orders'),
   },
   dispatchOrders: {
-    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number }>; driver_name?: string; driver_phone?: string; vehicle_number?: string; container_number?: string; scheduled_dispatch_at?: string; client_operation_id?: string }) =>
+    raise: (data: { batch_id?: EntityId; barcode_value?: string; expected_status?: string; client_id: EntityId; quantity?: number; items?: Array<{ batch_id: EntityId; quantity: number; label_ids?: EntityId[] }>; driver_name?: string; driver_phone?: string; vehicle_number?: string; container_number?: string; scheduled_dispatch_at?: string; client_operation_id?: string }) =>
       request<any>('/dispatch-orders', { method: 'POST', body: JSON.stringify(data) }),
+    availableQrLabels: (batchIds: EntityId[]) => {
+      const qs = new URLSearchParams();
+      qs.set('batch_ids', batchIds.map((id) => String(id)).join(','));
+      return request<Array<{ id: number | string; batch_id: number | string; qr_value: string; serial_no: number }>>(
+        `/dispatch-orders/available-qr-labels?${qs}`
+      );
+    },
     all: (params?: { q?: string; status?: string }) => {
       const qs = new URLSearchParams();
       if (params?.q) qs.set('q', params.q);
@@ -472,8 +528,40 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ qr_value, client_operation_id }),
       }),
-    recallQr: (id: EntityId, data: { qr_value: string; condition: 'DAMAGED' | 'HOLD' | 'OTHER'; reason: string }) =>
-      request<any>(`/loading-sessions/${idPath(id)}/recall-qr`, { method: 'POST', body: JSON.stringify(data) }),
+    recallQr: (id: EntityId, data: { qr_value: string; condition: 'DAMAGED' | 'HOLD' | 'RETURN_TO_STOCK'; reason: string }) =>
+      request<{
+        message: string;
+        condition: string;
+        scanned: number;
+        total: number;
+        recalled_units?: number;
+        unfilled_units?: number;
+      }>(`/loading-sessions/${idPath(id)}/recall-qr`, { method: 'POST', body: JSON.stringify(data) }),
+    recallSealed: (id: EntityId, data: { qr_value: string; condition: 'DAMAGED' | 'HOLD' | 'RETURN_TO_STOCK'; reason: string }) =>
+      request<{
+        message: string;
+        condition: string;
+        recalled_units: number;
+        reload_pending: number;
+        order_quantity: number;
+      }>(`/loading-sessions/${idPath(id)}/recall-sealed`, { method: 'POST', body: JSON.stringify(data) }),
+    reload: (id: EntityId) =>
+      request<{
+        message: string;
+        order_id: EntityId;
+        order_number?: string | null;
+        quantity: number;
+        order_lines: Array<Record<string, any>>;
+        unfilled_units?: number;
+      }>(`/loading-sessions/${idPath(id)}/reload`, { method: 'POST' }),
+    byOrder: (orderId: EntityId) =>
+      request<{
+        session_id: EntityId | null;
+        reload_pending: number;
+        recalled_quantity: number;
+        order_status: string | null;
+        seal_number?: string | null;
+      }>(`/loading-sessions/by-order/${idPath(orderId)}`),
     get: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}`),
     active: () => request<any[]>('/loading-sessions/active'),
     cancel: (id: EntityId) => request<any>(`/loading-sessions/${idPath(id)}/cancel`, { method: 'POST' }),

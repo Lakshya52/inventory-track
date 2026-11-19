@@ -1,48 +1,57 @@
 import { Request, Response } from 'express';
 import { query } from '../config/database';
 import { RowDataPacket } from 'mysql2';
+import { divisionWhere } from '../utils/division';
 
-export async function stats(_req: Request, res: Response): Promise<void> {
-  const totalProducts = await query<RowDataPacket[]>('SELECT COUNT(*) as count FROM products');
-  const totalBatches = await query<RowDataPacket[]>('SELECT COUNT(*) as count FROM batches');
-  const pendingQc = await query<RowDataPacket[]>("SELECT COUNT(*) as count FROM batches WHERE status IN ('CREATED', 'QC_PASSED')");
-  const qcPassed = await query<RowDataPacket[]>("SELECT COUNT(*) as count FROM batches WHERE status = 'QC_PASSED'");
-  const qcFailed = await query<RowDataPacket[]>("SELECT COUNT(*) as count FROM batches WHERE status = 'QC_FAILED'");
+export async function stats(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
+  const totalProducts = await query<RowDataPacket[]>(`SELECT COUNT(*) as count FROM products WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]);
+  const totalBatches = await query<RowDataPacket[]>(`SELECT COUNT(*) as count FROM batches WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]);
+  const pendingQc = await query<RowDataPacket[]>(`SELECT COUNT(*) as count FROM batches WHERE status IN ('CREATED', 'QC_PASSED') AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]);
+  const qcPassed = await query<RowDataPacket[]>(`SELECT COUNT(*) as count FROM batches WHERE status = 'QC_PASSED' AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]);
+  const qcFailed = await query<RowDataPacket[]>(`SELECT COUNT(*) as count FROM batches WHERE status = 'QC_FAILED' AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]);
   const dispatchedToday = await query<RowDataPacket[]>(
-    "SELECT COUNT(*) as count FROM dispatch_records WHERE DATE(created_at) = CURDATE()"
+    `SELECT COUNT(*) as count FROM dispatch_records WHERE DATE(created_at) = CURDATE() AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
   );
   const inventory = await query<RowDataPacket[]>(
-    "SELECT COALESCE(SUM(quantity), 0) as qty, COALESCE(SUM(quantity * price), 0) as value FROM products"
+    `SELECT COALESCE(SUM(quantity), 0) as qty, COALESCE(SUM(quantity * price), 0) as value FROM products WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
   );
   const pendingOrders = await query<RowDataPacket[]>(
-    "SELECT COUNT(*) as count FROM dispatch_orders WHERE status = 'APPROVED'"
+    `SELECT COUNT(*) as count FROM dispatch_orders WHERE status = 'APPROVED' AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
   );
   const activeClients = await query<RowDataPacket[]>(
-    "SELECT COUNT(*) as count FROM clients WHERE is_active = 1"
+    "SELECT COUNT(*) as count FROM clients WHERE is_active = 1 AND tenant_id = ?", [tenantId]
   );
   const totalLocations = await query<RowDataPacket[]>(
-    "SELECT COUNT(*) as count FROM shelf_locations WHERE is_active = 1"
+    `SELECT COUNT(*) as count FROM shelf_locations WHERE is_active = 1 AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
   );
   const recentActivity = await query<RowDataPacket[]>(
-    `SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 10`
+    `SELECT * FROM activity_logs WHERE tenant_id = ?${dv.sql} ORDER BY created_at DESC LIMIT 10`, [tenantId, ...dv.params]
   );
   const recentBatches = await query<RowDataPacket[]>(
     `SELECT b.id, b.batch_number, b.quantity, b.barcode_value, b.status, b.created_at,
             p.name as product_name, p.sku as product_sku
      FROM batches b JOIN products p ON b.product_id = p.id
-     ORDER BY b.created_at DESC LIMIT 10`
+     WHERE b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+     ORDER BY b.created_at DESC LIMIT 10`,
+    [tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const productionStats = await query<RowDataPacket[]>(
     `SELECT
        SUM(CASE WHEN status = 'CREATED' THEN 1 ELSE 0 END) as in_production,
        SUM(CASE WHEN status = 'QC_FAILED' THEN 1 ELSE 0 END) as needs_fix
-     FROM batches WHERE status IN ('CREATED','QC_FAILED')`
+     FROM batches WHERE status IN ('CREATED','QC_FAILED') AND tenant_id = ?${dv.sql}`,
+    [tenantId, ...dv.params]
   );
   const dispatchQueueStats = await query<RowDataPacket[]>(
     `SELECT
        SUM(CASE WHEN status = 'LOADING' THEN 1 ELSE 0 END) as awaiting_approval,
        SUM(CASE WHEN status = 'DISPATCH_APPROVED' THEN 1 ELSE 0 END) as approved_ready
-     FROM batches WHERE status IN ('LOADING','DISPATCH_APPROVED')`
+     FROM batches WHERE status IN ('LOADING','DISPATCH_APPROVED') AND tenant_id = ?${dv.sql}`,
+    [tenantId, ...dv.params]
   );
 
   res.json({
@@ -64,31 +73,44 @@ export async function stats(_req: Request, res: Response): Promise<void> {
   });
 }
 
-export async function adminStats(_req: Request, res: Response): Promise<void> {
+export async function adminStats(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
+  const dvQ = divisionWhere(req, 'q.division_id');
+  const dvD = divisionWhere(req, 'd.division_id');
   const summary = await query<RowDataPacket[]>(
     `SELECT
-       (SELECT COUNT(*) FROM products) AS total_products,
-       (SELECT COALESCE(SUM(quantity), 0) FROM products) AS inventory_qty,
-       (SELECT COALESCE(SUM(quantity * price), 0) FROM products) AS inventory_value,
-       (SELECT COUNT(*) FROM batches) AS total_batches,
-       (SELECT COUNT(*) FROM batches WHERE status = 'CREATED') AS pending_qc,
-       (SELECT COUNT(*) FROM qc_records) AS qc_total,
-       (SELECT COUNT(*) FROM qc_records WHERE result = 'PASS') AS qc_passed,
-       (SELECT COUNT(*) FROM qc_records WHERE result = 'FAIL') AS qc_failed,
-       (SELECT COUNT(*) FROM dispatch_records) AS dispatch_total,
-       (SELECT COUNT(*) FROM dispatch_records WHERE DATE(created_at) = CURDATE()) AS dispatched_today,
-       (SELECT COUNT(*) FROM dispatch_orders) AS request_total,
-       (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'PENDING') AS request_pending,
-       (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'APPROVED') AS request_approved,
-       (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'REJECTED') AS request_rejected,
-       (SELECT COUNT(*) FROM shelf_locations) AS total_locations,
-       (SELECT COUNT(*) FROM shelf_locations WHERE is_active = 1) AS active_locations,
-       (SELECT COUNT(*) FROM admins WHERE LEFT(email, 15) <> '__role_archive_') +
-         (SELECT COUNT(*) FROM qc_users WHERE LEFT(email, 15) <> '__role_archive_') +
-         (SELECT COUNT(*) FROM dispatch_users WHERE LEFT(email, 15) <> '__role_archive_') AS total_users,
-       (SELECT COUNT(*) FROM admins WHERE is_active = 1) +
-         (SELECT COUNT(*) FROM qc_users WHERE is_active = 1) +
-         (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1) AS active_users`
+       (SELECT COUNT(*) FROM products WHERE tenant_id = ?${dv.sql}) AS total_products,
+       (SELECT COALESCE(SUM(quantity), 0) FROM products WHERE tenant_id = ?${dv.sql}) AS inventory_qty,
+       (SELECT COALESCE(SUM(quantity * price), 0) FROM products WHERE tenant_id = ?${dv.sql}) AS inventory_value,
+       (SELECT COUNT(*) FROM batches WHERE tenant_id = ?${dv.sql}) AS total_batches,
+       (SELECT COUNT(*) FROM batches WHERE status = 'CREATED' AND tenant_id = ?${dv.sql}) AS pending_qc,
+       (SELECT COUNT(*) FROM qc_records WHERE tenant_id = ?${dv.sql}) AS qc_total,
+       (SELECT COUNT(*) FROM qc_records WHERE result = 'PASS' AND tenant_id = ?${dv.sql}) AS qc_passed,
+       (SELECT COUNT(*) FROM qc_records WHERE result = 'FAIL' AND tenant_id = ?${dv.sql}) AS qc_failed,
+       (SELECT COUNT(*) FROM dispatch_records WHERE tenant_id = ?${dv.sql}) AS dispatch_total,
+       (SELECT COUNT(*) FROM dispatch_records WHERE DATE(created_at) = CURDATE() AND tenant_id = ?${dv.sql}) AS dispatched_today,
+       (SELECT COUNT(*) FROM dispatch_orders WHERE tenant_id = ?${dv.sql}) AS request_total,
+       (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'PENDING' AND tenant_id = ?${dv.sql}) AS request_pending,
+       (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'APPROVED' AND tenant_id = ?${dv.sql}) AS request_approved,
+       (SELECT COUNT(*) FROM dispatch_orders WHERE status = 'REJECTED' AND tenant_id = ?${dv.sql}) AS request_rejected,
+       (SELECT COUNT(*) FROM shelf_locations WHERE tenant_id = ?${dv.sql}) AS total_locations,
+       (SELECT COUNT(*) FROM shelf_locations WHERE is_active = 1 AND tenant_id = ?${dv.sql}) AS active_locations,
+       (SELECT COUNT(*) FROM admins WHERE LEFT(email, 15) <> '__role_archive_' AND tenant_id = ?) +
+         (SELECT COUNT(*) FROM qc_users WHERE LEFT(email, 15) <> '__role_archive_' AND tenant_id = ?) +
+         (SELECT COUNT(*) FROM dispatch_users WHERE LEFT(email, 15) <> '__role_archive_' AND tenant_id = ?) AS total_users,
+       (SELECT COUNT(*) FROM admins WHERE is_active = 1 AND tenant_id = ?) +
+         (SELECT COUNT(*) FROM qc_users WHERE is_active = 1 AND tenant_id = ?) +
+         (SELECT COUNT(*) FROM dispatch_users WHERE is_active = 1 AND tenant_id = ?) AS active_users`,
+    [
+      tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params,
+      tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params,
+      tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params,
+      tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params, tenantId, ...dv.params,
+      tenantId, tenantId, tenantId, tenantId, tenantId, tenantId,
+    ]
   );
 
   const recentQc = await query<RowDataPacket[]>(
@@ -97,7 +119,9 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
      FROM qc_records q
      JOIN batches b ON q.batch_id = b.id
      JOIN products p ON b.product_id = p.id
-     ORDER BY q.created_at DESC LIMIT 5`
+     WHERE q.tenant_id = ?${dvQ.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+     ORDER BY q.created_at DESC LIMIT 5`,
+    [tenantId, ...dvQ.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const recentDispatches = await query<RowDataPacket[]>(
     `SELECT d.id, d.remarks, d.created_at, b.batch_number,
@@ -105,7 +129,9 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
      FROM dispatch_records d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
-     ORDER BY d.created_at DESC LIMIT 5`
+     WHERE d.tenant_id = ?${dvD.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+     ORDER BY d.created_at DESC LIMIT 5`,
+    [tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const pendingRequests = await query<RowDataPacket[]>(
     `SELECT d.id, d.status, d.created_at, b.batch_number, b.quantity, b.uom,
@@ -114,11 +140,14 @@ export async function adminStats(_req: Request, res: Response): Promise<void> {
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
-     LEFT JOIN dispatch_users du ON d.raised_by = du.id
-     ORDER BY d.created_at DESC LIMIT 5`
+     LEFT JOIN dispatch_users du ON d.raised_by = du.id AND du.tenant_id = ?
+     WHERE d.tenant_id = ?${dvD.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
+     ORDER BY d.created_at DESC LIMIT 5`,
+    [tenantId, tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const recentActivity = await query<RowDataPacket[]>(
-    'SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 8'
+    `SELECT * FROM activity_logs WHERE tenant_id = ?${dv.sql} ORDER BY created_at DESC LIMIT 8`,
+    [tenantId, ...dv.params]
   );
 
   const s = summary[0];

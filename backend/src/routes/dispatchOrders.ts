@@ -8,15 +8,18 @@ import {
   raise,
   recallQr,
 } from '../controllers/dispatchOrderController';
+import { availableQrLabels } from '../controllers/availableQrLabelsController';
 import { authenticate, authorize } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
-router.post('/', authorize('DISPATCH'), raise);
+router.post('/', authorize('ADMIN', 'DISPATCH'), raise);
 // The full order list is an administrator view. Dispatch only sees its own
 // orders.
 router.get('/all', authorize('ADMIN'), listAll);
-router.get('/mine', authorize('DISPATCH'), listMine);
+router.get('/mine', authorize('ADMIN', 'DISPATCH'), listMine);
+// QR labels available to put on a dispatch order, for the chip picker.
+router.get('/available-qr-labels', authorize('ADMIN', 'DISPATCH'), availableQrLabels);
 // There is no approval step: a raised order is released straight away. The
 // dispatcher who raised it (or an administrator) can still cancel it while
 // loading has not started.

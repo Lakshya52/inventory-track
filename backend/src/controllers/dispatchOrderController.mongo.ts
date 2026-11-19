@@ -3,8 +3,10 @@ import { randomUUID } from 'crypto';
 import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { applyOperation, SyncConflictError, SyncError } from '../services/syncService';
 import { SyncOperationInput } from '../types';
-import { contains, batchIdsForSearch, batchQrStats, EntityId, mapByIds, mapNames } from '../services/queryService';
+import { prefix, batchIdsForSearch, batchQrStats, EntityId, mapByIds, mapNames } from '../services/queryService';
 import { buildPackingListPdf } from '../services/packingListPdf';
+import { divisionFilter, divisionStamp } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 const ORDER_STATUS_FILTERS = [
   'PENDING',
@@ -14,6 +16,13 @@ const ORDER_STATUS_FILTERS = [
   'CLOSED_DISPATCHED',
   'CLOSED_NOT_DISPATCHED',
 ];
+
+// Explicitly chosen QR labels for an order line, if the picker selected any.
+function sanitizeLabelIds(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = [...new Set(value.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  return ids.length > 0 ? ids.slice(0, 1000) : undefined;
+}
 
 const PACKING_LIST_STATUSES = [
   'APPROVED',
@@ -31,45 +40,58 @@ function errorResponse(res: Response, error: unknown, fallback: string): void {
   res.status(500).json({ error: fallback });
 }
 
-async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichOrders(ctx: DbContext, orders: Record<string, any>[], tenantId: string | number, divisionScope?: Record<string, any>): Promise<Record<string, any>[]> {
   const orderLineBatchIds = orders.flatMap((order) =>
     Array.isArray(order.order_lines) ? order.order_lines.map((line: any) => line?.batch_id) : []
   );
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    [...orders.map((order) => order.batch_id), ...orderLineBatchIds]
+    [...orders.map((order) => order.batch_id), ...orderLineBatchIds],
+    tenantId,
+    divisionScope
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => batch.product_id)
+    [...batches.values()].map((batch) => batch.product_id),
+    tenantId,
+    divisionScope
   );
-  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => batch.vendor_id));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => batch.grade_id));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => batch.bag_quantity_id));
-  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => order.raised_by));
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', [...batches.values()].map((batch) => batch.vendor_id), tenantId);
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => batch.grade_id), tenantId, divisionScope);
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', [...batches.values()].map((batch) => batch.bag_quantity_id), tenantId);
+  const raisedBy = await mapNames(ctx, 'dispatch_users', orders.map((order) => order.raised_by), tenantId);
   const approvers = await Promise.all(orders.map(async (order) => {
     if (order.approved_by_role === 'QC') {
-      const qc = await ctx.findOne('qc_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } });
+      const qc = await ctx.findOne('qc_users', { id: order.approved_by_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } });
       return [idKey(order.id), qc?.name ?? null] as const;
     }
     // Orders are released by the dispatcher who raised them.
     if (order.approved_by_role === 'DISPATCH') {
-      const dispatcher = await ctx.findOne('dispatch_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } });
+      const dispatcher = await ctx.findOne('dispatch_users', { id: order.approved_by_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } });
       return [idKey(order.id), dispatcher?.name ?? null] as const;
     }
-    const adminName = order.admin_id ? await ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } }) : null;
+    const adminName = order.admin_id ? await ctx.findOne('admins', { id: order.admin_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } }) : null;
     return [idKey(order.id), adminName?.name ?? null] as const;
   }));
   const approverNames = new Map(approvers);
-  const clients = await mapNames(ctx, 'clients', orders.map((order) => order.client_id));
-  const qrStats = await batchQrStats(ctx, orders.map((order) => order.batch_id));
-  const orderLabels = await ctx.find('qr_labels', { dispatch_order_id: { $in: orders.map((order) => order.id) } }, { projection: { _id: 0, dispatch_order_id: 1 } });
+  const clients = await mapNames(ctx, 'clients', orders.map((order) => order.client_id), tenantId);
+  const qrStats = await batchQrStats(ctx, orders.map((order) => order.batch_id), tenantId, divisionScope);
+  const orderLabels = await ctx.find('qr_labels', { tenant_id: tenantId, ...divisionScope, dispatch_order_id: { $in: orders.map((order) => order.id) } }, { projection: { _id: 0, dispatch_order_id: 1, batch_id: 1, qr_value: 1, serial_no: 1 }, sort: { batch_id: 1, serial_no: 1 } });
   const orderQrCounts = new Map<string, number>();
+  const qrValuesByOrder = new Map<string, string[]>();
+  const qrValuesByBatch = new Map<string, string[]>();
   for (const label of orderLabels) {
     const key = idKey(label.dispatch_order_id);
     orderQrCounts.set(key, (orderQrCounts.get(key) || 0) + 1);
+    const orderList = qrValuesByOrder.get(key) || [];
+    if (label.qr_value) orderList.push(String(label.qr_value));
+    qrValuesByOrder.set(key, orderList);
+    const batchKey = idKey(label.batch_id);
+    const batchList = qrValuesByBatch.get(batchKey) || [];
+    if (label.qr_value) batchList.push(String(label.qr_value));
+    qrValuesByBatch.set(batchKey, batchList);
   }
 
   const gradeNameForBatch = (batchId: any): string | null => {
@@ -90,7 +112,7 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
     const outcome = order.outcome
       ?? (order.status === 'CLOSED_DISPATCHED' ? 'DISPATCHED'
         : order.status === 'CLOSED_NOT_DISPATCHED' ? 'NOT_DISPATCHED' : null);
-    const items = Array.isArray(order.order_lines) && order.order_lines.length ? order.order_lines : [{
+    const fallbackItems = [{
       batch_id: batch.id,
       batch_number: batch.parent_batch_number || batch.batch_number,
       child_batch_number: batch.batch_number,
@@ -100,6 +122,11 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       uom: batch.uom ?? null,
       location: batch.storage_location ?? null,
     }];
+    const items = (Array.isArray(order.order_lines) && order.order_lines.length ? order.order_lines : fallbackItems)
+      .map((line: any) => ({
+        ...line,
+        qr_values: qrValuesByBatch.get(idKey(line?.batch_id)) || [],
+      }));
     return [{
       ...order,
       outcome,
@@ -119,6 +146,7 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
       bag_quantity: bagQuantities.get(idKey(batch?.bag_quantity_id))?.quantity ?? null,
       bag_quantity_unit: bagQuantities.get(idKey(batch?.bag_quantity_id))?.unit ?? null,
       qr_count: orderQrCounts.get(idKey(order.id)) ?? qrStats.get(idKey(order.batch_id))?.count ?? 0,
+      qr_values: qrValuesByOrder.get(idKey(order.id)) || [],
       product_name: items.map((item: any) => item.product_name).filter(Boolean).join(', ') || product?.name || null,
       product_sku: items.length === 1 ? items[0].product_sku : null,
       raised_by_name: raisedBy.get(idKey(order.raised_by)) ?? null,
@@ -132,13 +160,15 @@ async function enrichOrders(ctx: DbContext, orders: Record<string, any>[]): Prom
 async function orderFilterForSearch(
   ctx: DbContext,
   q: string,
-  base: Record<string, any>
+  base: Record<string, any>,
+  tenantId: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Record<string, any>> {
   if (!q) return base;
-  const pattern = contains(q);
+  const pattern = prefix(q);
   const [batchIds, orderRows] = await Promise.all([
-    batchIdsForSearch(ctx, q),
-    ctx.find('dispatch_orders', { order_number: pattern }, { projection: { _id: 0, id: 1 } }),
+    batchIdsForSearch(ctx, q, {}, tenantId, divisionScope),
+    ctx.find('dispatch_orders', { order_number: pattern, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0, id: 1 } }),
   ]);
   const orderIds = orderRows.map((row) => idKey(row.id));
   const or: Array<Record<string, unknown>> = [];
@@ -149,6 +179,7 @@ async function orderFilterForSearch(
 }
 
 export async function raise(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const batchId = req.body.batch_id;
   const barcodeValue = req.body.barcode_value;
   const items = Array.isArray(req.body.items) ? req.body.items : null;
@@ -179,6 +210,32 @@ export async function raise(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // Referenced batches must belong to this tenant; ids may not point into
+  // another organization's stock (or another division).
+  const ctx = await getContext();
+  const divisionScope = divisionFilter(req);
+  const referencedBatchIds = [...new Set([
+    ...(batchId !== undefined && batchId !== null && batchId !== '' ? [batchId as EntityId] : []),
+    ...(items ?? []).map((item: any) => item?.batch_id as EntityId),
+  ].filter((value: EntityId | undefined) => value !== undefined && value !== null && String(value) !== ''))];
+  if (referencedBatchIds.length > 0) {
+    const wanted = [...new Set(referencedBatchIds.map((value) => idKey(value)))];
+    const found = await ctx.find('batches', { id: { $in: wanted }, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 1 } });
+    if (found.length !== wanted.length) {
+      res.status(404).json({ error: 'Batch not found' });
+      return;
+    }
+  }
+  // The client must belong to this tenant as well.
+  const clientRef = req.body.client_id as EntityId | undefined;
+  if (clientRef !== undefined && clientRef !== null && String(clientRef) !== '') {
+    const client = await ctx.findOne('clients', { id: clientRef, tenant_id: tenantId }, { projection: { _id: 1 } });
+    if (!client) {
+      res.status(404).json({ error: 'Client not found' });
+      return;
+    }
+  }
+
   const operation: SyncOperationInput = {
     operation_id: req.body.client_operation_id || randomUUID(),
     type: 'DISPATCH_ORDER_RAISE',
@@ -188,7 +245,7 @@ export async function raise(req: Request, res: Response): Promise<void> {
       barcode_value: barcodeValue ? String(barcodeValue) : undefined,
       expected_status: req.body.expected_status || undefined,
       quantity: req.body.quantity,
-      items: items?.map((item: any) => ({ batch_id: item.batch_id, quantity: item.quantity })),
+      items: items?.map((item: any) => ({ batch_id: item.batch_id, quantity: item.quantity, label_ids: sanitizeLabelIds(item.label_ids) })),
       client_id: req.body.client_id as EntityId,
       // Transport details are captured here and can be corrected when the
       // loading session is finalised.
@@ -226,33 +283,37 @@ export async function raise(req: Request, res: Response): Promise<void> {
 }
 
 export async function listAll(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || '').toUpperCase();
   const ctx = await getContext();
-  const base: Record<string, any> = {};
+  const divisionScope = divisionFilter(req);
+  const base: Record<string, any> = { tenant_id: tenantId, ...divisionScope };
   if (ORDER_STATUS_FILTERS.includes(status)) base.status = status;
-  const filter = await orderFilterForSearch(ctx, q, base);
+  const filter = await orderFilterForSearch(ctx, q, base, tenantId, divisionScope);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: -1 },
     limit: 100,
     projection: { _id: 0 },
   });
-  res.json(await enrichOrders(ctx, orders));
+  res.json(await enrichOrders(ctx, orders, tenantId, divisionScope));
 }
 
 export async function listMine(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || '').toUpperCase();
   const ctx = await getContext();
-  const base: Record<string, any> = { raised_by: req.user!.userId };
+  const divisionScope = divisionFilter(req);
+  const base: Record<string, any> = { tenant_id: tenantId, ...divisionScope, raised_by: req.user!.userId };
   if (ORDER_STATUS_FILTERS.includes(status)) base.status = status;
-  const filter = await orderFilterForSearch(ctx, q, base);
+  const filter = await orderFilterForSearch(ctx, q, base, tenantId, divisionScope);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: -1 },
     limit: 100,
     projection: { _id: 0 },
   });
-  res.json(await enrichOrders(ctx, orders));
+  res.json(await enrichOrders(ctx, orders, tenantId, divisionScope));
 }
 
 /**
@@ -262,7 +323,9 @@ export async function listMine(req: Request, res: Response): Promise<void> {
  */
 async function restoreProductStock(
   ctx: DbContext,
-  entries: Array<{ productId: EntityId; quantity: number }>
+  entries: Array<{ productId: EntityId; quantity: number }>,
+  tenantId: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<void> {
   const totals = new Map<string, { productId: EntityId; quantity: number }>();
   for (const entry of entries) {
@@ -275,7 +338,7 @@ async function restoreProductStock(
     });
   }
   for (const entry of totals.values()) {
-    await ctx.findOneAndUpdate('products', { id: entry.productId }, [
+    await ctx.findOneAndUpdate('products', { id: entry.productId, tenant_id: tenantId, ...divisionScope }, [
       {
         $set: {
           quantity: { $add: [{ $ifNull: ['$quantity', 0] }, entry.quantity] },
@@ -293,7 +356,9 @@ async function restoreProductStock(
  */
 async function orderStockEntries(
   ctx: DbContext,
-  order: Record<string, any>
+  order: Record<string, any>,
+  tenantId: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Array<{ productId: EntityId; quantity: number }>> {
   const lines = Array.isArray(order.order_lines) && order.order_lines.length
     ? order.order_lines
@@ -304,7 +369,7 @@ async function orderStockEntries(
     if (!quantity) continue;
     const batch = await ctx.findOne(
       'batches',
-      { id: line?.batch_id },
+      { id: line?.batch_id, tenant_id: tenantId, ...divisionScope },
       { projection: { _id: 0, product_id: 1 } }
     );
     if (!batch) continue;
@@ -320,6 +385,7 @@ async function orderStockEntries(
  * the reserved QR labels and puts the stock back on the shelf.
  */
 export async function cancel(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid dispatch order id' }); return; }
   const rawRemarks = req.body.remarks ?? req.body.admin_remarks;
@@ -329,8 +395,9 @@ export async function cancel(req: Request, res: Response): Promise<void> {
     return;
   }
   try {
+    const divisionScope = divisionFilter(req);
     const result = await withTransaction(async (ctx: DbContext) => {
-      const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
+      const order = await ctx.findOne('dispatch_orders', { id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } });
       if (!order) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
       if (req.user!.role !== 'ADMIN' && idKey(order.raised_by) !== idKey(req.user!.userId)) {
         throw new SyncError('You can only cancel a dispatch order you raised', 'FORBIDDEN', 403);
@@ -346,7 +413,7 @@ export async function cancel(req: Request, res: Response): Promise<void> {
       // Loading must not have started: the batch is already on the truck.
       const loadingBatch = await ctx.findOne(
         'batches',
-        { id: { $in: releasedBatchIds }, status: { $nin: ['QC_PASSED', 'DISPATCH_APPROVED'] } },
+        { id: { $in: releasedBatchIds }, tenant_id: tenantId, ...divisionScope, status: { $nin: ['QC_PASSED', 'DISPATCH_APPROVED'] } },
         { projection: { _id: 0, id: 1, batch_number: 1, status: 1 } }
       );
       if (loadingBatch) {
@@ -359,7 +426,7 @@ export async function cancel(req: Request, res: Response): Promise<void> {
       const cancelledAt = now();
       const orderUpdate = await ctx.updateOne(
         'dispatch_orders',
-        { id, status: 'APPROVED' },
+        { id, status: 'APPROVED', tenant_id: tenantId, ...divisionScope },
         { $set: {
           status: 'CANCELLED',
           remarks,
@@ -374,22 +441,22 @@ export async function cancel(req: Request, res: Response): Promise<void> {
       // Release the reserved QR labels so the stock becomes orderable again.
       await ctx.updateMany(
         'qr_labels',
-        { batch_id: { $in: releasedBatchIds }, dispatch_order_id: id },
+        { tenant_id: tenantId, ...divisionScope, batch_id: { $in: releasedBatchIds }, dispatch_order_id: id },
         { $set: { dispatch_order_id: null } }
       );
       for (const batchId of releasedBatchIds) {
         await ctx.updateOne(
           'batches',
-          { id: batchId, status: 'DISPATCH_APPROVED' },
+          { id: batchId, tenant_id: tenantId, ...divisionScope, status: 'DISPATCH_APPROVED' },
           { $set: { status: 'QC_PASSED' } }
         );
       }
-      await ctx.deleteMany('packing_list_items', { dispatch_order_id: id });
+      await ctx.deleteMany('packing_list_items', { dispatch_order_id: id, tenant_id: tenantId, ...divisionScope });
 
       // The order took these units out of the stock when it was created, so
       // cancelling it has to put them back on the shelf.
       if (order.stock_reserved_at_order) {
-        await restoreProductStock(ctx, await orderStockEntries(ctx, order));
+        await restoreProductStock(ctx, await orderStockEntries(ctx, order, tenantId, divisionScope), tenantId, divisionScope);
       }
 
       await ctx.insert('activity_logs', {
@@ -398,9 +465,12 @@ export async function cancel(req: Request, res: Response): Promise<void> {
         user_role: req.user!.role,
         action: 'DISPATCH_ORDER_CANCELLED',
         description: `Dispatch order #${id} cancelled for batch #${order.batch_id}: ${remarks.slice(0, 1000)}`,
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
       });
-      return { message: 'Dispatch order cancelled', status: 'CANCELLED', remarks };
+      return { message: 'Dispatch order cancelled', status: 'CANCELLED', remarks, order_id: id };
     });
+    publish(req, 'dispatch.order-status', { status: 'CANCELLED', orderId: id });
     res.json(result);
   } catch (error) {
     errorResponse(res, error, 'Could not cancel dispatch order');
@@ -417,6 +487,7 @@ export async function cancel(req: Request, res: Response): Promise<void> {
  *   the shelf
  */
 export async function recallQr(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const qrValue = String(req.body?.qr_value ?? '').trim();
   const reason = String(req.body?.reason ?? '').trim().slice(0, 1000);
   const condition = String(req.body?.condition ?? '').trim().toUpperCase();
@@ -425,13 +496,14 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
     return;
   }
   try {
+    const divisionScope = divisionFilter(req);
     const result = await withTransaction(async (ctx: DbContext) => {
-      const label = await ctx.findOne('qr_labels', { qr_value: qrValue });
+      const label = await ctx.findOne('qr_labels', { qr_value: qrValue, tenant_id: tenantId, ...divisionScope });
       if (!label) throw new SyncError('QR label not found', 'QR_NOT_FOUND', 404);
       if (!label.dispatch_order_id) {
         throw new SyncError('This QR label is not assigned to a dispatch order', 'QR_NOT_IN_ORDER', 409);
       }
-      const order = await ctx.findOne('dispatch_orders', { id: label.dispatch_order_id });
+      const order = await ctx.findOne('dispatch_orders', { id: label.dispatch_order_id, tenant_id: tenantId, ...divisionScope });
       if (!order) throw new SyncError('Dispatch order not found', 'ORDER_NOT_FOUND', 404);
       if (req.user!.role !== 'ADMIN' && idKey(order.raised_by) !== idKey(req.user!.userId)) {
         throw new SyncError('You can only recall labels on orders you raised', 'FORBIDDEN', 403);
@@ -442,18 +514,18 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
       if (label.recall_status === 'RECALLED') {
         throw new SyncConflictError('This QR label has already been recalled', { qr_value: qrValue, code: 'QR_ALREADY_RECALLED' });
       }
-      const loadedEvent = await ctx.findOne('loading_scan_events', { qr_value: qrValue, result: 'OK' });
+      const loadedEvent = await ctx.findOne('loading_scan_events', { qr_value: qrValue, result: 'OK', tenant_id: tenantId, ...divisionScope });
       if (loadedEvent) {
         throw new SyncConflictError('This QR code has already been loaded and cannot be recalled', { qr_value: qrValue, code: 'QR_ALREADY_LOADED' });
       }
-      const batch = await ctx.findOne('batches', { id: label.batch_id }, { projection: { _id: 0, product_id: 1 } });
+      const batch = await ctx.findOne('batches', { id: label.batch_id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0, product_id: 1 } });
 
       // The unit leaves this order: drop its line and lower the order quantity.
       const orderLines = Array.isArray(order.order_lines) ? order.order_lines : [];
       const remainingLines = orderLines.filter(
         (line: any) => idKey(line?.batch_id) !== idKey(label.batch_id),
       );
-      await ctx.updateOne('dispatch_orders', { id: order.id }, {
+      await ctx.updateOne('dispatch_orders', { id: order.id, tenant_id: tenantId, ...divisionScope }, {
         $set: {
           order_lines: remainingLines,
           quantity: Math.max(0, Number(order.quantity || 0) - 1),
@@ -466,18 +538,20 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
       const activeSession = await ctx.findOne('loading_sessions', {
         dispatch_order_id: order.id,
         status: 'ACTIVE',
+        tenant_id: tenantId,
+        ...divisionScope,
       });
       if (activeSession) {
         await ctx.updateOne(
           'loading_sessions',
-          { id: activeSession.id, status: 'ACTIVE' },
+          { id: activeSession.id, status: 'ACTIVE', tenant_id: tenantId, ...divisionScope },
           { $inc: { total: -1 } },
         );
       }
 
       if (condition === 'RETURN_TO_STOCK') {
         // The label goes back to free stock and its batch returns to the shelf.
-        await ctx.updateOne('qr_labels', { id: label.id }, { $set: {
+        await ctx.updateOne('qr_labels', { id: label.id, tenant_id: tenantId, ...divisionScope }, { $set: {
           dispatch_order_id: null,
           recall_status: null,
           recall_condition: null,
@@ -485,19 +559,19 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
           recalled_by: null,
           recalled_at: null,
         } });
-        await ctx.updateOne('batches', { id: label.batch_id, status: 'DISPATCH_APPROVED' }, { $set: { status: 'QC_PASSED' } });
+        await ctx.updateOne('batches', { id: label.batch_id, tenant_id: tenantId, ...divisionScope, status: 'DISPATCH_APPROVED' }, { $set: { status: 'QC_PASSED' } });
         // The unit left the stock when the order was created, so it goes back
         // on the shelf now.
         if (order.stock_reserved_at_order && batch) {
-          await restoreProductStock(ctx, [{ productId: batch.product_id as EntityId, quantity: 1 }]);
+          await restoreProductStock(ctx, [{ productId: batch.product_id as EntityId, quantity: 1 }], tenantId, divisionScope);
           await ctx.updateOne(
             'dispatch_orders',
-            { id: order.id },
+            { id: order.id, tenant_id: tenantId, ...divisionScope },
             { $inc: { returned_to_stock_quantity: 1 } },
           );
         }
       } else {
-        await ctx.updateOne('qr_labels', { id: label.id, recall_status: { $ne: 'RECALLED' } }, { $set: {
+        await ctx.updateOne('qr_labels', { id: label.id, tenant_id: tenantId, ...divisionScope, recall_status: { $ne: 'RECALLED' } }, { $set: {
           recall_status: 'RECALLED',
           recall_condition: condition,
           recall_reason: reason,
@@ -512,6 +586,8 @@ export async function recallQr(req: Request, res: Response): Promise<void> {
         user_role: req.user!.role,
         action: 'DISPATCH_QR_RECALLED',
         description: `QR ${qrValue} recalled from dispatch order ${order.id}; condition ${condition}; reason: ${reason}`,
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
       });
 
       return {
@@ -534,12 +610,14 @@ type PackingListBuildResult =
   | { ok: false; statusCode: number; error: string };
 
 async function buildPackingListData(req: Request): Promise<PackingListBuildResult> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) {
     return { ok: false, statusCode: 400, error: 'Invalid dispatch order id' };
   }
   const ctx = await getContext();
-  const order = await ctx.findOne('dispatch_orders', { id }, { projection: { _id: 0 } });
+  const divisionScope = divisionFilter(req);
+  const order = await ctx.findOne('dispatch_orders', { id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } });
   if (!order) {
     return { ok: false, statusCode: 404, error: 'Dispatch order not found' };
   }
@@ -552,20 +630,20 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
   }
 
   const [batch, client, storedItems, dispatchRecord, qrLabels] = await Promise.all([
-    ctx.findOne('batches', { id: order.batch_id }, { projection: { _id: 0 } }),
+    ctx.findOne('batches', { id: order.batch_id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } }),
     order.client_id
-      ? ctx.findOne('clients', { id: order.client_id }, {
+      ? ctx.findOne('clients', { id: order.client_id, tenant_id: tenantId }, {
           projection: { _id: 0, id: 1, name: 1, contact_person: 1, email: 1, phone: 1, address: 1, gst_number: 1 },
         })
       : null,
-    ctx.find('packing_list_items', { dispatch_order_id: id }, { sort: { _id: 1 }, projection: { _id: 0 } }),
-    ctx.find('dispatch_records', { dispatch_order_id: id }, {
+    ctx.find('packing_list_items', { dispatch_order_id: id, tenant_id: tenantId, ...divisionScope }, { sort: { _id: 1 }, projection: { _id: 0 } }),
+    ctx.find('dispatch_records', { dispatch_order_id: id, tenant_id: tenantId, ...divisionScope }, {
       sort: { created_at: -1 },
       limit: 1,
       projection: { _id: 0, dispatcher_id: 1 },
     }),
     // Human-readable QR IDs assigned to this order, grouped by batch line.
-    ctx.find('qr_labels', { dispatch_order_id: id }, {
+    ctx.find('qr_labels', { dispatch_order_id: id, tenant_id: tenantId, ...divisionScope }, {
       sort: { batch_id: 1, serial_no: 1 },
       projection: { _id: 0, batch_id: 1, qr_value: 1 },
     }),
@@ -580,31 +658,31 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
   }
 
   const [product, location, grade, vendor, bagQuantity, raisedBy, admin, dispatcher] = await Promise.all([
-    batch ? ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } }) : null,
+    batch ? ctx.findOne('products', { id: batch.product_id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0 } }) : null,
     batch && batch.shelf_location_id
-      ? ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, {
+      ? ctx.findOne('shelf_locations', { id: batch.shelf_location_id, tenant_id: tenantId, ...divisionScope }, {
           projection: { _id: 0, location_code: 1, description: 1 },
         })
       : null,
     batch?.grade_id
-      ? ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } })
+      ? ctx.findOne('grades', { id: batch.grade_id, tenant_id: tenantId, ...divisionScope }, { projection: { _id: 0, name: 1 } })
       : null,
     batch?.vendor_id
-      ? ctx.findOne('vendors', { id: batch.vendor_id }, { projection: { _id: 0, name: 1 } })
+      ? ctx.findOne('vendors', { id: batch.vendor_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } })
       : null,
     batch?.bag_quantity_id
-      ? ctx.findOne('bag_quantities', { id: batch.bag_quantity_id }, { projection: { _id: 0, name: 1, quantity: 1, unit: 1 } })
+      ? ctx.findOne('bag_quantities', { id: batch.bag_quantity_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1, quantity: 1, unit: 1 } })
       : null,
-    ctx.findOne('dispatch_users', { id: order.raised_by }, { projection: { _id: 0, name: 1 } }),
+    ctx.findOne('dispatch_users', { id: order.raised_by, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } }),
     order.approved_by_role === 'QC'
-      ? ctx.findOne('qc_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } })
+      ? ctx.findOne('qc_users', { id: order.approved_by_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } })
       : order.approved_by_role === 'DISPATCH'
-        ? ctx.findOne('dispatch_users', { id: order.approved_by_id }, { projection: { _id: 0, name: 1 } })
+        ? ctx.findOne('dispatch_users', { id: order.approved_by_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } })
         : order.admin_id
-          ? ctx.findOne('admins', { id: order.admin_id }, { projection: { _id: 0, name: 1 } })
+          ? ctx.findOne('admins', { id: order.admin_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } })
           : null,
     dispatchRecord[0]
-      ? ctx.findOne('dispatch_users', { id: dispatchRecord[0].dispatcher_id }, { projection: { _id: 0, name: 1 } })
+      ? ctx.findOne('dispatch_users', { id: dispatchRecord[0].dispatcher_id, tenant_id: tenantId }, { projection: { _id: 0, name: 1 } })
       : null,
   ]);
 
@@ -630,16 +708,20 @@ async function buildPackingListData(req: Request): Promise<PackingListBuildResul
   // Packing-list lines snapshot the product, not its grade. Resolve each line's
   // grade from its batch so the list (screen, print and PDF) can show grades.
   const lineBatchIds = [...new Set(baseItems.map((item: any) => item.batch_id).filter(Boolean))];
-  const lineBatches = await mapByIds<Record<string, any>>(ctx, 'batches', lineBatchIds);
+  const lineBatches = await mapByIds<Record<string, any>>(ctx, 'batches', lineBatchIds, tenantId, divisionScope);
   const lineGrades = await mapByIds<Record<string, any>>(
     ctx,
     'grades',
-    [...lineBatches.values()].map((lineBatch) => lineBatch.grade_id)
+    [...lineBatches.values()].map((lineBatch) => lineBatch.grade_id),
+    tenantId,
+    divisionScope
   );
   const lineProducts = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...lineBatches.values()].map((lineBatch) => lineBatch.product_id)
+    [...lineBatches.values()].map((lineBatch) => lineBatch.product_id),
+    tenantId,
+    divisionScope
   );
   const gradeNameByBatch = new Map<string, string | null>();
   for (const [key, lineBatch] of lineBatches) {
