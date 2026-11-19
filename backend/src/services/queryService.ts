@@ -12,6 +12,17 @@ export function contains(value: string): RegExp {
   return new RegExp(escapeRegex(value.trim()), 'i');
 }
 
+/**
+ * Left-anchored prefix matcher — case-insensitive. Mongo can use the leading
+ * columns of an index for `^prefix`, unlike a bare substring search. Use this
+ * for picker/search paths where the user types the start of a code or name.
+ * Not a replacement for `contains` everywhere — only use when the call-site
+ * actually wants "starts with" semantics.
+ */
+export function prefix(value: string): RegExp {
+  return new RegExp(`^${escapeRegex(value.trim())}`, 'i');
+}
+
 /** Case-insensitive exact matcher, matching the MySQL utf8mb4_unicode_ci collation. */
 export function equalsIgnoreCase(value: string): RegExp {
   return new RegExp(`^${escapeRegex(value.trim())}$`, 'i');

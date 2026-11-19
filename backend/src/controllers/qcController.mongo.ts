@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { DbContext, daysAgo, getContext, idKey, startOfDay, startOfWeek, withTransaction } from '../config/database';
 import { batchIdsForSearch, contains, EntityId, mapByIds, mapNames } from '../services/queryService';
 import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 function pageParams(req: Request, defaultLimit = 20): { page: number; limit: number; offset: number } {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -148,6 +149,7 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
       ...outcome,
       message: `Batch ${outcome.batch_number} marked ${result}.${result === 'PASS' ? ' Stock is now available for Dispatch.' : ' Stock was not added.'}`,
     });
+    publish(req, 'qc.decision', { outcome });
   } catch (error: any) {
     res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not save the QC decision' });
   }
@@ -239,6 +241,7 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
     }
   }
 
+  if (passed.length > 0) publish(req, 'qc.decision', { bulk: true, groupIds: passed });
   res.json({
     passed_count: passed.length,
     skipped_count: skipped.length,

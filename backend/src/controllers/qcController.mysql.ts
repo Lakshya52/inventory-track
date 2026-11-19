@@ -5,6 +5,7 @@ import { RowDataPacket } from 'mysql2';
 import { applyOperation } from '../services/syncService';
 import { SyncOperationInput } from '../types';
 import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 function pageParams(req: Request, defaultLimit = 20): { page: number; limit: number; offset: number } {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -264,6 +265,7 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
       ...outcome,
       message: `Batch ${outcome.batch_number} marked ${result}.${result === 'PASS' ? ' Stock is now available for Dispatch.' : ' Stock was not added.'}`,
     });
+    publish(req, 'qc.decision', { outcome });
   } catch (error: any) {
     res.status(error?.statusCode || 500).json({ error: error?.message || 'Could not save the QC decision' });
   }
@@ -358,6 +360,7 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
     }
   }
 
+  if (passed.length > 0) publish(req, 'qc.decision', { bulk: true, groupIds: passed });
   res.json({
     passed_count: passed.length,
     skipped_count: skipped.length,
@@ -513,7 +516,7 @@ export async function pending(req: Request, res: Response): Promise<void> {
   const params: any[] = [tenantId];
   if (q) {
     where.push('(b.batch_number LIKE ? OR b.barcode_value LIKE ? OR p.name LIKE ? OR p.sku LIKE ?)');
-    const like = `%${q}%`;
+    const like = `${q}%`;
     params.push(like, like, like, like);
   }
   const whereSql = `WHERE ${where.join(' AND ')}`;
@@ -585,7 +588,7 @@ export async function records(req: Request, res: Response): Promise<void> {
   }
   if (q) {
     where.push('(b.batch_number LIKE ? OR b.barcode_value LIKE ? OR p.name LIKE ? OR p.sku LIKE ? OR q.remarks LIKE ?)');
-    const like = `%${q}%`;
+    const like = `${q}%`;
     params.push(like, like, like, like, like);
   }
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';

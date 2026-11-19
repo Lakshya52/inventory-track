@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { getContext, idKey, isValidId, now, parseDateValue, withTransaction } from '../config/database';
-import { batchPrintStats, batchQrStats, contains, EntityId, mapByIds } from '../services/queryService';
+import { batchPrintStats, batchQrStats, prefix, EntityId, mapByIds } from '../services/queryService';
 import { buildBatchNumbers, skuFromBatchNumber } from '../utils/batchNumbers';
 import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 
@@ -40,7 +40,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     return;
   }
   const ctx = await getContext();
-  const product = await ctx.findOne('products', { id: productId, tenant_id: tenantId, ...divisionFilter(req) }, {
+  const product = await ctx.findOne('products', { id: productId, tenant_id: tenantId, is_active: 1, ...divisionFilter(req) }, {
     projection: { _id: 0, id: 1, name: 1, sku: 1, price: 1 },
   });
   if (!product) { res.status(404).json({ error: 'Product not found' }); return; }
@@ -340,7 +340,35 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
 export async function list(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const batches = await ctx.find('batches', { tenant_id: tenantId, ...divisionFilter(req) }, { sort: { created_at: -1 }, projection: { _id: 0, avg_standard_quantity: 0 } });
+  // Optional bounded filters. Unfiltered calls keep their legacy behaviour;
+  // screens that only need a slice of recent batches pass status/q/limit.
+  const q = String(req.query.q || '').trim();
+  const statuses = String(req.query.status || '')
+    .split(',')
+    .map((value) => value.trim().toUpperCase())
+    .filter((value) => /^[A-Z_]{2,40}$/.test(value));
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : undefined;
+  const filter: Record<string, any> = { tenant_id: tenantId, ...divisionFilter(req) };
+  if (statuses.length > 0) filter.status = { $in: statuses };
+  if (q) {
+    const pattern = prefix(q);
+    const matchingProducts = await ctx.find('products', {
+      $or: [{ name: pattern }, { sku: pattern }],
+      tenant_id: tenantId,
+      ...divisionFilter(req),
+    }, { projection: { id: 1 } });
+    filter.$or = [
+      { batch_number: pattern },
+      { product_id: { $in: matchingProducts.map((product) => idKey(product.id)) } },
+    ];
+  }
+  const findOptions: { sort: { created_at: -1 }; projection: Record<string, any>; limit?: number } = {
+    sort: { created_at: -1 },
+    projection: { _id: 0, avg_standard_quantity: 0 },
+  };
+  if (limit) findOptions.limit = limit;
+  const batches = await ctx.find('batches', filter, findOptions);
   const products = await mapByIds<{ id: EntityId; name: string; sku: string; grade?: string | null }>(
     ctx,
     'products',
@@ -485,7 +513,7 @@ export async function search(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const q = req.query.q as string || '';
   const ctx = await getContext();
-  const pattern = contains(q);
+  const pattern = prefix(q);
   const products = await ctx.find('products', {
     $or: [{ name: pattern }, { sku: pattern }],
     tenant_id: tenantId,

@@ -32,7 +32,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'A single generation can contain no more than 10,000 products' });
     return;
   }
-  const products = await query<RowDataPacket[]>(`SELECT id, name, sku, price FROM products WHERE id = ? AND tenant_id = ?${dv.sql}`, [productId, tenantId, ...dv.params]);
+  const products = await query<RowDataPacket[]>(`SELECT id, name, sku, price FROM products WHERE id = ? AND tenant_id = ?${dv.sql} AND is_active = 1`, [productId, tenantId, ...dv.params]);
   if (products.length === 0) { res.status(404).json({ error: 'Product not found' }); return; }
   const product = products[0];
   const providedBatchNumber = String(batch_number || '').trim();
@@ -318,6 +318,26 @@ export async function list(req: Request, res: Response): Promise<void> {
   const dvp = divisionWhere(req, 'p.division_id');
   const dvs = divisionWhere(req, 's.division_id');
   const dvg = divisionWhere(req, 'g.division_id');
+  // Optional bounded filters. Unfiltered calls keep their legacy behaviour;
+  // screens that only need a slice of recent batches pass status/q/limit.
+  const q = String(req.query.q || '').trim();
+  const statuses = String(req.query.status || '')
+    .split(',')
+    .map((value) => value.trim().toUpperCase())
+    .filter((value) => /^[A-Z_]{2,40}$/.test(value));
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : undefined;
+  let whereSql = `b.tenant_id = ?${dv.sql}`;
+  const whereParams: Array<string | number> = [tenantId, ...dv.params];
+  if (statuses.length > 0) {
+    whereSql += ` AND b.status IN (${statuses.map(() => '?').join(',')})`;
+    whereParams.push(...statuses);
+  }
+  if (q) {
+    const dvpq = divisionWhere(req, 'p.division_id');
+    whereSql += ` AND (b.batch_number LIKE ? OR b.product_id IN (SELECT p.id FROM products p WHERE p.tenant_id = ?${dvpq.sql} AND (p.name LIKE ? OR p.sku LIKE ?)))`;
+    whereParams.push(`${q}%`, tenantId, ...dvpq.params, `${q}%`, `${q}%`);
+  }
   const batches = await query<RowDataPacket[]>(
     `SELECT b.*, p.name as product_name, p.sku as product_sku, p.grade AS product_grade,
             s.location_code, s.warehouse AS warehouse_name, v.name AS vendor_name, g.name AS grade_name,
@@ -333,11 +353,11 @@ export async function list(req: Request, res: Response): Promise<void> {
      LEFT JOIN vendors v ON v.id = b.vendor_id AND v.tenant_id = ?
      LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ?${dvg.sql}
      LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id AND q.tenant_id = ?
-     WHERE b.tenant_id = ?${dv.sql}
-     ORDER BY b.created_at DESC`,
+     WHERE ${whereSql}
+     ORDER BY b.created_at DESC${limit ? ` LIMIT ${limit}` : ''}`,
     [tenantId, ...dvl.params, tenantId, ...dvl.params, tenantId, ...dvl.params, tenantId, ...dvl.params,
      tenantId, ...dvl.params, tenantId, ...dvl.params, tenantId, ...dvl.params,
-     tenantId, ...dvp.params, tenantId, ...dvs.params, tenantId, tenantId, ...dvg.params, tenantId, tenantId, ...dv.params]
+     tenantId, ...dvp.params, tenantId, ...dvs.params, tenantId, tenantId, ...dvg.params, tenantId, tenantId, ...whereParams]
   );
   // The average standard quantity is an internal-only reference; never return it.
   for (const batch of batches) {
@@ -432,7 +452,7 @@ export async function search(req: Request, res: Response): Promise<void> {
      FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
      WHERE (p.name LIKE ? OR p.sku LIKE ? OR b.batch_number LIKE ?) AND b.tenant_id = ?${dv.sql}
      ORDER BY b.created_at DESC LIMIT 50`,
-    [tenantId, ...dvp.params, `%${q}%`, `%${q}%`, `%${q}%`, tenantId, ...dv.params]
+    [tenantId, ...dvp.params, `${q}%`, `${q}%`, `${q}%`, tenantId, ...dv.params]
   );
   res.json(batches);
 }
