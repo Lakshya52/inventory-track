@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
+import { subscribe } from '../services/realtime';
 import { useAuth } from '../contexts/AuthContext';
 import type { EntityId } from '../types';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -19,6 +20,7 @@ import {
   X,
   Clock,
   CheckCircle2,
+  RotateCcw,
 } from 'lucide-react';
 
 function newOperationId(): string {
@@ -77,6 +79,14 @@ export default function DispatchOrders() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [recallOrder, setRecallOrder] = useState<any>(null);
+  const [recallSessionId, setRecallSessionId] = useState<EntityId | null>(null);
+  const [recallPending, setRecallPending] = useState(0);
+  const [recallQr, setRecallQr] = useState('');
+  const [recallReason, setRecallReason] = useState('');
+  const [recallCondition, setRecallCondition] = useState<'DAMAGED' | 'HOLD' | 'RETURN_TO_STOCK'>('DAMAGED');
+  const [recallBusy, setRecallBusy] = useState(false);
+  const [recallReloadBusy, setRecallReloadBusy] = useState(false);
   const fetchRequest = useRef(0);
 
   useEffect(() => {
@@ -96,7 +106,7 @@ export default function DispatchOrders() {
       if (isDispatch) {
         const dispatchOrders = await api.dispatchOrders.mine({ q: debouncedSearch || undefined, status: statusFilter || undefined });
         if (requestId === fetchRequest.current) setOrders(dispatchOrders);
-        const batches = await api.batches.list();
+        const batches = await api.batches.recent({ status: 'QC_PASSED,DISPATCH_APPROVED', limit: 100 });
         if (requestId === fetchRequest.current) setQcPassedBatches(batches.filter((batch: any) =>
           ['QC_PASSED', 'DISPATCH_APPROVED'].includes(batch.status) &&
           Number(batch.qr_count) === Number(batch.quantity) &&
@@ -118,6 +128,12 @@ export default function DispatchOrders() {
 
   useEffect(() => {
     void fetchData();
+    const unsubscribe = subscribe((event) => {
+      if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed' || event.type === 'dispatch.loading-recalled' || event.type === 'dispatch.loading-reopened') {
+        void fetchData();
+      }
+    });
+    return () => unsubscribe();
   }, [fetchData]);
 
   useEffect(() => {
@@ -205,6 +221,75 @@ export default function DispatchOrders() {
       showMessage(err.message || 'Could not raise order', 'error');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const openRecallModal = async (order: any) => {
+    setRecallOrder(order);
+    setRecallSessionId(null);
+    setRecallPending(0);
+    setRecallQr('');
+    setRecallReason('');
+    setRecallCondition('DAMAGED');
+    setRecallBusy(true);
+    try {
+      const info = await api.loadingSessions.byOrder(order.id);
+      setRecallSessionId(info.session_id ?? null);
+      setRecallPending(Number(info.reload_pending ?? 0));
+      if (!info.session_id) {
+        showMessage('No sealed loading session found for this order.', 'error');
+      }
+    } catch (err: any) {
+      showMessage(err.message || 'Could not look up the sealed session for this order', 'error');
+      setRecallOrder(null);
+    } finally {
+      setRecallBusy(false);
+    }
+  };
+
+  const handleRecallSealed = async () => {
+    if (!recallSessionId) {
+      showMessage('No sealed loading session found for this order.', 'error');
+      return;
+    }
+    if (!recallQr.trim() || !recallReason.trim()) {
+      showMessage('Enter the QR code and a reason for the recall.', 'error');
+      return;
+    }
+    setRecallBusy(true);
+    try {
+      const result = await api.loadingSessions.recallSealed(recallSessionId, {
+        qr_value: recallQr.trim(),
+        condition: recallCondition,
+        reason: recallReason.trim(),
+      });
+      setRecallPending(Number(result?.reload_pending ?? 0));
+      setRecallQr('');
+      setRecallReason('');
+      showMessage('Sealed unit recalled. Use "Reload new product" to reopen this order for replacement loading.');
+    } catch (err: any) {
+      showMessage(err.message || 'Could not recall the sealed unit', 'error');
+    } finally {
+      setRecallBusy(false);
+    }
+  };
+
+  const handleReloadOrder = async () => {
+    if (!recallSessionId) {
+      showMessage('No sealed loading session found for this order.', 'error');
+      return;
+    }
+    setRecallReloadBusy(true);
+    try {
+      const result = await api.loadingSessions.reload(recallSessionId);
+      const short = Number(result?.unfilled_units ?? 0);
+      showMessage(`Order ${result?.order_number ?? result?.order_id} reopened for ${Number(result?.quantity ?? 0)} replacement unit(s).${short > 0 ? ` Warning: ${short} unit(s) have no spare printed label — print more labels for the batch before loading.` : ' Use "Start Loading" to scan the new product.'}`);
+      setRecallOrder(null);
+      await fetchData();
+    } catch (err: any) {
+      showMessage(err.message || 'Could not reload this order', 'error');
+    } finally {
+      setRecallReloadBusy(false);
     }
   };
 
@@ -562,6 +647,15 @@ export default function DispatchOrders() {
                           </button>
                         )}
 
+                        {(isAdmin || isDispatch) && ['CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'].includes(order.status) && (
+                          <button
+                            onClick={() => void openRecallModal(order)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300"
+                          >
+                            <RotateCcw size={14} /> Recall Unit
+                          </button>
+                        )}
+
                         {(isAdmin || isDispatch) && order.status === 'APPROVED' && order.batch_status !== 'LOADING' && (
                           <button
                             onClick={() => {
@@ -695,6 +789,104 @@ export default function DispatchOrders() {
                   <XCircle size={16} /> {actionLoading ? 'Cancelling...' : 'Cancel Order'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 7. RECALL SEALED UNIT MODAL */}
+      {recallOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xl w-full max-w-xl overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Recall Sealed Unit</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Order #{recallOrder.order_number || recallOrder.id} · {recallOrder.product_name}{' '}
+                  · Seal: <span className="font-mono">{recallOrder.seal_number || 'recorded on session'}</span>
+                </p>
+              </div>
+              <button
+                onClick={() => setRecallOrder(null)}
+                disabled={recallBusy || recallReloadBusy}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {!recallSessionId && !recallBusy && (
+                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  No sealed loading session was found for this order, so there is nothing to recall.
+                </p>
+              )}
+              <p className="text-sm font-medium text-slate-600">
+                Scan or enter the QR code of the unit to pull from the sealed container. The unit is
+                marked recalled; if it must be replaced, reload the order and load a new QR label
+                against the same order.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  className="input font-mono text-sm sm:col-span-2"
+                  value={recallQr}
+                  onChange={(event) => setRecallQr(event.target.value)}
+                  placeholder="Scan or enter the sealed unit's QR code"
+                  autoComplete="off"
+                  aria-label="Sealed unit QR code"
+                />
+                <select
+                  className="input sm:col-span-2"
+                  value={recallCondition}
+                  onChange={(event) => setRecallCondition(event.target.value as typeof recallCondition)}
+                  aria-label="Recall condition"
+                >
+                  <option value="DAMAGED">Damaged</option>
+                  <option value="HOLD">Hold for review</option>
+                  <option value="RETURN_TO_STOCK">Return to stock</option>
+                </select>
+                <input
+                  className="input sm:col-span-2"
+                  value={recallReason}
+                  onChange={(event) => setRecallReason(event.target.value)}
+                  placeholder="Describe why this sealed unit is being recalled"
+                  aria-label="Recall reason"
+                />
+              </div>
+              {recallPending > 0 && (
+                <p className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                  {recallPending} replacement unit(s) pending for this order. Reloading reopens the
+                  order as ready for loading with just the recalled quantities.
+                </p>
+              )}
+            </div>
+            <div className="p-5 border-t border-slate-100 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRecallOrder(null)}
+                disabled={recallBusy || recallReloadBusy}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={handleRecallSealed}
+                disabled={recallBusy || recallReloadBusy || !recallSessionId || !recallQr.trim() || !recallReason.trim()}
+                className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-sm font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-sm disabled:opacity-50"
+              >
+                <RotateCcw size={16} /> {recallBusy ? 'Recalling...' : 'Recall Sealed Unit'}
+              </button>
+              <button
+                type="button"
+                onClick={handleReloadOrder}
+                disabled={recallBusy || recallReloadBusy || recallPending < 1 || !recallSessionId}
+                className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm disabled:opacity-50"
+              >
+                <Truck size={16} />
+                {recallReloadBusy
+                  ? 'Reloading...'
+                  : `Reload new product${recallPending > 0 ? ` (${recallPending})` : ''}`}
+              </button>
             </div>
           </div>
         </div>

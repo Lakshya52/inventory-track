@@ -25,8 +25,11 @@ import {
 } from "lucide-react";
 
 const reader = new BrowserMultiFormatReader();
+// A dedicated reader for the recall-product scanner, kept separate so it never
+// fights the main loading-scan camera for the same hardware.
+const recallReader = new BrowserMultiFormatReader();
 
-type ScanResult = "OK" | "DUPLICATE" | "WRONG_BATCH" | "QTY_EXCEEDED";
+type ScanResult = "OK" | "DUPLICATE" | "WRONG_BATCH" | "QTY_EXCEEDED" | "RECALLED";
 type InlineResult = ScanResult | "ERROR";
 type MessageKind = "success" | "error" | "warning" | "info";
 type Outcome = "DISPATCHED" | "NOT_DISPATCHED";
@@ -45,6 +48,7 @@ interface LoadingSession {
 	driver_name: string | null;
 	vehicle_number: string | null;
 	container_number: string | null;
+	qr_values?: string[];
 	order_lines?: Array<{
 		batch_id: string;
 		batch_number: string;
@@ -52,6 +56,7 @@ interface LoadingSession {
 		product_sku?: string;
 		quantity: number;
 		uom?: string;
+		qr_values?: string[];
 	}>;
 	uom: string | null;
 	started_at: string | null;
@@ -82,6 +87,7 @@ const RESULT_LABELS: Record<ScanResult, string> = {
 	DUPLICATE: "Duplicate",
 	WRONG_BATCH: "Wrong batch",
 	QTY_EXCEEDED: "Qty exceeded",
+	RECALLED: "Recalled",
 };
 
 const INLINE_STYLES: Record<InlineResult, { wrap: string; label: string }> = {
@@ -100,6 +106,10 @@ const INLINE_STYLES: Record<InlineResult, { wrap: string; label: string }> = {
 	QTY_EXCEEDED: {
 		wrap: "border-rose-200 bg-rose-50 text-rose-800",
 		label: "Quantity exceeded",
+	},
+	RECALLED: {
+		wrap: "border-amber-200 bg-amber-50 text-amber-800",
+		label: "Recalled",
 	},
 	ERROR: {
 		wrap: "border-rose-200 bg-rose-50 text-rose-800",
@@ -123,7 +133,7 @@ function operationId(): string {
 
 function resultBadge(result: string): string {
 	if (result === "OK") return "badge-success";
-	if (result === "DUPLICATE") return "badge-warning";
+	if (result === "DUPLICATE" || result === "RECALLED") return "badge-warning";
 	return "badge-danger";
 }
 
@@ -157,7 +167,8 @@ function normalizeScanResult(value: unknown): ScanResult {
 	if (
 		result === "DUPLICATE" ||
 		result === "WRONG_BATCH" ||
-		result === "QTY_EXCEEDED"
+		result === "QTY_EXCEEDED" ||
+		result === "RECALLED"
 	)
 		return result;
 	return "OK";
@@ -181,6 +192,16 @@ function normalizeSession(raw: any, fallback?: any): LoadingSession {
 		batch_id: String(source?.batch_id ?? base?.batch_id ?? ""),
 		batch_number: text(source?.batch_number) ?? text(base?.batch_number),
 		order_lines: source?.order_lines ?? base?.items ?? [],
+		qr_values: ((): string[] => {
+			const candidate = source?.qr_values ?? base?.qr_values;
+			if (Array.isArray(candidate)) return candidate.map(String).filter(Boolean);
+			if (Array.isArray(source?.items)) {
+				return source.items.flatMap((item: any) =>
+					Array.isArray(item?.qr_values) ? item.qr_values.map(String) : [],
+				);
+			}
+				return [];
+		})(),
 		product_name: text(source?.product_name) ?? text(base?.product_name),
 		client_name: text(source?.client_name) ?? text(base?.client_name),
 		driver_name: text(source?.driver_name) ?? text(base?.driver_name),
@@ -211,6 +232,39 @@ function mapRecentEvents(events: any[]): RecentScan[] {
 		.filter((event) => event.qr)
 		.sort((a, b) => timeValue(b.at) - timeValue(a.at))
 		.slice(0, 12);
+}
+
+function QrValueChips({
+	values,
+	max = 16,
+}: {
+	values?: unknown[] | null;
+	max?: number;
+}) {
+	const list = Array.isArray(values)
+		? values.map(String).filter(Boolean)
+		: [];
+	if (list.length === 0) {
+		return <span className="text-surface-400">-</span>;
+	}
+	const shown = list.slice(0, max);
+	return (
+		<span className="flex flex-wrap gap-1">
+			{shown.map((value) => (
+				<span
+					key={value}
+					className="rounded-md border border-surface-200 bg-surface-50 px-1.5 py-0.5 font-mono text-[10px] text-surface-800"
+				>
+					{value}
+				</span>
+			))}
+			{list.length > shown.length && (
+				<span className="self-center text-[10px] text-surface-500">
+					+{list.length - shown.length} more
+				</span>
+			)}
+		</span>
+	);
 }
 
 function percent(scanned: number, total: number): number {
@@ -267,9 +321,11 @@ export default function DispatchScan() {
 	const [recallQr, setRecallQr] = useState("");
 	const [recallReason, setRecallReason] = useState("");
 	const [recallCondition, setRecallCondition] = useState<
-		"DAMAGED" | "HOLD" | "OTHER"
+		"DAMAGED" | "HOLD" | "RETURN_TO_STOCK"
 	>("DAMAGED");
 	const [recalling, setRecalling] = useState(false);
+	const [recallScanning, setRecallScanning] = useState(false);
+	const recallVideoRef = useRef<HTMLVideoElement>(null);
 	const [driverName, setDriverName] = useState("");
 	const [driverPhone, setDriverPhone] = useState("");
 	const [vehicleNumber, setVehicleNumber] = useState("");
@@ -278,6 +334,14 @@ export default function DispatchScan() {
 	const [remarks, setRemarks] = useState("");
 	const [finalising, setFinalising] = useState(false);
 	const [finaliseResult, setFinaliseResult] = useState<any>(null);
+	const [sealedRecallQr, setSealedRecallQr] = useState("");
+	const [sealedRecallReason, setSealedRecallReason] = useState("");
+	const [sealedRecallCondition, setSealedRecallCondition] = useState<
+		"DAMAGED" | "HOLD" | "RETURN_TO_STOCK"
+	>("DAMAGED");
+	const [sealedRecalling, setSealedRecalling] = useState(false);
+	const [reloadPending, setReloadPending] = useState(0);
+	const [reloading, setReloading] = useState(false);
 	const [todayDispatches, setTodayDispatches] = useState<any[]>([]);
 	const [searchParams, setSearchParams] = useSearchParams();
 
@@ -391,6 +455,16 @@ export default function DispatchScan() {
 				order.driver_name,
 				order.vehicle_number,
 				order.container_number,
+				...(Array.isArray(order.qr_values)
+					? order.qr_values
+					: []),
+				...(Array.isArray(order.items)
+					? order.items.flatMap((item: any) =>
+							Array.isArray(item?.qr_values)
+								? item.qr_values
+								: [],
+						)
+					: []),
 			]
 				.filter(Boolean)
 				.some((value) => String(value).toLowerCase().includes(needle)),
@@ -625,14 +699,28 @@ export default function DispatchScan() {
 			setLastScan({ qr: qrValue, result, at: Date.now() });
 			setLastSyncedAt(Date.now());
 			setPollError(false);
-			setMessage("");
-
 			if (result === "OK") {
 				setMessageKind("success");
+				setMessage("");
 			} else if (result === "DUPLICATE") {
 				setMessageKind("warning");
+				setMessage("That QR was already loaded in this session.");
+			} else if (result === "RECALLED") {
+				setMessageKind("warning");
+				setMessage("That QR was recalled and cannot be loaded.");
+			} else if (result === "WRONG_BATCH") {
+				setMessageKind("error");
+				setMessage(
+					"That QR belongs to a different batch or order — scan a unit from this batch only.",
+				);
+			} else if (result === "QTY_EXCEEDED") {
+				setMessageKind("error");
+				setMessage(
+					"The load target is already reached. Recall a unit or seal the container.",
+				);
 			} else {
 				setMessageKind("error");
+				setMessage("Scan rejected.");
 			}
 			setManualValue("");
 		} catch (err: any) {
@@ -693,7 +781,11 @@ export default function DispatchScan() {
 			setRecallReason("");
 			setMessageKind("success");
 			setMessage(
-				`QR recalled (${recallCondition.toLowerCase()}) and excluded from this loading order.`,
+				Number(result?.recalled_units ?? 0) > 0
+					? Number(result?.unfilled_units ?? 0) > 0
+						? `Loaded QR recalled (${recallCondition.toLowerCase()}). No spare printed label was available — the order and load target were reduced.`
+						: `Loaded QR recalled (${recallCondition.toLowerCase()}). The unit was removed from the load — scan the replacement unit before sealing.`
+					: `QR recalled (${recallCondition.toLowerCase()}) and excluded from this loading order.`,
 			);
 			setLastSyncedAt(Date.now());
 		} catch (err: any) {
@@ -701,6 +793,77 @@ export default function DispatchScan() {
 			setMessage(err?.message || "Could not recall this QR label.");
 		} finally {
 			setRecalling(false);
+			setRecallScanning(false);
+			stopRecallCamera();
+		}
+	};
+
+	// Post-seal recall: the container is already sealed. A recalled unit is
+	// removed from the sealed load and queued for a replacement reload against
+	// the same dispatch order.
+	const submitSealedRecall = async () => {
+		const sealedSessionId = finaliseResult?.session?.id;
+		if (!sealedSessionId) {
+			setMessageKind("error");
+			setMessage(
+				"No finalised session found here. Open the order from Dispatch Orders and use Recall Unit instead.",
+			);
+			return;
+		}
+		if (!sealedRecallQr.trim() || !sealedRecallReason.trim() || sealedRecalling)
+			return;
+		setSealedRecalling(true);
+		setMessage("");
+		try {
+			const result = await api.loadingSessions.recallSealed(sealedSessionId, {
+				qr_value: sealedRecallQr.trim(),
+				condition: sealedRecallCondition,
+				reason: sealedRecallReason.trim(),
+			});
+			setReloadPending(Number(result?.reload_pending ?? 0));
+			setSealedRecallQr("");
+			setSealedRecallReason("");
+			setMessageKind("success");
+			setMessage(
+				`Sealed unit recalled (${sealedRecallCondition.toLowerCase()}). ${Number(result?.reload_pending ?? 1)} replacement unit(s) pending — use "Reload new product" to reopen this order.`,
+			);
+		} catch (err: any) {
+			setMessageKind("error");
+			setMessage(err?.message || "Could not recall the sealed unit.");
+		} finally {
+			setSealedRecalling(false);
+		}
+	};
+
+	// Reload replacement product against the same dispatch order the sealed
+	// container belonged to. The order reopens as APPROVED so a fresh loading
+	// session (scan -> seal) can be started for just the recalled units.
+	const reloadReplacementOrder = async () => {
+		const sealedSessionId = finaliseResult?.session?.id;
+		if (!sealedSessionId) {
+			setMessageKind("error");
+			setMessage(
+				"No finalised session found here. Open the order from Dispatch Orders and use Recall Unit instead.",
+			);
+			return;
+		}
+		if (reloading) return;
+		setReloading(true);
+		setMessage("");
+		try {
+			const result = await api.loadingSessions.reload(sealedSessionId);
+			setReloadPending(0);
+			setFinaliseResult(null);
+			setMessageKind(Number(result?.unfilled_units ?? 0) > 0 ? "warning" : "success");
+			setMessage(
+				`Order ${result?.order_number ?? result?.order_id} reopened for ${Number(result?.quantity ?? 0)} replacement unit(s). Start a loading session to load the new product.${Number(result?.unfilled_units ?? 0) > 0 ? ` Warning: ${result?.unfilled_units} unit(s) have no spare printed label — print more labels for the batch before loading.` : ""}`,
+			);
+			void loadOrders();
+		} catch (err: any) {
+			setMessageKind("error");
+			setMessage(err?.message || "Could not reload this order.");
+		} finally {
+			setReloading(false);
 		}
 	};
 
@@ -832,12 +995,87 @@ export default function DispatchScan() {
 		}
 	}, [scanning, session?.total, session?.scanned, stopCamera]);
 
+	const stopRecallCamera = useCallback(() => {
+		try {
+			recallReader.reset();
+		} catch {
+			// The decoder may already be reset.
+		}
+	}, []);
+	// Release the recall camera when leaving the page.
+	useEffect(() => () => stopRecallCamera(), [stopRecallCamera]);
+
+	// Recall-product camera: decodes straight into the recall QR field. The
+	// text field stays usable — this is purely an alternative way to fill it.
+	useEffect(() => {
+		if (!recallScanning) return;
+		if (!session || session.status !== "ACTIVE") {
+			setRecallScanning(false);
+			return;
+		}
+		if (!navigator.mediaDevices?.getUserMedia) {
+			setMessageKind("error");
+			setMessage(
+				"Camera is not supported here. Use HTTPS or localhost, or enter the QR code manually.",
+			);
+			setRecallScanning(false);
+			return;
+		}
+		const video = recallVideoRef.current;
+		if (!video) return;
+		let cancelled = false;
+
+		(async () => {
+			try {
+				await recallReader.decodeFromVideoDevice(null, video, (result) => {
+					if (cancelled || !result) return;
+					const value = result.getText().trim();
+					if (value) {
+						setRecallQr(value);
+						setRecallScanning(false);
+					}
+				});
+			} catch (err: any) {
+				if (cancelled) return;
+				setMessageKind("error");
+				setMessage(
+					err?.message?.includes?.("Permission")
+						? "Camera permission denied. Allow camera access or enter the QR code manually."
+						: "Camera could not start. Enter the QR code manually or try again.",
+				);
+				setRecallScanning(false);
+				stopRecallCamera();
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+			stopRecallCamera();
+		};
+	}, [recallScanning, session?.id, session?.status, stopRecallCamera]);
+
+	const toggleRecallCamera = () => {
+		if (recallScanning) {
+			stopRecallCamera();
+			setRecallScanning(false);
+			return;
+		}
+		// Never fight the main loading-scan camera for the hardware.
+		stopCamera();
+		setScanning(false);
+		setMessage("");
+		setRecallScanning(true);
+	};
+
 	const toggleCamera = () => {
 		if (!session || session.status !== "ACTIVE" || allScanned) return;
 		if (scanning) {
 			stopCamera();
 			setScanning(false);
 		} else {
+			// Never fight the recall camera for the hardware.
+			stopRecallCamera();
+			setRecallScanning(false);
 			setMessage("");
 			setScanning(true);
 		}
@@ -905,7 +1143,7 @@ export default function DispatchScan() {
 		) {
 			setMessageKind("error");
 			setMessage(
-				"Enter the driver, vehicle, and container details before marking the order dispatched.",
+				"This order is missing the transporter name, vehicle, or container. They can only be set when the order is raised — cancel it and create a new one.",
 			);
 			return;
 		}
@@ -923,6 +1161,9 @@ export default function DispatchScan() {
 				client_operation_id: operationId(),
 			});
 			setFinaliseResult(response ?? {});
+			setReloadPending(0);
+			setSealedRecallQr("");
+			setSealedRecallReason("");
 			setMessageKind("success");
 			setMessage(
 				outcome === "DISPATCHED"
@@ -985,7 +1226,7 @@ export default function DispatchScan() {
 	const LastScanIcon =
 		lastScan?.result === "OK"
 			? CheckCircle
-			: lastScan?.result === "DUPLICATE"
+			: lastScan?.result === "DUPLICATE" || lastScan?.result === "RECALLED"
 				? AlertTriangle
 				: XCircle;
 
@@ -1090,6 +1331,110 @@ export default function DispatchScan() {
 											<div className="font-mono font-medium text-surface-800">
 												{finaliseResult?.session
 													?.seal_number ?? "-"}
+											</div>
+										</div>
+									</div>
+									<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+										<div className="flex items-start gap-2">
+											<RotateCcw
+												size={16}
+												className="mt-0.5 shrink-0 text-amber-700"
+											/>
+											<div className="min-w-0 flex-1">
+												<h3 className="text-sm font-bold text-slate-900">
+													Recall a sealed unit
+												</h3>
+												<p className="mt-0.5 text-xs leading-relaxed text-slate-600">
+													Found a damaged or wrong unit inside the
+													sealed container? Recall it here. If a
+													replacement is required, reopen the order with
+													"Reload new product" and load the new QR label
+													against the same dispatch order.
+												</p>
+												<div className="mt-3 grid gap-2 sm:grid-cols-2">
+													<input
+														className="input font-mono text-sm"
+														value={sealedRecallQr}
+														onChange={(event) =>
+															setSealedRecallQr(event.target.value)
+														}
+														placeholder="Scan or enter the sealed QR code"
+														autoComplete="off"
+														aria-label="Sealed unit QR code"
+													/>
+													<select
+														className="input"
+														value={sealedRecallCondition}
+														onChange={(event) =>
+															setSealedRecallCondition(
+																event.target.value as typeof sealedRecallCondition,
+															)
+														}
+														aria-label="Recall condition"
+													>
+														<option value="DAMAGED">Damaged</option>
+														<option value="HOLD">Hold for review</option>
+														<option value="RETURN_TO_STOCK">
+															Return to stock
+														</option>
+													</select>
+													<input
+														className="input sm:col-span-2"
+														value={sealedRecallReason}
+														onChange={(event) =>
+															setSealedRecallReason(event.target.value)
+														}
+														placeholder="Describe why this sealed unit is being recalled"
+														aria-label="Recall reason"
+													/>
+												</div>
+												<div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+													<button
+														type="button"
+														className="btn-secondary btn-sm"
+														onClick={() => void submitSealedRecall()}
+														disabled={
+															sealedRecalling ||
+															!sealedRecallQr.trim() ||
+															!sealedRecallReason.trim()
+														}
+													>
+														{sealedRecalling ? (
+															<Loader2 size={15} className="animate-spin" />
+														) : (
+															<RotateCcw size={15} />
+														)}
+														{sealedRecalling
+															? "Recalling…"
+															: "Recall sealed unit"}
+													</button>
+													{reloadPending > 0 && (
+														<button
+															type="button"
+															className="btn-primary btn-sm"
+															onClick={() =>
+																void reloadReplacementOrder()
+															}
+															disabled={reloading}
+														>
+															{reloading ? (
+																<Loader2 size={15} className="animate-spin" />
+															) : (
+																<Boxes size={15} />
+															)}
+															{reloading
+																? "Reloading…"
+																: `Reload new product (${reloadPending} unit${reloadPending > 1 ? "s" : ""})`}
+														</button>
+													)}
+												</div>
+												{reloadPending > 0 && (
+													<p className="mt-2 text-xs font-semibold text-amber-800">
+														{reloadPending} replacement unit(s)
+														pending for this order. Reopening it lets
+														you scan the new QR labels and seal again.
+													</p>
+												)}
 											</div>
 										</div>
 									</div>
@@ -1721,33 +2066,66 @@ export default function DispatchScan() {
 												Recall a product
 											</h3>
 											<p className="mt-1 text-sm leading-relaxed text-slate-700">
-												Use this if an item is damaged
-												or cannot be loaded. Recalled QR
-												codes are excluded from the
-												loading count.
+												Only QRs from this batch are accepted.
+												Use this if an item is damaged or
+												cannot be loaded — even if it has already
+												been scanned. Recalled QR codes are excluded
+												from the load; scan a replacement unit
+												before sealing.
 											</p>
 										</div>
 									</div>
 									<div className="mt-3 grid gap-2 sm:grid-cols-2">
-										<div>
+											<div>
 											<label
 												className="mb-1.5 block text-sm font-semibold text-surface-700"
 												htmlFor="recall-qr"
 											>
 												Product QR code
 											</label>
-											<input
-												id="recall-qr"
-												className="input font-mono text-sm"
-												value={recallQr}
-												onChange={(event) =>
-													setRecallQr(
-														event.target.value,
-													)
-												}
-												placeholder="Scan or enter QR code"
-												autoComplete="off"
-											/>
+											<div className="flex gap-2">
+												<input
+													id="recall-qr"
+													className="input min-w-0 flex-1 font-mono text-sm"
+													value={recallQr}
+													onChange={(event) =>
+														setRecallQr(
+															event.target.value,
+														)
+													}
+													placeholder="Scan or enter QR code"
+													autoComplete="off"
+												/>
+												<button
+													type="button"
+													className="btn-secondary shrink-0"
+													onClick={toggleRecallCamera}
+													aria-pressed={recallScanning}
+												>
+													<ScanLine size={15} />
+													{recallScanning ? "Stop" : "Scan"}
+												</button>
+											</div>
+											{recallScanning && (
+												<div className="mt-2 overflow-hidden rounded-xl border border-amber-300 bg-black">
+													<video
+														ref={recallVideoRef}
+														className="h-44 w-full object-cover"
+														playsInline
+														muted
+													/>
+													<div className="flex items-center justify-between gap-2 border-t border-amber-300 bg-amber-100 px-3 py-1.5 text-[11px] font-semibold text-amber-800">
+														<span>Point the camera at the bag's QR code…</span>
+														<button
+															type="button"
+															className="underline underline-offset-2 hover:text-amber-900"
+															onClick={toggleRecallCamera}
+														>
+															Stop
+														</button>
+													</div>
+												</div>
+											)}
 										</div>
 										<div>
 											<label
@@ -1773,8 +2151,8 @@ export default function DispatchScan() {
 												<option value="HOLD">
 													Hold for review
 												</option>
-												<option value="OTHER">
-													Other
+												<option value="RETURN_TO_STOCK">
+													Return to stock
 												</option>
 											</select>
 										</div>
@@ -1978,77 +2356,8 @@ export default function DispatchScan() {
 						)}
 
 						<div className="form-grid mt-4">
-							<div>
-								<label
-									className="mb-1.5 block text-sm font-semibold text-surface-700"
-									htmlFor="driver-name"
-								>
-									Transporter Name *
-								</label>
-								<input
-									id="driver-name"
-									className="input"
-									value={driverName}
-									onChange={(event) =>
-										setDriverName(event.target.value)
-									}
-									autoComplete="off"
-								/>
-							</div>
-							<div>
-								<label
-									className="mb-1.5 block text-sm font-semibold text-surface-700"
-									htmlFor="driver-phone"
-								>
-									Transporter mobile (optional)
-								</label>
-								<input
-									id="driver-phone"
-									className="input"
-									type="tel"
-									value={driverPhone}
-									onChange={(event) =>
-										setDriverPhone(event.target.value)
-									}
-									autoComplete="tel"
-								/>
-							</div>
-							<div>
-								<label
-									className="mb-1.5 block text-sm font-semibold text-surface-700"
-									htmlFor="vehicle-number"
-								>
-									Vehicle number *
-								</label>
-								<input
-									id="vehicle-number"
-									className="input font-mono"
-									value={vehicleNumber}
-									onChange={(event) =>
-										setVehicleNumber(event.target.value)
-									}
-									autoComplete="off"
-								/>
-							</div>
-							<div>
-								<label
-									className="mb-1.5 block text-sm font-semibold text-surface-700"
-									htmlFor="container-number"
-								>
-									Container number *
-								</label>
-								<input
-									id="container-number"
-									className="input font-mono"
-									value={containerNumber}
-									onChange={(event) =>
-										setContainerNumber(event.target.value)
-									}
-									autoComplete="off"
-								/>
-							</div>
-							<div>
-								<label
+						<div>
+							<label
 									className="mb-1.5 block text-sm font-semibold text-surface-700"
 									htmlFor="seal-number"
 								>

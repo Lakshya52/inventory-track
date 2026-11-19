@@ -19,7 +19,7 @@ export interface Division {
 }
 
 export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED' | 'CANCELLED';
-export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
+export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED' | 'RECALLED';
 export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 
 export interface Product {
