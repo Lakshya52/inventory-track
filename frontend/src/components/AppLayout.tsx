@@ -1,7 +1,9 @@
 import { useAuth } from "../contexts/AuthContext";
-import { resolveUploadUrl } from "../services/api";
+import { resolveUploadUrl, api } from "../services/api";
+import { startRealtime } from "../services/realtime";
 import { useNavigate, useLocation, Link, Outlet } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Division } from "../types";
 import {
   LayoutDashboard,
   Package,
@@ -25,6 +27,8 @@ import {
   Activity,
   Warehouse,
   Truck,
+  Building2,
+  Check,
 } from "lucide-react";
 
 type SubNavItem = {
@@ -100,6 +104,30 @@ const navSections: { title: string; items: NavItem[] }[] = [
     ],
   },
   {
+    title: "Quality Control",
+    items: [
+      {
+        label: "Quality Control",
+        icon: <ClipboardCheck size={20} />,
+        roles: ["ADMIN"],
+        subItems: [
+          {
+            label: "QC Dashboard",
+            path: "/qc-dashboard",
+            icon: <BarChart3 size={18} />,
+            roles: ["ADMIN"],
+          },
+          {
+            label: "Mark QC",
+            path: "/batches",
+            icon: <ClipboardCheck size={18} />,
+            roles: ["ADMIN"],
+          },
+        ],
+      },
+    ],
+  },
+  {
     title: "Dispatch",
     items: [
       {
@@ -107,6 +135,12 @@ const navSections: { title: string; items: NavItem[] }[] = [
         icon: <Truck size={20} />,
         roles: ["ADMIN"],
         subItems: [
+          {
+            label: "Dispatch Dashboard",
+            path: "/dispatch-dashboard",
+            icon: <BarChart3 size={18} />,
+            roles: ["ADMIN"],
+          },
           {
             label: "Create Batch",
             path: "/dispatch/batches",
@@ -129,6 +163,12 @@ const navSections: { title: string; items: NavItem[] }[] = [
             label: "Packaging Lists",
             path: "/packing-list",
             icon: <FileText size={18} />,
+            roles: ["ADMIN"],
+          },
+          {
+            label: "Loading & Scan",
+            path: "/dispatch",
+            icon: <Camera size={18} />,
             roles: ["ADMIN"],
           },
         ],
@@ -213,11 +253,15 @@ const navSections: { title: string; items: NavItem[] }[] = [
 ];
 
 export function AppLayout() {
-  const { user, tenant, logout } = useAuth();
+  const { user, tenant, logout, adminDivisionId, setAdminDivisionId } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [divisionPickerOpen, setDivisionPickerOpen] = useState(false);
+  const [divisions, setDivisions] = useState<Division[]>([]);
+  const [divisionLoading, setDivisionLoading] = useState(false);
+  const divisionRef = useRef<HTMLDivElement>(null);
   const [online, setOnline] = useState(
     typeof navigator === "undefined" ? true : navigator.onLine,
   );
@@ -226,7 +270,12 @@ export function AppLayout() {
     Views: true,
     Administrations: true,
     Dispatch: true,
+    "Quality Control": true,
   });
+
+  useEffect(() => {
+    if (user) startRealtime();
+  }, [user?.id]);
 
   useEffect(() => {
     const handleOnline = () => setOnline(true);
@@ -239,6 +288,42 @@ export function AppLayout() {
     };
   }, []);
 
+  // ADMIN-only: load divisions for the top-bar switcher on mount.
+  useEffect(() => {
+    if (user?.role !== "ADMIN") return;
+    let cancelled = false;
+    setDivisionLoading(true);
+    api.divisions.list()
+      .then((list) => { if (!cancelled) setDivisions(list); })
+      .catch(() => { if (!cancelled) setDivisions([]); })
+      .finally(() => { if (!cancelled) setDivisionLoading(false); });
+    return () => { cancelled = true; };
+  }, [user?.role]);
+
+  // Close the division picker on outside click or Escape.
+  useEffect(() => {
+    if (!divisionPickerOpen) return;
+    const onMouseDown = (event: MouseEvent) => {
+      if (divisionRef.current && !divisionRef.current.contains(event.target as Node)) {
+        setDivisionPickerOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDivisionPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [divisionPickerOpen]);
+
+  const currentDivisionName =
+    adminDivisionId === "all"
+      ? "All Divisions"
+      : divisions.find((division) => String(division.id) === String(adminDivisionId))?.name ?? "Division";
+
   const isPathActive = (path?: string) => {
     if (!path) return false;
     if (path === "/" || path === "/qc" || path === "/dispatch") {
@@ -250,8 +335,8 @@ export function AppLayout() {
   };
 
   const isSubActive = (subPath: string) => {
-    if (subPath === "/") {
-      return location.pathname === "/" && !location.search;
+    if (subPath === "/" || subPath === "/qc" || subPath === "/dispatch") {
+      return location.pathname === subPath && !location.search;
     }
     if (subPath.includes("?")) {
       const fullCurrent = location.pathname + location.search;
@@ -583,6 +668,14 @@ export function AppLayout() {
                 <span className="text-xs text-slate-400 font-mono tracking-wide uppercase">
                   {user.role}
                 </span>
+                {user.divisionName && (
+                  <span
+                    className="text-[10px] leading-4 text-brand-300 font-semibold bg-brand-500/10 border border-brand-500/20 rounded px-1.5 py-0.5 truncate max-w-[120px]"
+                    title={`Division: ${user.divisionName}`}
+                  >
+                    {user.divisionName}
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -643,6 +736,70 @@ export function AppLayout() {
           </div>
 
           <div className="flex items-center gap-4">
+            {/* ADMIN-only division switcher */}
+            {user.role === "ADMIN" && (
+              <div className="relative" ref={divisionRef}>
+                <button
+                  type="button"
+                  onClick={() => setDivisionPickerOpen((open) => !open)}
+                  className="flex items-center gap-2 pl-3 pr-2 py-2 rounded-xl border border-brand-200 bg-brand-50 hover:bg-brand-100 transition-colors"
+                  title="Switch the division you are working in"
+                  aria-haspopup="listbox"
+                  aria-expanded={divisionPickerOpen}
+                >
+                  <Building2 size={16} className="text-brand-700" />
+                  <span className="hidden sm:inline text-xs font-bold text-brand-900 max-w-[150px] truncate">
+                    {currentDivisionName}
+                  </span>
+                  <ChevronDown size={15} className={`text-brand-700 transition-transform duration-150 ${divisionPickerOpen ? "rotate-180" : ""}`} />
+                </button>
+                {divisionPickerOpen && (
+                  <div role="listbox" className="absolute right-0 mt-2 w-72 bg-white rounded-xl border border-slate-200 shadow-2xl py-1.5 z-40 max-h-96 overflow-auto">
+                    <p className="px-3 pt-2 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Division context
+                    </p>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={adminDivisionId === "all"}
+                      onClick={() => { setAdminDivisionId("all"); setDivisionPickerOpen(false); }}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-left transition-colors ${adminDivisionId === "all" ? "bg-brand-50 text-brand-800" : "text-slate-700 hover:bg-slate-50"}`}
+                    >
+                      <Building2 size={16} className="text-slate-400" />
+                      <span className="flex-1">All Divisions</span>
+                      {adminDivisionId === "all" && <Check size={16} className="text-brand-600" />}
+                    </button>
+                    <div className="border-t border-slate-100 my-1.5" />
+                    {divisionLoading && <p className="px-3 py-2 text-xs text-slate-500">Loading divisions…</p>}
+                    {!divisionLoading && divisions.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-slate-500">No divisions yet. Create them from the Divisions page.</p>
+                    )}
+                    {divisions.filter((division) => division.is_active === 1).map((division) => (
+                      <button
+                        key={division.id}
+                        type="button"
+                        role="option"
+                        aria-selected={String(adminDivisionId) === String(division.id)}
+                        onClick={() => { setAdminDivisionId(division.id); setDivisionPickerOpen(false); }}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-left transition-colors ${String(adminDivisionId) === String(division.id) ? "bg-brand-50 text-brand-800" : "text-slate-700 hover:bg-slate-50"}`}
+                      >
+                        <Building2 size={16} className="text-slate-400" />
+                        <span className="flex-1 truncate">{division.name}</span>
+                        {String(adminDivisionId) === String(division.id) && <Check size={16} className="text-brand-600" />}
+                      </button>
+                    ))}
+                    <div className="border-t border-slate-100 my-1.5" />
+                    <Link
+                      to="/masters?tab=divisions"
+                      onClick={() => setDivisionPickerOpen(false)}
+                      className="block px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50 rounded-lg mx-1"
+                    >
+                      Manage divisions →
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
             <div
               className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border ${
                 online
@@ -662,8 +819,8 @@ export function AppLayout() {
           </div>
         </header>
 
-        {/* Page Content */}
-        <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
+        {/* Page Content — remount on ADMIN division switch so every page refetches its data */}
+        <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8" key={user?.role === "ADMIN" ? String(adminDivisionId) : "static"}>
           <Outlet />
         </main>
       </div>
