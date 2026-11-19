@@ -1,131 +1,250 @@
 import { Request, Response } from 'express';
-import { execute } from '../config/database';
-import XLSX from 'xlsx';
+import { execute, query, withTransaction } from '../config/database';
+import { RowDataPacket } from 'mysql2';
+import { buildImportTemplate } from '../services/importTemplate';
+import {
+  familySkuPrefix,
+  parseImportSheet,
+  summarize,
+  validateImportRows,
+  ValidateHelpers,
+} from '../services/importValidation';
 import { importUpload as upload } from '../config/upload';
-
-const VALID_GRADES = ['Technical', 'AR (Analytical Reagent)', 'GR (Guaranteed Reagent)', 'HPLC', 'LR (Laboratory Reagent)', 'GC (Gas Chromatography)', 'ACS', 'Spectroscopic Grade', 'Molecular Biology Grade', 'Biotechnology Grade', 'Cell Culture Grade', 'USP', 'Ph Eur', 'BP', 'EP', 'JP', 'IP (Indian Pharmacopoeia)', 'NF', 'FCC', 'Food Grade', 'Extra Pure', 'Synthesis Grade', 'Electronic Grade', 'Semiconductor Grade', 'ReagentPlus', 'BioXtra', 'Puriss', 'Purum', 'Pract', 'Anhydrous', 'Deuterated'];
-
-const VALID_PHYSICAL_STATES = ['Solid', 'Powder', 'Granules', 'Crystals', 'Flakes', 'Pellets', 'Tablet', 'Paste', 'Gel', 'Slurry', 'Liquid', 'Emulsion', 'Suspension', 'Gas', 'Compressed Gas', 'Liquefied Gas', 'Aerosol'];
+import { divisionStamp } from '../utils/division';
 
 export { upload };
 
-export async function importProducts(req: Request, res: Response): Promise<void> {
-  const file = req.file;
-  if (!file) {
-    res.status(400).json({ error: 'No file uploaded' });
-    return;
+/**
+ * GET /api/products/import/template — two-sheet workbook.
+ */
+export async function downloadTemplate(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const selectedDivisionId: string | number | null =
+    req.query.division === 'all' || req.query.division === 'null' ? null : (req.query.division as string | undefined) ?? null;
+  const divisionRows = await query<RowDataPacket[]>(
+    'SELECT id, name FROM divisions WHERE tenant_id = ? AND is_active = 1 ORDER BY name ASC',
+    [tenantId]
+  );
+  const divisions = divisionRows.map((d) => String(d.name));
+  const uomRows = await query<RowDataPacket[]>('SELECT name FROM uoms WHERE tenant_id = ? AND is_active = 1 ORDER BY name ASC', [tenantId]);
+  const uoms = uomRows.map((u) => String(u.name));
+  let selectedDivision: string | null = null;
+  if (selectedDivisionId !== null) {
+    const found = divisionRows.find((d) => String(d.id) === String(selectedDivisionId));
+    selectedDivision = found ? String(found.name) : null;
   }
-  try {
-    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-
-    if (rows.length === 0) {
-      res.status(400).json({ error: 'Excel file is empty' });
-      return;
+  const samples = await query<RowDataPacket[]>(
+    'SELECT name, grade, sku, manufacturer, description, bag_quantity_id FROM products WHERE tenant_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 5',
+    [tenantId]
+  );
+  // Resolve each product's UOM / bag name (polymorphic id → uoms then bag_quantities)
+  const rawIds = [...new Set(samples.map((p) => (p.bag_quantity_id === null || p.bag_quantity_id === undefined ? null : String(p.bag_quantity_id))).filter(Boolean))] as string[];
+  const uomNameById = new Map<string, string>();
+  if (rawIds.length > 0) {
+    const placeholders = rawIds.map(() => '?').join(',');
+    const uomRows = await query<RowDataPacket[]>(`SELECT id, name FROM uoms WHERE tenant_id = ? AND id IN (${placeholders})`, [tenantId, ...rawIds]);
+    for (const r of uomRows) uomNameById.set(String(r.id), String(r.name ?? ''));
+    const missing = rawIds.filter((id) => !uomNameById.has(id));
+    if (missing.length > 0) {
+      const bagPlaceholders = missing.map(() => '?').join(',');
+      const bagRows = await query<RowDataPacket[]>(`SELECT id, name FROM bag_quantities WHERE tenant_id = ? AND id IN (${bagPlaceholders})`, [tenantId, ...missing]);
+      for (const r of bagRows) uomNameById.set(String(r.id), String(r.name ?? ''));
     }
-
-    const headers = Object.keys(rows[0]);
-    const expected = ['Name', 'SKU', 'CAS Number', 'Molecular Formula', 'Purity', 'Grade', 'Physical State', 'Hazard Classification', 'HSN Code', 'Manufacturer', 'Quantity', 'Price', 'Storage Conditions', 'Description'];
-
-    const errors: { row: number; message: string }[] = [];
-    const valid: any[] = [];
-    let imported = 0;
-    let skipped = 0;
-
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const rowNum = i + 2;
-      const rowErrors: string[] = [];
-
-      if (!r['Name']?.toString().trim()) rowErrors.push('Name is required');
-      if (!r['SKU']?.toString().trim()) rowErrors.push('SKU is required');
-
-      const sku = r['SKU']?.toString().trim() || '';
-      if (sku && !/^[A-Za-z0-9\-]+$/.test(sku)) rowErrors.push('SKU contains invalid characters');
-
-      const price = parseFloat(r['Price']) || 0;
-      if (price < 0) rowErrors.push('Price cannot be negative');
-
-      const qty = parseFloat(r['Quantity']) || 0;
-      if (qty < 0) rowErrors.push('Quantity cannot be negative');
-
-      const grade = r['Grade']?.toString().trim() || '';
-      if (grade && !VALID_GRADES.map(g => g.toLowerCase()).includes(grade.toLowerCase())) {
-        rowErrors.push(`Invalid Grade "${grade}". Must be one of: ${VALID_GRADES.join(', ')}`);
-      }
-
-      const physState = r['Physical State']?.toString().trim() || '';
-      if (physState && !VALID_PHYSICAL_STATES.map(s => s.toLowerCase()).includes(physState.toLowerCase())) {
-        rowErrors.push(`Invalid Physical State "${physState}". Must be one of: ${VALID_PHYSICAL_STATES.join(', ')}`);
-      }
-
-      if (rowErrors.length > 0) {
-        errors.push({ row: rowNum, message: rowErrors.join('; ') });
-        skipped++;
-        continue;
-      }
-
-      valid.push({
-        name: r['Name'].toString().trim(),
-        sku,
-        description: r['Description']?.toString().trim() || null,
-        price,
-        quantity: qty || 0,
-        cas_number: r['CAS Number']?.toString().trim() || null,
-        molecular_formula: r['Molecular Formula']?.toString().trim() || null,
-        purity: r['Purity']?.toString().trim() || null,
-        grade: grade || null,
-        physical_state: physState || null,
-        hazard_classification: r['Hazard Classification']?.toString().trim() || null,
-        hsn_code: r['HSN Code']?.toString().trim() || null,
-        manufacturer: r['Manufacturer']?.toString().trim() || null,
-        storage_conditions: r['Storage Conditions']?.toString().trim() || null,
-      });
-    }
-
-    for (const row of valid) {
-      try {
-        await execute(
-          'INSERT INTO products (name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, physical_state, hazard_classification, hsn_code, manufacturer, storage_conditions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [row.name, row.description, row.sku, row.price, row.quantity, row.cas_number, row.molecular_formula, row.purity, row.grade, row.physical_state, row.hazard_classification, row.hsn_code, row.manufacturer, row.storage_conditions]
-        );
-        imported++;
-      } catch (err: any) {
-        if (err.code === 'ER_DUP_ENTRY') {
-          errors.push({ row: -1, message: `SKU "${row.sku}" already exists ΓÇö skipped` });
-          skipped++;
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
-      [req.user?.name || 'System', req.user?.role || 'ADMIN', 'IMPORT_PRODUCTS', `${imported} products imported via Excel, ${skipped} skipped`]);
-
-    res.json({ imported, skipped, errors: errors.length > 0 ? errors : undefined });
-  } catch (err: any) {
-    console.error('Import error:', err);
-    res.status(500).json({ error: err.message || 'Import failed' });
   }
+  const examples = samples.map((p) => ({
+    division: selectedDivision,
+    product: String(p.name ?? ''),
+    grade: String(p.grade ?? ''),
+    sku: String(p.sku ?? ''),
+    manufacturer: String(p.manufacturer ?? ''),
+    uom: p.bag_quantity_id === null || p.bag_quantity_id === undefined ? null : uomNameById.get(String(p.bag_quantity_id)) ?? null,
+    description: p.description ?? null,
+  }));
+
+  const buffer = await buildImportTemplate({ selectedDivision, divisions, uoms, examples });
+  res.setHeader('Content-Disposition', `attachment; filename="products-import-${selectedDivision ? selectedDivision.toLowerCase().replace(/[^a-z0-9]+/g, '-') : 'all-divisions'}.xlsx"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
 }
 
-export function downloadSample(req: Request, res: Response): void {
-  const wb = XLSX.utils.book_new();
-  const data = [
-    ['Name', 'SKU', 'CAS Number', 'Molecular Formula', 'Purity', 'Grade', 'Physical State', 'Hazard Classification', 'HSN Code', 'Manufacturer', 'Quantity', 'Price', 'Storage Conditions', 'Description'],
-    ['Sulfuric Acid', 'CHM-001', '7664-93-9', 'H2SO4', '98%', 'AR (Analytical Reagent)', 'Liquid', 'Corrosive', '28070010', 'Self', '500', '850.00', 'Store in a cool, dry place away from direct sunlight', 'High purity sulfuric acid for laboratory use'],
-    ['Sodium Hydroxide', 'CHM-002', '1310-73-2', 'NaOH', '97%', 'LR (Laboratory Reagent)', 'Solid', 'Corrosive, Irritant', '28151100', 'Self', '200', '450.00', 'Store in airtight container, hygroscopic', 'White pellets for general laboratory use'],
-    ['Acetone', 'CHM-003', '67-64-1', 'C3H6O', '99.5%', 'HPLC', 'Liquid', 'Flammable, Irritant', '29141100', 'Self', '100', '320.00', 'Store in flammable cabinet away from heat sources', 'HPLC grade solvent'],
-    ['Ethanol', 'CHM-004', '64-17-5', 'C2H5OH', '99.9%', 'ACS', 'Liquid', 'Flammable', '22071000', 'Self', '300', '280.00', 'Store in cool place away from flame', 'Absolute ethanol for molecular biology'],
-    ['Hydrochloric Acid', 'CHM-005', '7647-01-0', 'HCl', '35-37%', 'AR (Analytical Reagent)', 'Liquid', 'Corrosive, Irritant', '28061000', 'Self', '400', '180.00', 'Store in acid cabinet, ventilated area', 'Concentrated hydrochloric acid'],
-  ];
-  const ws = XLSX.utils.aoa_to_sheet(data);
-  ws['!cols'] = data[0].map(() => ({ wch: 30 }));
-  XLSX.utils.book_append_sheet(wb, ws, 'Products');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="sample_products_import.xlsx"');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.send(buf);
+function makeHelpers(tenantId: string | number): ValidateHelpers {
+  return {
+    findUom: async (name) => {
+      const trimmed = String(name ?? '').trim();
+      if (!trimmed) return null;
+      const uoms = await query<RowDataPacket[]>(
+        `SELECT id, name FROM uoms WHERE tenant_id = ? AND is_active = 1 AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1`,
+        [tenantId, trimmed]
+      );
+      if (uoms.length > 0) return { id: uoms[0].id as number, name: String(uoms[0].name) };
+      const bags = await query<RowDataPacket[]>(
+        `SELECT id, name FROM bag_quantities WHERE tenant_id = ? AND is_active = 1 AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1`,
+        [tenantId, trimmed]
+      );
+      return bags.length > 0 ? { id: bags[0].id as number, name: String(bags[0].name) } : null;
+    },
+    findDivisionByName: async (name) => {
+      const rows = await query<RowDataPacket[]>(
+        `SELECT id, name FROM divisions WHERE tenant_id = ? AND is_active = 1 AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1`,
+        [tenantId, name]
+      );
+      return rows.length > 0 ? { id: rows[0].id as number, name: String(rows[0].name) } : null;
+    },
+    existingSkus: async (skus) => {
+      if (skus.length === 0) return new Set<string>();
+      const slice = skus.map((s) => s.toUpperCase());
+      const existing = new Set<string>();
+      const CHUNK = 500;
+      for (let i = 0; i < slice.length; i += CHUNK) {
+        const chunk = slice.slice(i, i + CHUNK);
+        const placeholders = chunk.map(() => '?').join(',');
+        const rows = await query<RowDataPacket[]>(`SELECT sku FROM products WHERE tenant_id = ? AND UPPER(sku) IN (${placeholders})`, [tenantId, ...chunk]);
+        for (const row of rows) existing.add(String(row.sku).toLowerCase());
+      }
+      return existing;
+    },
+  };
+}
+
+/** POST /api/products/import/validate — step 3. Nothing is written. */
+export async function validateImport(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const file = req.file;
+  if (!file) { res.status(400).json({ error: 'Choose a filled-in .xlsx file to validate.' }); return; }
+
+  let parsed;
+  try {
+    parsed = parseImportSheet(file.buffer);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Could not read the uploaded file' });
+    return;
+  }
+  const rows = parsed.rows;
+
+  const validated = await validateImportRows(rows, makeHelpers(tenantId));
+  const summary = summarize(validated);
+
+  res.json({
+    templateDivision: parsed.templateDivision,
+    summary,
+    rows: validated
+      .filter((row) => row.errors.length > 0 || row.warnings.length > 0)
+      .map((row) => ({
+      row: row.excelRow,
+      division: row.division,
+      product: row.product,
+      grade: row.grade,
+      sku: row.resolved.sku,
+      manufacturer: row.resolved.manufacturer,
+      description: row.description,
+      status: row.status,
+      errors: row.errors.map((e) => e.message),
+      warnings: row.warnings.map((w) => w.message),
+    })),
+  });
+}
+
+/** POST /api/products/import/apply — step 4: insert every valid row. */
+export async function applyImport(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const file = req.file;
+  if (!file) { res.status(400).json({ error: 'The uploaded file is missing — please pick it again and confirm.' }); return; }
+
+  let parsed;
+  try {
+    parsed = parseImportSheet(file.buffer);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Could not read the uploaded file' });
+    return;
+  }
+  const rows = parsed.rows;
+
+  const validated = await validateImportRows(rows, makeHelpers(tenantId));
+  const summary = summarize(validated);
+
+  // SKU auto-generation base per family
+  const familyNext = new Map<string, number>();
+  for (const row of validated) {
+    if (row.errors.length > 0 || row.sku) continue;
+    const prefix = familySkuPrefix(row.product);
+    if (!familyNext.has(prefix)) {
+      const like = `${prefix}-%`;
+      const rows2 = await query<RowDataPacket[]>('SELECT sku FROM products WHERE tenant_id = ? AND sku LIKE ?', [tenantId, like]);
+      let sequence = 1;
+      const regex = new RegExp(`^${prefix}-(\\d+)$`, 'i');
+      for (const entry of rows2) {
+        const match = regex.exec(String(entry.sku || ''));
+        if (match) sequence = Math.max(sequence, Number(match[1]) + 1);
+      }
+      familyNext.set(prefix, sequence);
+    }
+  }
+
+  // Pre-resolve every row so chunks can be inserted inside one transaction
+  // without depending on global state mid-loop.
+  const insertOps: Array<{ row: typeof validated[number]; args: any[] }> = [];
+  for (const row of validated) {
+    if (row.errors.length > 0) continue;
+    const prefix = familySkuPrefix(row.product);
+    let sku = row.resolved.sku;
+    if (!sku) {
+      const seq = familyNext.get(prefix) ?? 1;
+      familyNext.set(prefix, seq + 1);
+      sku = `${prefix}-${String(seq).padStart(3, '0')}`;
+    }
+    insertOps.push({
+      row,
+      args: [tenantId, row.resolved.divisionId, row.product, row.description || null, sku, 0, 0, row.grade, row.resolved.manufacturer, row.resolved.bagQuantityId],
+    });
+  }
+
+  // Chunked insert (~2,000 rows per transaction). A rollback rolls back that chunk
+  // only — not the whole file — and invalid rows never enter this loop.
+  const inserted: Array<{ sku: string; family: string }> = [];
+  const failed: Array<{ row: number; message: string }> = [];
+  const CHUNK = 2000;
+  for (let offset = 0; offset < insertOps.length; offset += CHUNK) {
+    const chunk = insertOps.slice(offset, offset + CHUNK);
+    try {
+      await withTransaction(async (conn) => {
+        for (const op of chunk) {
+          await conn.query(
+            'INSERT INTO products (tenant_id, division_id, name, description, sku, price, quantity, grade, manufacturer, bag_quantity_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            op.args
+          );
+        }
+      });
+      for (const op of chunk) inserted.push({ sku: String(op.args[4]), family: op.row.product });
+    } catch (err: any) {
+      const message = err?.code === 'ER_DUP_ENTRY'
+        ? 'Duplicate SKU in this chunk (transaction rolled back — no rows from it were saved)'
+        : (err?.message || 'This chunk failed and was rolled back (no rows from it were saved)');
+      for (const op of chunk) failed.push({ row: op.row.excelRow, message });
+    }
+  }
+
+  // Grades master list (idempotent)
+  for (const op of insertOps) {
+    if (!op.row.grade) continue;
+    try {
+      await execute('INSERT INTO grades (tenant_id, name, is_active) VALUES (?, ?, 1)', [tenantId, op.row.grade]);
+    } catch (gradeErr: any) {
+      if (gradeErr?.code !== 'ER_DUP_ENTRY') console.error('grade insert failed', gradeErr);
+    }
+  }
+
+  await execute(
+    'INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'IMPORT_PRODUCTS',
+     `Bulk import: ${inserted.length} rows imported, ${failed.length} failed${summary.errors > 0 ? `, ${summary.errors} row(s) skipped (invalid)` : ''}`,
+     tenantId, divisionStamp(req)]
+  );
+
+  res.json({
+    templateDivision: parsed.templateDivision,
+    imported: inserted.length,
+    skippedRows: summary.errors,
+    failed,
+    summary,
+  });
 }

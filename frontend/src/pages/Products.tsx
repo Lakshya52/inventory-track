@@ -1,12 +1,19 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../services/api";
 import { EntityId, Product } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import DivisionContextNote from "../components/DivisionContextNote";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import FamilyGradesPanel from "../components/FamilyGradesPanel";
+import ImportWizard from "../components/ImportWizard";
 import {
-  Download,
+  ChevronDown,
+  ChevronRight,
   Factory,
+  Info,
+  AlertTriangle,
   Layers,
+  Loader2,
   Package,
   Pencil,
   Plus,
@@ -16,6 +23,8 @@ import {
   Trash2,
   Upload,
   X,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 
 type MasterOption = {
@@ -40,11 +49,11 @@ type FamilyForm = {
   manufacturer: string;
 };
 
-type FamilyGroup = {
+type FamilySummary = {
   name: string;
-  description: string;
-  manufacturer: string;
-  products: Product[];
+  description: string | null;
+  manufacturer: string | null;
+  count: number;
 };
 
 function newGradeDraft(): GradeDraft {
@@ -57,36 +66,10 @@ function newGradeDraft(): GradeDraft {
   };
 }
 
-function familySkuPrefix(name: string): string {
-  const code = name.replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase();
-  return `KLJ-${code || "PROD"}`;
-}
-
-/**
- * Mirrors the backend rule: KLJ-<6-char product code>-NNN where NNN is the
- * next number that is not already used by any grade or draft.
- */
-function nextSku(products: Product[], name: string, reserved: Set<string>): string {
-  const prefix = familySkuPrefix(name);
-  const numbered = new RegExp(`^${prefix}-(\\d+)$`, "i");
-  let sequence = 1;
-  const consider = (sku: string) => {
-    const match = numbered.exec(sku.trim());
-    if (match) sequence = Math.max(sequence, Number(match[1]) + 1);
-  };
-  products.forEach((product) => consider(String(product.sku || "")));
-  reserved.forEach(consider);
-  let candidate = `${prefix}-${String(sequence).padStart(3, "0")}`;
-  while (
-    reserved.has(candidate.toLowerCase()) ||
-    products.some(
-      (product) => String(product.sku || "").trim().toLowerCase() === candidate.toLowerCase()
-    )
-  ) {
-    sequence += 1;
-    candidate = `${prefix}-${String(sequence).padStart(3, "0")}`;
-  }
-  return candidate;
+function parseSkuValue(sku: string): { prefix: string; nextSequence: number; padLen: number } | null {
+  const match = /^(.*)-(\d+)$/.exec(String(sku ?? "").trim());
+  if (!match) return null;
+  return { prefix: match[1], nextSequence: Number(match[2]), padLen: match[2].length };
 }
 
 function usableMasters(rows: MasterOption[]): MasterOption[] {
@@ -115,7 +98,10 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
   const { user } = useAuth();
   const canManage = user?.role === "ADMIN";
 
-  const [products, setProducts] = useState<Product[]>([]);
+  const [families, setFamilies] = useState<FamilySummary[]>([]);
+  const [totalProducts, setTotalProducts] = useState(0);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [refreshKey, setRefreshKey] = useState(0);
   const [uoms, setUoms] = useState<MasterOption[]>([]);
   const [bagQuantities, setBagQuantities] = useState<MasterOption[]>([]);
   const [manufacturers, setManufacturers] = useState<any[]>([]);
@@ -126,16 +112,27 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
   const [notice, setNotice] = useState("");
 
   const [showFamilyForm, setShowFamilyForm] = useState(false);
+  const [showImportWizard, setShowImportWizard] = useState(false);
+  const [showDeactivated, setShowDeactivated] = useState(false);
+  const [deactivatedFamilies, setDeactivatedFamilies] = useState<FamilySummary[] | null>(null);
+  const [deactivatedLoading, setDeactivatedLoading] = useState(false);
+  const [reactivating, setReactivating] = useState<string | null>(null);
   const [familyMode, setFamilyMode] = useState<"create" | "add-grade">("create");
   const [familyForm, setFamilyForm] = useState<FamilyForm>({
     name: "",
     description: "",
     manufacturer: "SELF (KLJ)",
   });
+  // Typeahead state for the Product name combobox ("searchable dropdown")
+  const [familySuggestOpen, setFamilySuggestOpen] = useState(false);
+  const [familySuggestIndex, setFamilySuggestIndex] = useState(-1);
+  const familySuggestRef = useRef<HTMLDivElement>(null);
   const [gradeDrafts, setGradeDrafts] = useState<GradeDraft[]>([newGradeDraft()]);
   const [saving, setSaving] = useState(false);
 
   const [renameFamilyName, setRenameFamilyName] = useState<string | null>(null);
+  const [confirmFamily, setConfirmFamily] = useState<{ family: FamilySummary; confirm: 'delete' | 'deactivate' } | null>(null);
+  const [confirmFamilyRunning, setConfirmFamilyRunning] = useState(false);
   const [renameForm, setRenameForm] = useState({ name: "", description: "" });
 
   const [editGrade, setEditGrade] = useState<Product | null>(null);
@@ -145,17 +142,26 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     bag_quantity_id: "",
   });
 
+  const isSearching = debouncedSearch.trim().length > 0;
+
+  const searchResults = useMemo(() => [] as Product[], []);
+
   const load = async () => {
     setLoading(true);
     setError("");
     try {
-      const [productRows, uomRows, bagQuantityRows, vendorRows] = await Promise.all([
-        api.products.list(),
+      const [familyRows, uomRows, bagQuantityRows, vendorRows] = await Promise.all([
+        api.products.families(),
         api.masters.list("uoms"),
         api.masters.list("bag-quantities"),
         api.vendors.list({ status: "active" }),
       ]);
-      setProducts(productRows || []);
+      setFamilies(familyRows || []);
+      setTotalProducts((familyRows || []).reduce((sum: number, f: any) => sum + Number(f.count || 0), 0));
+      // Keep families the user has expanded — only drop ones that no longer exist (renamed/deleted for good)
+      const familyNames = new Set((familyRows || []).map((f: any) => String(f.name || "").trim().toLowerCase()));
+      setExpanded((current) => new Set([...current].filter((key) => familyNames.has(key))));
+      setRefreshKey((key) => key + 1);
       setUoms(usableMasters(uomRows || []));
       setBagQuantities(usableMasters(bagQuantityRows || []));
       setManufacturers(
@@ -189,75 +195,278 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [showFamilyForm, renameFamilyName, editGrade, saving]);
 
-  const families = useMemo<FamilyGroup[]>(() => {
-    const groups = new Map<string, FamilyGroup>();
-    for (const product of products) {
-      const displayName = (product.name || "").trim() || "Unnamed product";
-      const key = displayName.toLowerCase();
-      if (!groups.has(key)) {
-        groups.set(key, {
-          name: displayName,
-          description: product.description || "",
-          manufacturer: product.manufacturer || "SELF (KLJ)",
-          products: [],
-        });
+  const toggleFamily = (family: string) => {
+    const key = family.toLowerCase();
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
       }
-      const group = groups.get(key)!;
-      if (!group.description && product.description) group.description = product.description;
-      group.products.push(product);
-    }
-    return [...groups.values()]
-      .map((group) => ({
-        ...group,
-        products: [...group.products].sort((a, b) =>
-          (a.grade || "").localeCompare(b.grade || "")
-        ),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [products]);
+      return next;
+    });
+  };
 
-  const filteredFamilies = useMemo(() => {
-    const query = debouncedSearch.trim().toLowerCase();
-    if (!query) return families;
-    return families.filter(
-      (family) =>
-        family.name.toLowerCase().includes(query) ||
-        family.description.toLowerCase().includes(query) ||
-        family.products.some(
-          (product) =>
-            (product.grade || "").toLowerCase().includes(query) ||
-            (product.sku || "").toLowerCase().includes(query) ||
-            (product.manufacturer || "").toLowerCase().includes(query)
-        )
-    );
-  }, [families, debouncedSearch]);
+  const filteredFamilies = useMemo(() => families, [families]);
+
+  // Typeahead: existing products (families) matching the current input, best first
+  const familyQuery = familyForm.name.trim().toLowerCase();
+  const familySuggestions = useMemo(
+    () => families
+      .filter((family) => !familyQuery || family.name.toLowerCase().includes(familyQuery))
+      .slice(0, 8),
+    [families, familyQuery]
+  );
+  // Exact match — submitting adds grades to this existing product instead of creating a duplicate
+  const matchedFamily = useMemo(
+    () => (familyQuery ? families.find((family) => family.name.toLowerCase() === familyQuery) ?? null : null),
+    [families, familyQuery]
+  );
+
+  // Existing grades of the matched family — fetched ONCE per selection.
+  // Two triggers: (a) selecting a suggestion from the dropdown fires immediately; (b) a typed
+  // exact match goes through a 250 ms trailing debounce so typing through "TPR D1 P1" →
+  // "TPR D1 P10" doesn't fire mid-way. Superseded fetches are discarded via a sequence counter;
+  // the check afterwards is a pure in-memory set lookup, scoped to the selected product.
+  const debouncedMatchedName = useDebouncedValue(matchedFamily?.name ?? "", 250);
+  const [existingGrades, setExistingGrades] = useState<Set<string>>(new Set());
+  const [existingCheckState, setExistingCheckState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const lastFetchedFamilyRef = useRef<string | null>(null);
+  const catalogueSeqRef = useRef(0);
+
+  const loadFamilyCatalogue = (name: string) => {
+    lastFetchedFamilyRef.current = name;
+    catalogueSeqRef.current += 1;
+    const seq = catalogueSeqRef.current;
+    setExistingCheckState("loading");
+    (async () => {
+      const grades = new Set<string>();
+      const limit = 200;
+      let page = 1;
+      let totalPages = 1;
+      do {
+        const res = await api.products.familyProducts(name, page, limit);
+        for (const row of res.products ?? []) {
+          const grade = String(row.grade ?? "").trim().toLowerCase();
+          if (grade) grades.add(grade);
+        }
+        totalPages = Math.max(1, Number(res.totalPages) || 1);
+        page += 1;
+      } while (page <= totalPages);
+      if (seq !== catalogueSeqRef.current) return; // superseded — a newer family was selected/typed
+      setExistingGrades(grades);
+      setExistingCheckState("ready");
+    })().catch(() => { if (seq === catalogueSeqRef.current) setExistingCheckState("error"); });
+  };
+
+  useEffect(() => {
+    const name = debouncedMatchedName;
+    if (!name) {
+      lastFetchedFamilyRef.current = null;
+      catalogueSeqRef.current += 1; // drop any in-flight fetch
+      setExistingGrades(new Set());
+      setExistingCheckState("idle");
+      return;
+    }
+    if (name === lastFetchedFamilyRef.current) return; // already loading/loaded this exact family
+    loadFamilyCatalogue(name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedMatchedName]);
+
+  // SKU auto-fill straight from the SERVER's next-free-sequence: tenant-wide, and
+  // gap-aware — the server computes max(^PREFIX-N$) + 1 across every product of the
+  // tenant, not "how many grades this family has".
+  const skuFetchSeqRef = useRef(0);
+  const skuFillFromServer = (name: string) => {
+    const reqId = ++skuFetchSeqRef.current;
+    api.products.nextSku(name)
+      .then(({ sku }) => {
+        if (reqId !== skuFetchSeqRef.current) return; // superseded by a newer name / manual edit path
+        const base = parseSkuValue(sku);
+        if (!base) return;
+        setGradeDrafts((current) => {
+          let seq = base.nextSequence;
+          return current.map((draft) => draft.skuTouched ? draft : { ...draft, sku: `${base.prefix}-${String(seq++).padStart(base.padLen, "0")}` });
+        });
+      })
+      .catch(() => { /* offline — untouched rows stay blank; submit is blocked anyway when empty */ });
+  };
+
+  // Fire the SKU auto-fill when a typed name settles (250 ms of quiet). Names picked from
+  // the dropdown fill immediately (see selectFamilySuggestion / openAddGrade below).
+  const skuSettleName = useDebouncedValue(familyForm.name.trim(), 250);
+  useEffect(() => {
+    if (skuSettleName && /[A-Za-z0-9]/.test(skuSettleName)) skuFillFromServer(skuSettleName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skuSettleName]);
+
+  // Tenant-wide SKU duplicate check — SKU uniqueness spans products, not families, so the
+  // lookup is debounced at typing-stop and searches the WHOLE catalogue (server-side cap 100,
+  // exact-match filter client-side). Confirmed duplicates block save like the other checks.
+  const debouncedSkuSignature = useDebouncedValue(JSON.stringify(gradeDrafts.map((draft) => draft.sku.trim().toLowerCase())), 800);
+  const [skuLookup, setSkuLookup] = useState<{ checking: boolean; error: boolean; existing: Set<string> }>({ checking: false, error: false, existing: new Set() });
+  useEffect(() => {
+    const parsed: string[] = debouncedSkuSignature ? JSON.parse(debouncedSkuSignature) as string[] : [];
+    const unique = [...new Set(parsed.filter(Boolean))];
+    if (unique.length === 0) {
+      setSkuLookup({ checking: false, error: false, existing: new Set() });
+      return undefined;
+    }
+    let cancelled = false;
+    setSkuLookup((current) => ({ ...current, checking: true, error: false }));
+    const known = new Set<string>();
+    Promise.all(unique.map(async (sku) => {
+      try {
+        const rows = await api.products.search(sku);
+        if ((rows ?? []).some((row: any) => String(row?.sku ?? "").trim().toLowerCase() === sku)) known.add(sku);
+      } catch { /* leave unknown — server keeps the 400 backstop */ }
+    })).then(() => {
+      if (cancelled) return;
+      setSkuLookup((current) => ({ ...current, checking: false, error: false, existing: known }));
+    }).catch(() => { if (!cancelled) setSkuLookup((current) => ({ ...current, checking: false, error: true })); });
+    return () => { cancelled = true; };
+  }, [debouncedSkuSignature]);
+
+  // Real-time duplicate detection across the grade rows (trimmed, case-insensitive)
+  const analyzeDuplicates = (values: string[]) => {
+    const groups = new Map<string, { display: string; indices: number[] }>();
+    values.forEach((value, index) => {
+      const key = value.trim().toLowerCase();
+      if (!key) return;
+      const entry = groups.get(key) ?? { display: value.trim(), indices: [] };
+      entry.indices.push(index);
+      groups.set(key, entry);
+    });
+    const duplicatedIndices = new Set<number>();
+    const duplicated = new Map<string, { display: string; indices: number[] }>();
+    for (const [key, entry] of groups) {
+      if (entry.indices.length > 1) {
+        entry.indices.forEach((i) => duplicatedIndices.add(i));
+        duplicated.set(key, entry);
+      }
+    }
+    return { duplicatedIndices, duplicated };
+  };
+  const draftConflicts = useMemo(
+    () => ({
+      grades: analyzeDuplicates(gradeDrafts.map((draft) => draft.grade)),
+      skus: analyzeDuplicates(gradeDrafts.map((draft) => draft.sku)),
+    }),
+    [gradeDrafts]
+  );
+  const hasDraftDuplicates = draftConflicts.grades.duplicatedIndices.size > 0 || draftConflicts.skus.duplicatedIndices.size > 0;
+
+  // Drafts that collide with the catalogue — grades of the matched family + SKUs tenant-wide
+  const draftCatalogueConflicts = useMemo(() => {
+    const grades = new Set<number>();
+    const skus = new Set<number>();
+    if (existingCheckState === "ready") {
+      gradeDrafts.forEach((draft, index) => {
+        if (existingGrades.has(draft.grade.trim().toLowerCase())) grades.add(index);
+      });
+    }
+    gradeDrafts.forEach((draft, index) => {
+      const sku = draft.sku.trim().toLowerCase();
+      if (sku && skuLookup.existing.has(sku)) skus.add(index);
+    });
+    return { grades, skus };
+  }, [gradeDrafts, existingGrades, existingCheckState, skuLookup.existing]);
+  const hasCatalogueConflicts = draftCatalogueConflicts.grades.size > 0 || draftCatalogueConflicts.skus.size > 0;
+  const hasBlockingConflicts = hasDraftDuplicates || hasCatalogueConflicts;
+
+  // Pick a suggestion: fill the form with the existing product's details + immediate SKU propose (no 250 ms wait)
+  const selectFamilySuggestion = (family: FamilySummary) => {
+    setFamilyForm((current) => ({
+      ...current,
+      name: family.name,
+      description: family.description ?? current.description,
+      manufacturer: family.manufacturer ?? current.manufacturer,
+    }));
+    skuFillFromServer(family.name); // immediate proposal — explicit pick is a commit
+    setFamilySuggestOpen(false);
+    setFamilySuggestIndex(-1);
+    // Explicit dropdown selection = explicit commit — fetch the family's grade list NOW, no waiting
+    if (lastFetchedFamilyRef.current !== family.name) loadFamilyCatalogue(family.name);
+  };
+
+  // Deactivated families modal: load inactive groups on demand
+  const openDeactivated = async () => {
+    setShowDeactivated(true);
+    setDeactivatedLoading(true);
+    setError("");
+    try {
+      const rows = await api.products.families("inactive");
+      setDeactivatedFamilies(rows);
+    } catch (err: any) {
+      setError(err.message || "Could not load the deactivated families");
+      setShowDeactivated(false);
+    } finally {
+      setDeactivatedLoading(false);
+    }
+  };
+
+  // Reactivate one family — refreshes both the deactivated list and the live catalogue
+  const handleReactivateFamily = async (name: string) => {
+    if (reactivating) return;
+    setReactivating(name);
+    setError("");
+    try {
+      const result = await api.products.reactivateFamily(name);
+      setNotice(result?.message ?? `"${name}" reactivated.`);
+      try {
+        setDeactivatedFamilies(await api.products.families("inactive"));
+      } catch {
+        setShowDeactivated(false);
+      }
+      void load();
+    } catch (err: any) {
+      setError(err.message || "Could not reactivate the product");
+    } finally {
+      setReactivating(null);
+    }
+  };
+
+  // Close the suggestion list on outside clicks
+  useEffect(() => {
+    if (!familySuggestOpen) return undefined;
+    const close = (event: globalThis.MouseEvent) => {
+      if (familySuggestRef.current && !familySuggestRef.current.contains(event.target as Node)) {
+        setFamilySuggestOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [familySuggestOpen]);
 
   const resetFamilyForm = () => {
     setFamilyForm({ name: "", description: "", manufacturer: "SELF (KLJ)" });
     setGradeDrafts([newGradeDraft()]);
+    setFamilySuggestOpen(false);
+    setFamilySuggestIndex(-1);
     setError("");
   };
 
   const openCreateProduct = () => {
     resetFamilyForm();
     setFamilyMode("create");
-    setNotice("");
     setShowFamilyForm(true);
+    setNotice("");
   };
 
-  const openAddGrade = (family: FamilyGroup) => {
+  const openAddGrade = (family: FamilySummary) => {
     resetFamilyForm();
     setFamilyForm({
       name: family.name,
-      description: family.description,
-      manufacturer: family.manufacturer,
+      description: family.description || "",
+      manufacturer: family.manufacturer || "SELF (KLJ)",
     });
     const draft = newGradeDraft();
-    draft.sku = nextSku(products, family.name, new Set());
     setGradeDrafts([draft]);
     setFamilyMode("add-grade");
-    setNotice("");
     setShowFamilyForm(true);
+    setNotice("");
+    skuFillFromServer(family.name); // openAddGrade → propose next SKU immediately
   };
 
   const closeFamilyForm = () => {
@@ -265,73 +474,94 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     resetFamilyForm();
   };
 
-  /** Regenerates SKUs for rows the user has not edited by hand. */
-  const refreshAutoSkus = (name: string) => {
-    setGradeDrafts((current) => {
-      const reserved = new Set(
-        current
-          .filter((draft) => draft.skuTouched && draft.sku.trim())
-          .map((draft) => draft.sku.trim().toLowerCase())
-      );
-      return current.map((draft) => {
-        if (draft.skuTouched) return draft;
-        const sku = name.trim() ? nextSku(products, name, reserved) : "";
-        if (sku) reserved.add(sku.toLowerCase());
-        return { ...draft, sku };
-      });
-    });
-  };
-
-  const addGradeDraft = () => {
-    setGradeDrafts((current) => {
-      const reserved = new Set(
-        current.filter((draft) => draft.sku.trim()).map((draft) => draft.sku.trim().toLowerCase())
-      );
-      const draft = newGradeDraft();
-      if (familyForm.name.trim()) {
-        draft.sku = nextSku(products, familyForm.name, reserved);
-      }
-      return [...current, draft];
-    });
+  const addGradeDraft = async () => {
+    const trimmed = familyForm.name.trim();
+    const draft = newGradeDraft();
+    if (trimmed) {
+      try {
+        const { sku } = await api.products.nextSku(trimmed);
+        const base = parseSkuValue(sku);
+        if (base) {
+          // Continue past SKUs already drafted in this form (auto-filled ones aren't in the catalogue yet)
+          const draftedMax = gradeDrafts.reduce((max, row) => {
+            const cand = parseSkuValue(row.sku);
+            return cand && cand.prefix === base.prefix ? Math.max(max, cand.nextSequence) : max;
+          }, 0);
+          const seq = Math.max(base.nextSequence, draftedMax + 1);
+          draft.sku = `${base.prefix}-${String(seq).padStart(base.padLen, "0")}`;
+        }
+      } catch { /* offline — leave the SKU blank; the submit button stays blocked until it has one */ }
+    }
+    setGradeDrafts((current) => [...current, draft]);
   };
 
   const updateGradeDraft = (index: number, patch: Partial<GradeDraft>) => {
     setGradeDrafts((current) =>
-      current.map((grade, gradeIndex) =>
-        gradeIndex === index
-          ? { ...grade, ...patch, ...(patch.sku !== undefined ? { skuTouched: true } : {}) }
-          : grade
+      current.map((draft, draftIndex) =>
+        draftIndex === index ? { ...draft, ...patch } : draft
       )
+    );
+  };
+
+  const removeGradeDraft = (index: number) => {
+    setGradeDrafts((current) =>
+      current.length === 1 ? current : current.filter((_, i) => i !== index)
     );
   };
 
   const handleFamilySubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (saving) return;
+
     const name = familyForm.name.trim();
     if (!name) {
-      setError("Enter a product name.");
+      setError("Enter the product name");
       return;
     }
-    const emptyGrade = gradeDrafts.find((grade) => !grade.grade.trim());
-    if (emptyGrade) {
-      setError("Enter a grade name for every grade row.");
+    if (hasBlockingConflicts) {
+      setError("Fix the highlighted duplicate grade names / SKUs below before saving.");
       return;
     }
+
+    const grades = gradeDrafts
+      .map((draft) => ({
+        grade: draft.grade.trim(),
+        sku: draft.sku.trim(),
+        bag_quantity_id: draft.bag_quantity_id || null,
+      }))
+      .filter((grade) => grade.grade && grade.sku);
+
+    if (grades.length === 0) {
+      setError("Add at least one grade with a grade name and SKU");
+      return;
+    }
+
     setSaving(true);
     setError("");
-    setNotice("");
     try {
-      const result = await api.products.createFamily({
-        name,
-        description: familyForm.description.trim() || undefined,
-        manufacturer: familyForm.manufacturer || undefined,
-        grades: gradeDrafts.map((grade) => ({
-          grade: grade.grade.trim(),
-          sku: grade.sku.trim() || undefined,
-          bag_quantity_id: grade.bag_quantity_id || null,
-        })),
-      });
-      setNotice(result.message || `${name} saved.`);
+      if (familyMode === "create") {
+        const result = await api.products.createFamily({
+          name,
+          description: familyForm.description.trim() || undefined,
+          manufacturer: familyForm.manufacturer.trim() || undefined,
+          grades: grades.map((grade) => ({ ...grade, bag_quantity_id: grade.bag_quantity_id || null })),
+        });
+        setNotice(result?.message || `${name} saved.`);
+      } else {
+        for (const grade of grades) {
+          await api.products.create({
+            name,
+            description: familyForm.description.trim() || null,
+            sku: grade.sku,
+            price: 0,
+            quantity: 0,
+            grade: grade.grade,
+            bag_quantity_id: grade.bag_quantity_id || null,
+            manufacturer: familyForm.manufacturer.trim() || null,
+          });
+        }
+        setNotice(`${grades.length} grade${grades.length === 1 ? "" : "s"} added to ${name}.`);
+      }
       closeFamilyForm();
       await load();
     } catch (err: any) {
@@ -341,33 +571,76 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     }
   };
 
-  const openRename = (family: FamilyGroup) => {
+  const openRename = (family: FamilySummary) => {
     setRenameFamilyName(family.name);
-    setRenameForm({ name: family.name, description: family.description });
+    setRenameForm({ name: family.name, description: family.description || "" });
+    setNotice("");
+  };
+
+  // Scenario 2 — empty family: act directly, no confirmation needed
+  const runFamilyAction = async (family: FamilySummary, action: 'delete' | 'deactivate') => {
+    if (confirmFamilyRunning) return;
+    setConfirmFamilyRunning(true);
     setError("");
+    try {
+      if (action === 'delete') {
+        const result = await api.products.deleteFamily(family.name);
+        setNotice(result?.message || `"${family.name}" deleted.`);
+      } else {
+        const result = await api.products.deactivateFamily(family.name);
+        setNotice(result?.message || `"${family.name}" deactivated.`);
+      }
+      setConfirmFamily(null);
+      await load();
+      setRefreshKey((key) => key + 1);
+    } catch (err: any) {
+      setError(err.message || (action === 'delete' ? 'Could not delete the product' : 'Could not deactivate the product'));
+      setConfirmFamily(null);
+    } finally {
+      setConfirmFamilyRunning(false);
+    }
+  };
+
+  const deleteFamily = async (family: FamilySummary) => {
+    if (family.count <= 0) {
+      await runFamilyAction(family, 'delete');
+      return;
+    }
+    setConfirmFamily({ family, confirm: 'delete' });
+  };
+
+  const deactivateFamily = async (family: FamilySummary) => {
+    if (family.count <= 0) {
+      await runFamilyAction(family, 'deactivate');
+      return;
+    }
+    setConfirmFamily({ family, confirm: 'deactivate' });
   };
 
   const handleRenameSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!renameFamilyName) return;
+    if (!renameFamilyName || saving) return;
+
+    const currentName = renameFamilyName;
     const name = renameForm.name.trim();
     if (!name) {
-      setError("Enter a product name.");
+      setError("Enter the new product name");
       return;
     }
+
     setSaving(true);
     setError("");
     try {
-      await api.products.renameFamily({
-        currentName: renameFamilyName,
+      const result = await api.products.renameFamily({
+        currentName,
         name,
-        description: renameForm.description.trim(),
+        description: renameForm.description.trim() || undefined,
       });
-      setNotice(`Product renamed to ${name}.`);
+      setNotice(result?.message || `${currentName} renamed to ${name}.`);
       setRenameFamilyName(null);
       await load();
     } catch (err: any) {
-      setError(err.message || "Could not rename product");
+      setError(err.message || "Could not rename the family");
     } finally {
       setSaving(false);
     }
@@ -378,119 +651,87 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     setGradeForm({
       grade: product.grade || "",
       sku: product.sku || "",
-      bag_quantity_id:
-        product.bag_quantity_id != null && product.bag_quantity_id !== ""
-          ? String(product.bag_quantity_id)
-          : "",
+      bag_quantity_id: product.bag_quantity_id ? String(product.bag_quantity_id) : "",
     });
-    setError("");
+    setNotice("");
   };
 
   const handleGradeSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!editGrade) return;
-    const gradeName = gradeForm.grade.trim();
-    if (!gradeName || !gradeForm.sku.trim()) {
-      setError("Grade name and SKU are required.");
+    if (!editGrade || saving) return;
+
+    const grade = gradeForm.grade.trim();
+    const sku = gradeForm.sku.trim();
+    if (!grade || !sku) {
+      setError("Grade and SKU are required.");
       return;
     }
-    const sibling = products.find(
-      (product) =>
-        String(product.id) !== String(editGrade.id) &&
-        (product.name || "").trim().toLowerCase() ===
-          (editGrade.name || "").trim().toLowerCase() &&
-        (product.grade || "").trim().toLowerCase() === gradeName.toLowerCase()
-    );
-    if (sibling) {
-      setError(`Grade "${gradeName}" already exists for ${editGrade.name}.`);
-      return;
-    }
+
     setSaving(true);
     setError("");
     try {
       await api.products.update(editGrade.id, {
         name: editGrade.name,
-        description: editGrade.description || "",
-        sku: gradeForm.sku.trim(),
-        price: Number(editGrade.price) || 0,
+        description: editGrade.description || null,
+        sku,
+        price: editGrade.price || 0,
         quantity: editGrade.quantity || 0,
-        cas_number: editGrade.cas_number || "",
-        molecular_formula: editGrade.molecular_formula || "",
-        purity: editGrade.purity || "",
-        grade: gradeName,
+        grade,
         bag_quantity_id: gradeForm.bag_quantity_id || null,
-        storage_conditions: editGrade.storage_conditions || "",
-        hazard_classification: editGrade.hazard_classification || "",
-        physical_state: editGrade.physical_state || "",
-        hsn_code: editGrade.hsn_code || "",
-        manufacturer: editGrade.manufacturer || "SELF (KLJ)",
+        manufacturer: editGrade.manufacturer || null,
+        hsn_code: (editGrade as any).hsn_code || null,
       });
-      setNotice(`Grade ${gradeName} updated.`);
+      setNotice(`Grade "${grade}" saved.`);
       setEditGrade(null);
       await load();
+      setRefreshKey((k) => k + 1);
     } catch (err: any) {
-      setError(err.message || "Could not update grade");
+      setError(err.message || "Could not save the grade");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDeleteGrade = async (product: Product) => {
-    const label = product.grade ? `${product.grade} (${product.sku})` : product.sku;
-    if (
-      !window.confirm(
-        `Delete grade ${label}? This only works if the grade has no batches yet.`
-      )
-    ) {
+  const handleDelete = async (product: Product) => {
+    if (!window.confirm(`Delete grade "${product.grade || product.sku}" from ${product.name}?`)) {
       return;
     }
-    setError("");
-    setNotice("");
     try {
       await api.products.delete(product.id);
-      setNotice(`Grade ${label} deleted.`);
+      setNotice("Product deleted");
       await load();
+      setRefreshKey((k) => k + 1);
     } catch (err: any) {
-      setError(err.message || "Could not delete grade");
+      setError(err.message || "Could not delete the product");
     }
   };
 
-  const handleDownloadSample = async () => {
-    setError("");
-    try {
-      await api.products.downloadSample();
-    } catch (err: any) {
-      setError(err.message || "Could not download sample spreadsheet");
-    }
-  };
+  // Search helper: show a flat result list via the capped search endpoint.
+  const [searchHits, setSearchHits] = useState<Product[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
-  const totalGrades = products.length;
-  const stats = [
-    {
-      label: "Products",
-      value: families.length,
-      icon: <Package size={20} />,
-      bg: "bg-blue-100 text-blue-700",
-    },
-    {
-      label: "Grades",
-      value: totalGrades,
-      icon: <Layers size={20} />,
-      bg: "bg-purple-100 text-purple-700",
-    },
-    {
-      label: "Units (UOM)",
-      value: uoms.length,
-      icon: <Scale size={20} />,
-      bg: "bg-emerald-100 text-emerald-700",
-    },
-    {
-      label: "Suppliers",
-      value: manufacturers.length,
-      icon: <Factory size={20} />,
-      bg: "bg-amber-100 text-amber-700",
-    },
-  ];
+  useEffect(() => {
+    if (!isSearching) {
+      setSearchHits([]);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    api.products
+      .search(debouncedSearch.trim())
+      .then((hits: Product[]) => {
+        if (!cancelled) setSearchHits(hits || []);
+      })
+      .catch(() => {
+        if (!cancelled) setSearchHits([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSearchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearch, isSearching]);
 
   return (
     <div className={embedded ? "space-y-5" : "page-container space-y-6"}>
@@ -522,85 +763,38 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
           <h2 className="text-xl font-bold text-slate-900">Product catalogue</h2>
           <p className="mt-0.5 text-sm text-slate-500">
             One product can have many grades. Batches and sales use the grade.
+            {isSearching
+              ? ` Showing up to 100 matches for “${debouncedSearch.trim()}”.`
+              : ` ${totalProducts.toLocaleString()} products across ${families.length.toLocaleString()} families.`}
           </p>
         </div>
         {canManage && (
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => void handleDownloadSample()}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 sm:text-sm"
-              title="Download sample Excel format"
+              onClick={() => void openDeactivated()}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-bold text-amber-900 transition-colors hover:bg-amber-100 sm:text-sm"
+              title="View and restore deactivated families"
             >
-              <Download size={16} /> Sample Excel
+              <EyeOff size={16} /> Deactivated{deactivatedFamilies !== null && deactivatedFamilies.length > 0 ? ` (${deactivatedFamilies.length})` : ""}
             </button>
-            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 sm:text-sm">
-              <Upload size={16} /> Import Excel
-              <input
-                type="file"
-                accept=".xlsx,.xls"
-                className="hidden"
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  try {
-                    await api.products.importExcel(file);
-                    setNotice("Products imported.");
-                    setError("");
-                    await load();
-                  } catch (err: any) {
-                    setError(err.message || "Excel import failed");
-                  } finally {
-                    event.target.value = "";
-                  }
-                }}
-              />
-            </label>
+            <button
+              type="button"
+              onClick={() => setShowImportWizard(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 sm:text-sm"
+              title="Download the template, fill it in, validate and import"
+            >
+              <Upload size={16} /> Import products
+            </button>
+            <button type="button" onClick={() => void load()} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 sm:text-sm">
+              <RefreshCw size={16} className={loading ? "animate-spin" : ""} /> Refresh
+            </button>
             <button onClick={openCreateProduct} className="btn-primary">
-              <Plus size={18} /> Add product
+              <Plus size={16} /> Add product
             </button>
           </div>
         )}
       </div>
-
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {stats.map((stat) => (
-          <div
-            key={stat.label}
-            className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-xs"
-          >
-            <div className="mb-2 flex items-center gap-2.5">
-              <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${stat.bg}`}>
-                {stat.icon}
-              </div>
-              <span className="text-xs font-bold uppercase tracking-wide text-slate-600 sm:text-sm">
-                {stat.label}
-              </span>
-            </div>
-            <div className="mt-1 text-3xl font-black text-slate-900">
-              {loading ? "—" : stat.value}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {notice && (
-        <div className="flex items-center justify-between rounded-xl border-2 border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">
-          <span>{notice}</span>
-          <button onClick={() => setNotice("")} className="text-emerald-700 hover:text-emerald-900">
-            <X size={18} />
-          </button>
-        </div>
-      )}
-
-      {error && !showFamilyForm && !renameFamilyName && !editGrade && (
-        <div className="flex items-center justify-between rounded-xl border-2 border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-800">
-          <span>{error}</span>
-          <button onClick={() => setError("")} className="text-rose-700 hover:text-rose-900">
-            <X size={18} />
-          </button>
-        </div>
-      )}
 
       <div className="flex items-center gap-3 rounded-2xl border-2 border-slate-200 bg-white p-4 shadow-xs">
         <div className="relative flex-1">
@@ -615,133 +809,156 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
             onChange={(event) => setSearch(event.target.value)}
           />
         </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
-          disabled={loading}
-        >
-          <RefreshCw size={16} className={loading ? "animate-spin" : ""} /> Refresh
-        </button>
       </div>
 
-      {loading && products.length === 0 ? (
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+          <p role="alert" className="text-sm font-semibold text-rose-700">{error}</p>
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+          <p role="status" className="text-sm font-semibold text-emerald-700">{notice}</p>
+        </div>
+      )}
+
+      {loading && families.length === 0 ? (
         <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center text-sm font-semibold text-slate-500">
           Loading products...
         </div>
-      ) : filteredFamilies.length === 0 ? (
+      ) : isSearching ? (
+        searchLoading ? (
+          <div className="rounded-2xl border-2 border-slate-200 bg-white p-10 text-center text-sm font-semibold text-slate-500">Searching…</div>
+        ) : searchHits.length === 0 ? (
+          <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
+            <p className="text-base font-bold text-slate-700">No products found</p>
+            <p className="mt-0.5 text-sm text-slate-500">Try a different search term.</p>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b-2 border-slate-200 bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-600">
+                <tr>
+                  <th className="px-5 py-3">Product</th>
+                  <th className="px-5 py-3">Grade</th>
+                  <th className="px-5 py-3">SKU</th>
+                  <th className="px-5 py-3">UOM</th>
+                  <th className="px-5 py-3">Manufacturer</th>
+                  {canManage && <th className="px-5 py-3 text-right">Actions</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {searchHits.map((product) => (
+                  <tr key={product.id} className="transition-colors hover:bg-slate-50/80">
+                    <td className="px-5 py-3.5 font-bold text-slate-900">{product.name}</td>
+                    <td className="px-5 py-3.5 font-medium text-slate-800">{product.grade}</td>
+                    <td className="px-5 py-3.5"><span className="rounded border border-slate-200 bg-slate-100 px-2 py-1 font-mono text-xs font-bold text-slate-800">{product.sku}</span></td>
+                    <td className="px-5 py-3.5"><span className="inline-block rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700">{uomLabel(uoms, bagQuantities, product.bag_quantity_id)}</span></td>
+                    <td className="px-5 py-3.5 text-sm font-medium text-slate-700">{product.manufacturer}</td>
+                    {canManage && (
+                      <td className="px-5 py-3.5 text-right">
+                        <button type="button" onClick={() => openEditGrade(product)} className="mr-2 p-2 text-slate-500 hover:text-slate-800"><Pencil size={16} /></button>
+                        <button type="button" onClick={() => void handleDelete(product)} className="p-2 text-slate-500 hover:text-rose-600"><Trash2 size={16} /></button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : families.length === 0 ? (
         <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
             <Package size={24} />
           </div>
           <p className="text-base font-bold text-slate-700">No products found</p>
-          <p className="mt-0.5 text-sm text-slate-500">
-            {products.length
-              ? "Try a different search term."
-              : "Add your first product and its grades to get started."}
-          </p>
+          <p className="mt-0.5 text-sm text-slate-500">Add your first product and its grades to get started.</p>
         </div>
       ) : (
         <div className="space-y-4">
-          {filteredFamilies.map((family) => (
-            <section
-              key={family.name.toLowerCase()}
-              className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs"
-            >
-              <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-                    <Package size={22} />
+          {filteredFamilies.map((family) => {
+            const key = family.name.toLowerCase();
+            const open = expanded.has(key);
+            return (
+              <section
+                key={key}
+                className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs"
+              >
+                <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
+                      <Package size={22} />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-extrabold text-slate-900">{family.name}</h3>
+                      {family.description && (
+                        <p className="text-sm text-slate-500">{family.description}</p>
+                      )}
+                      <p className="mt-0.5 text-xs font-semibold text-slate-400">
+                        {family.count.toLocaleString()} grade{family.count === 1 ? "" : "s"}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-extrabold text-slate-900">{family.name}</h3>
-                    {family.description && (
-                      <p className="text-sm text-slate-500">{family.description}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleFamily(family.name)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
+                    >
+                      {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      {open ? "Hide grades" : "Show grades"}
+                    </button>
+                    {canManage && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openAddGrade(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-bold text-white transition-colors hover:bg-brand-700"
+                        >
+                          <Plus size={16} /> Add grade
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openRename(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
+                        >
+                          <Pencil size={16} /> Rename
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deactivateFamily(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-100"
+                          title={family.count > 0 ? `Deactivate "${family.name}" and all ${family.count.toLocaleString()} grades — kept in the database, hidden from every screen` : `Deactivate empty "${family.name}"`}
+                        >
+                          <EyeOff size={16} /> Deactivate
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteFamily(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm font-bold text-rose-700 transition-colors hover:bg-rose-100"
+                          title={family.count > 0 ? `Delete "${family.name}" and all ${family.count.toLocaleString()} grades` : `Delete empty "${family.name}"`}
+                        >
+                          <Trash2 size={16} /> Delete
+                        </button>
+                      </>
                     )}
-                    <p className="mt-0.5 text-xs font-semibold text-slate-400">
-                      {family.products.length} grade{family.products.length === 1 ? "" : "s"}
-                    </p>
                   </div>
                 </div>
-                {canManage && (
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openAddGrade(family)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-bold text-white transition-colors hover:bg-brand-700"
-                    >
-                      <Plus size={16} /> Add grade
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openRename(family)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
-                    >
-                      <Pencil size={16} /> Rename
-                    </button>
-                  </div>
-                )}
-              </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="border-b-2 border-slate-200 bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-600">
-                    <tr>
-                      <th className="px-5 py-3">Grade</th>
-                      <th className="px-5 py-3">SKU</th>
-                      <th className="px-5 py-3">UOM</th>
-                      <th className="px-5 py-3">Manufacturer</th>
-                      {canManage && <th className="px-5 py-3 text-right">Actions</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {family.products.map((product) => (
-                      <tr key={product.id} className="transition-colors hover:bg-slate-50/80">
-                        <td className="px-5 py-3.5">
-                          <span className="text-base font-bold text-slate-900">
-                            {product.grade || "Standard"}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className="rounded border border-slate-200 bg-slate-100 px-2 py-1 font-mono text-xs font-bold text-slate-800">
-                            {product.sku}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className="inline-block rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700">
-                            {uomLabel(uoms, bagQuantities, product.bag_quantity_id)}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-sm font-medium text-slate-700">
-                          {product.manufacturer || family.manufacturer || "SELF (KLJ)"}
-                        </td>
-                        {canManage && (
-                          <td className="px-5 py-3.5 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => openEditGrade(product)}
-                                className="rounded-lg p-2 text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                                title="Edit grade"
-                              >
-                                <Pencil size={16} />
-                              </button>
-                              <button
-                                onClick={() => void handleDeleteGrade(product)}
-                                className="rounded-lg p-2 text-rose-600 transition-colors hover:bg-rose-50 hover:text-rose-800"
-                                title="Delete grade"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          ))}
+                {open && (
+                  <FamilyGradesPanel
+                    familyName={family.name}
+                    refreshKey={refreshKey}
+                    canManage={canManage}
+                    formatUom={(id) => uomLabel(uoms, bagQuantities, id)}
+                    onEdit={openEditGrade}
+                    onDelete={handleDelete}
+                  />
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
 
@@ -775,177 +992,271 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
                     Product name <span className="text-rose-500">*</span>
                   </label>
-                  <input
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-slate-500"
-                    value={familyForm.name}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setFamilyForm((current) => ({ ...current, name: value }));
-                      if (familyMode === "create") refreshAutoSkus(value);
-                    }}
-                    placeholder="e.g. TPR COMPOUND"
-                    required
-                    autoFocus={familyMode === "create"}
-                    disabled={familyMode === "add-grade"}
-                    maxLength={150}
-                  />
+                  <div ref={familySuggestRef} className="relative">
+                    <input
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                      value={familyForm.name}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setFamilyForm((current) => ({ ...current, name: value }));
+                        // Non-empty names are picked up by the settle effect below (250 ms quiet →
+                        // fetch the server's next-free-sequence and fill untouched drafts).
+                        // Empty name → reset identically-tracked refs and clear untouched drafts.
+                        if (!value.trim()) {
+                          skuFetchSeqRef.current += 1; // cancel any in-flight auto-fill
+                          setGradeDrafts((current) => current.map((d) => (d.skuTouched ? d : { ...d, sku: "" })));
+                        }
+                        setFamilySuggestOpen(true);
+                        setFamilySuggestIndex(-1);
+                      }}
+                      onFocus={() => {
+                        if (familyMode === "create") {
+                          setFamilySuggestOpen(true);
+                          setFamilySuggestIndex(-1);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (familyMode !== "create") return;
+                        if (event.key === "ArrowDown") {
+                          event.preventDefault();
+                          setFamilySuggestOpen(true);
+                          setFamilySuggestIndex((current) => Math.min(familySuggestions.length - 1, current + 1));
+                        } else if (event.key === "ArrowUp") {
+                          event.preventDefault();
+                          setFamilySuggestIndex((current) => Math.max(-1, current - 1));
+                        } else if (event.key === "Enter" && familySuggestOpen && familySuggestIndex >= 0 && familySuggestIndex < familySuggestions.length) {
+                          event.preventDefault();
+                          selectFamilySuggestion(familySuggestions[familySuggestIndex]);
+                        } else if (event.key === "Escape" && familySuggestOpen) {
+                          event.preventDefault();
+                          setFamilySuggestOpen(false);
+                          setFamilySuggestIndex(-1);
+                        }
+                      }}
+                      placeholder="e.g. XLPE COMPOUND"
+                      required
+                      autoFocus={familyMode === "create"}
+                      disabled={familyMode === "add-grade"}
+                      autoComplete="off"
+                      role="combobox"
+                      aria-expanded={familyMode === "create" && familySuggestOpen}
+                      aria-controls="family-suggest-listbox"
+                      aria-autocomplete="list"
+                      aria-activedescendant={familySuggestIndex >= 0 ? `family-suggest-${familySuggestIndex}` : undefined}
+                    />
+                    {familyMode === "create" && familySuggestOpen && familySuggestions.length > 0 && (
+                      <ul id="family-suggest-listbox" role="listbox" aria-label="Existing products" className="absolute left-0 right-0 top-full z-30 mt-1.5 max-h-64 overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl">
+                        {familySuggestions.map((family, index) => (
+                          <li key={family.name} id={`family-suggest-${index}`} role="option" aria-selected={index === familySuggestIndex}>
+                            <button
+                              type="button"
+                              onMouseDown={(event) => { event.preventDefault(); selectFamilySuggestion(family); }}
+                              onMouseEnter={() => setFamilySuggestIndex(index)}
+                              className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors ${index === familySuggestIndex ? "bg-brand-50" : "hover:bg-slate-50"}`}
+                            >
+                              <span className="truncate font-semibold text-slate-800">{family.name}</span>
+                              <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{family.count.toLocaleString()} grades</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  {familyMode === "create" && matchedFamily && (
+                    <p className="mt-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-amber-800"><Info size={12} className="shrink-0" /> &ldquo;{matchedFamily.name}&rdquo; already exists ({matchedFamily.count.toLocaleString()} grades) &mdash; your new grades will be added to it.</p>
+                  )}
                 </div>
-                <div>
+                <div className="sm:col-span-2">
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
                     Description (optional)
                   </label>
                   <input
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                     value={familyForm.description}
-                    onChange={(event) =>
-                      setFamilyForm({ ...familyForm, description: event.target.value })
-                    }
-                    placeholder="Short description"
-                    maxLength={500}
+                    onChange={(event) => setFamilyForm((current) => ({ ...current, description: event.target.value }))}
+                    placeholder="Real cable compound powder for outer sheath"
                   />
                 </div>
-                <div>
+                <div className="sm:col-span-2">
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
                     Manufacturer
                   </label>
                   <select
                     className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                     value={familyForm.manufacturer}
-                    onChange={(event) =>
-                      setFamilyForm({ ...familyForm, manufacturer: event.target.value })
-                    }
+                    onChange={(event) => setFamilyForm((current) => ({ ...current, manufacturer: event.target.value }))}
                   >
                     <option value="SELF (KLJ)">SELF (KLJ)</option>
-                    {manufacturers.map((manufacturer) => (
-                      <option key={manufacturer.id} value={manufacturer.name}>
-                        {manufacturer.name}
-                      </option>
+                    {manufacturers.map((vendor: any) => (
+                      <option key={vendor.id} value={vendor.name}>{vendor.name}</option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              <div className="rounded-2xl border-2 border-slate-100 bg-slate-50/70 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">Grades in this product</h3>
-                    <p className="text-xs text-slate-500">
-                      Each grade is sold separately and gets its own SKU.
-                    </p>
-                  </div>
+              <div>
+                {/* <div className="mb-2 flex items-center justify-between gap-2">
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-700">
+                    Grades sold
+                  </label>
                   <button
                     type="button"
-                    onClick={addGradeDraft}
-                    className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-bold text-brand-700 shadow-xs ring-1 ring-slate-200 hover:bg-brand-50"
+                    onClick={() => void addGradeDraft()}
+                    className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200"
                   >
                     <Plus size={14} /> Add grade
                   </button>
-                </div>
+                </div> */}
 
                 <div className="space-y-3">
-                  {gradeDrafts.map((grade, index) => (
-                    <div
-                      key={grade.key}
-                      className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.1fr)_auto]"
-                    >
-                      <div>
-                        <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                          Grade name <span className="text-rose-500">*</span>
-                        </label>
-                        <input
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                          value={grade.grade}
-                          onChange={(event) =>
-                            updateGradeDraft(index, { grade: event.target.value })
-                          }
-                          placeholder="e.g. KLJ BD 65 L BK"
-                          required
-                          maxLength={100}
-                          autoFocus={index === 0 && familyMode === "create"}
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                          SKU (auto-generated)
-                        </label>
-                        <input
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                          value={grade.sku}
-                          onChange={(event) => updateGradeDraft(index, { sku: event.target.value })}
-                          placeholder="Auto-generated"
-                          maxLength={80}
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                          UOM
-                        </label>
-                        <select
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                          value={grade.bag_quantity_id}
-                          onChange={(event) =>
-                            updateGradeDraft(index, { bag_quantity_id: event.target.value })
-                          }
-                        >
-                          <option value="">Select UOM</option>
-                          {uoms.map((uom) => (
-                            <option key={uom.id} value={String(uom.id)}>
-                              {uom.name}
-                            </option>
-                          ))}
-                          {bagQuantities.map((bag) => (
-                            <option key={`bag-${bag.id}`} value={String(bag.id)}>
-                              {bag.name || `${bag.quantity} ${bag.unit}`}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex items-end">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setGradeDrafts((current) =>
-                              current.length === 1
-                                ? [newGradeDraft()]
-                                : current.filter((_, gradeIndex) => gradeIndex !== index)
-                            )
-                          }
-                          className="rounded-lg p-2 text-rose-500 hover:bg-rose-50 hover:text-rose-700"
-                          title="Remove grade"
-                        >
-                          <Trash2 size={17} />
-                        </button>
+                  {hasBlockingConflicts && (
+                    <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-semibold text-rose-800">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      <div className="space-y-0.5">
+                        {[...draftConflicts.grades.duplicated.entries()].map(([key, { display, indices }]) => (
+                          <p key={`grade-${key}`}>Duplicate grade name &ldquo;{display}&rdquo; — in rows {indices.map((i) => i + 1).join(", ")}. Grades must be unique within a product.</p>
+                        ))}
+                        {[...draftConflicts.skus.duplicated.entries()].map(([key, { display, indices }]) => (
+                          <p key={`sku-${key}`}>Duplicate SKU &ldquo;{display}&rdquo; — in rows {indices.map((i) => i + 1).join(", ")}.</p>
+                        ))}
+                        {[...new Set(gradeDrafts.filter((_, i) => draftCatalogueConflicts.grades.has(i)).map((draft) => draft.grade.trim()))].map((display) => (
+                          <p key={`cat-grade-${display}`}>Grade &ldquo;{display}&rdquo; already exists in &ldquo;{matchedFamily?.name}&rdquo; — pick a different name.</p>
+                        ))}
+                        {[...new Set(gradeDrafts.filter((_, i) => draftCatalogueConflicts.skus.has(i)).map((draft) => draft.sku.trim()))].map((display) => (
+                          <p key={`cat-sku-${display}`}>SKU &ldquo;{display}&rdquo; already exists in the catalogue.</p>
+                        ))}
                       </div>
                     </div>
-                  ))}
+                  )}
+                  {(existingCheckState === "loading" || skuLookup.checking) && (
+                    <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500"><Loader2 size={11} className="animate-spin" /> Checking existing grades &amp; SKUs…</p>
+                  )}
+                  {existingCheckState === "error" && (
+                    <p role="alert" className="text-[11px] font-semibold text-amber-800">Could not load existing grades — the server will reject duplicates on save.</p>
+                  )}
+                  {skuLookup.error && (
+                    <p role="alert" className="text-[11px] font-semibold text-amber-800">Could not verify some SKUs — the server will reject duplicates on save.</p>
+                  )}
+                  {/* Column headers — shown once on desktop; each row keeps mini labels on mobile */}
+                  <div className="hidden grid-cols-[1fr_1fr_110px_auto] gap-3 px-1 pb-1.5 sm:grid" aria-hidden="true">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Grade name <span className="text-rose-500">*</span></span>
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">SKU</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">UOM</span>
+                    <span />
+                  </div>
+                  {gradeDrafts.map((draft, index) => {
+                    const gradeDup = draftConflicts.grades.duplicated.get(draft.grade.trim().toLowerCase());
+                    const skuDup = draftConflicts.skus.duplicated.get(draft.sku.trim().toLowerCase());
+                    const gradeCatalogueDup = draftCatalogueConflicts.grades.has(index);
+                    const skuCatalogueDup = draftCatalogueConflicts.skus.has(index);
+                    const otherRows = (entry?: { indices: number[] }) => (entry ? entry.indices.filter((i) => i !== index).map((i) => i + 1).join(", ") : "");
+                    const gradeInvalid = Boolean(gradeDup) || gradeCatalogueDup;
+                    const skuInvalid = Boolean(skuDup) || skuCatalogueDup;
+                    return (
+                      <div key={draft.key} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_110px_auto] sm:gap-3">
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+                            Grade name <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            className={`w-full rounded-xl border px-3 py-2.5 text-sm font-medium focus:outline-none focus:ring-2 ${gradeInvalid ? "border-rose-400 bg-rose-50 text-rose-900 focus:ring-rose-500" : "border-slate-200 bg-white text-slate-900 focus:ring-brand-500"}`}
+                            value={draft.grade}
+                            onChange={(event) => updateGradeDraft(index, { grade: event.target.value })}
+                            placeholder="e.g. XLPE BK 9406"
+                            required
+                            aria-invalid={gradeInvalid}
+                          />
+                          {hasBlockingConflicts && (
+                            <p className={`mt-1 h-4 text-[11px] leading-4 font-semibold text-rose-700 ${gradeInvalid ? "" : "invisible"}`} aria-hidden={!gradeInvalid}>
+                              {gradeInvalid ? (gradeDup ? `Duplicate in form — also in row ${otherRows(gradeDup)}` : `Already exists in "${matchedFamily?.name}"`) : ""}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+                            SKU
+                          </label>
+                          <input
+                            className={`w-full rounded-xl border px-3 py-2.5 font-mono text-sm font-bold focus:outline-none focus:ring-2 ${skuInvalid ? "border-rose-400 bg-rose-50 text-rose-900 focus:ring-rose-500" : "border-slate-200 bg-white text-slate-900 focus:ring-brand-500"}`}
+                            value={draft.sku}
+                            onChange={(event) => updateGradeDraft(index, { sku: event.target.value, skuTouched: true })}
+                            placeholder="KLJ-XXX-001"
+                            required
+                            aria-invalid={skuInvalid}
+                          />
+                          {hasBlockingConflicts && (
+                            <p className={`mt-1 h-4 text-[11px] leading-4 font-semibold text-rose-700 ${skuInvalid ? "" : "invisible"}`} aria-hidden={!skuInvalid}>
+                              {skuInvalid ? (skuDup ? `Duplicate in form — also in row ${otherRows(skuDup)}` : "Already exists in the catalogue") : ""}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-500 sm:hidden">
+                            UOM
+                          </label>
+                          <select
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                            value={draft.bag_quantity_id}
+                            onChange={(event) => updateGradeDraft(index, { bag_quantity_id: event.target.value })}
+                          >
+                            <option value="">—</option>
+                            {uoms.map((uom: any) => (
+                              <option key={`uom-${uom.id}`} value={String(uom.id)}>{uom.name}</option>
+                            ))}
+                            {bagQuantities.map((bag: any) => (
+                              <option key={`bag-${bag.id}`} value={String(bag.id)}>{bag.name}{bag.quantity ? ` (${bag.quantity})` : ""}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {/* <div className="flex items-center gap-2"> */}
+                          <button
+                            type="button"
+                            onClick={() => removeGradeDraft(index)}
+                            className={`rounded-lg p-2 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600 disabled:opacity-30 ${hasBlockingConflicts ? "mb-[20px]" : "mb-0.5"}`}
+                            disabled={gradeDrafts.length === 1}
+                            aria-label="Remove grade"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        {/* </div> */}
+                      </div>
+                    );
+                  })}
+                  <div className="w-fit ml-auto">
+
+                    <button
+                      type="button"
+                      onClick={() => void addGradeDraft()}
+                      className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-6 py-4 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 cursor-pointer"
+                      >
+                      <Plus size={14} /> Add More Grade
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {error && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">
+                <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
                   {error}
-                </div>
+                </p>
               )}
 
-              <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-4">
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
                 <button
                   type="button"
                   onClick={closeFamilyForm}
-                  className="rounded-xl px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100"
                   disabled={saving}
+                  className="rounded-xl px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
-                  className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={saving || hasBlockingConflicts}
+                  title={hasBlockingConflicts ? "Fix the highlighted duplicate grades / SKUs first" : undefined}
+                  className="btn-primary"
                 >
-                  {saving
-                    ? "Saving..."
-                    : familyMode === "create"
-                    ? "Create product"
-                    : "Add grade"}
+                  {saving ? "Saving…" : familyMode === "create" ? "Create product" : "Add grade"}
                 </button>
               </div>
             </form>
@@ -953,14 +1264,100 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
         </div>
       )}
 
-      {renameFamilyName && (
+      {confirmFamily !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs" role="dialog" aria-modal="true" aria-labelledby="family-action-title">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border-2 border-rose-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-3 border-b border-rose-100 bg-rose-50 p-5">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600">
+                  {confirmFamily.confirm === 'delete' ? <Trash2 size={18} /> : <EyeOff size={18} />}
+                </span>
+                <div>
+                  <h2 id="family-action-title" className="text-lg font-extrabold text-slate-900">
+                    {confirmFamily.confirm === 'delete' ? 'Delete product' : 'Deactivate product'}
+                  </h2>
+                  <p className="mt-0.5 text-sm text-slate-600">
+                    {confirmFamily.confirm === 'delete'
+                      ? <>Delete <span className="font-bold text-slate-900">&ldquo;{confirmFamily.family.name}&rdquo;</span> and all of its{" "}<span className="font-bold text-rose-700">{confirmFamily.family.count.toLocaleString()} grade{confirmFamily.family.count === 1 ? "" : "s"}</span>?</>
+                      : <>Deactivate <span className="font-bold text-slate-900">&ldquo;{confirmFamily.family.name}&rdquo;</span> and all of its{" "}<span className="font-bold text-amber-700">{confirmFamily.family.count.toLocaleString()} grade{confirmFamily.family.count === 1 ? "" : "s"}</span>?</>}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmFamily(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-100 hover:text-slate-700"
+                disabled={confirmFamilyRunning}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5">
+              {confirmFamily.confirm === 'delete' ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold leading-relaxed text-rose-900">
+                  This cannot be undone. {confirmFamily.family.count.toLocaleString()} grade{confirmFamily.family.count === 1 ? "" : "s"} — and every batch, QR label, QC and dispatch record tied to them — will be permanently deleted.
+                  {confirmFamily.family.count > 0 && (
+                    <>
+                      <br />
+                      If any grade already has batches, the whole delete is refused and nothing is removed.
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold leading-relaxed text-amber-900">
+                  Deactivate, don&rsquo;t delete. All {confirmFamily.family.count.toLocaleString()} grade{confirmFamily.family.count === 1 ? "" : "s"} stay in the database with their batches, QR labels, QC and dispatch records, but the product disappears from the catalogue and from every screen — no new batches, orders or QC on it.
+                  <br />
+                  Deactivation is reversible later by the support team if needed.
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setConfirmFamily(null)}
+                  disabled={confirmFamilyRunning}
+                  className="rounded-xl px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                {confirmFamily.confirm === 'delete' && (
+                  <button
+                    type="button"
+                    onClick={() => void runFamilyAction(confirmFamily.family, 'deactivate')}
+                    disabled={confirmFamilyRunning}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-100 disabled:opacity-60"
+                  >
+                    <EyeOff size={15} />
+                    {confirmFamilyRunning ? 'Working…' : `Deactivate instead (${confirmFamily.family.count.toLocaleString()} grade${confirmFamily.family.count === 1 ? '' : 's'})`}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void runFamilyAction(confirmFamily.family, confirmFamily.confirm)}
+                  disabled={confirmFamilyRunning}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-extrabold text-white transition-colors disabled:opacity-60 ${confirmFamily.confirm === 'delete' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-amber-600 hover:bg-amber-700'}`}
+                >
+                  {confirmFamilyRunning ? <Loader2 size={16} className="animate-spin" /> : (confirmFamily.confirm === 'delete' ? <Trash2 size={16} /> : <EyeOff size={16} />)}
+                  {confirmFamilyRunning
+                    ? (confirmFamily.confirm === 'delete' ? 'Deleting…' : 'Deactivating…')
+                    : (confirmFamily.confirm === 'delete'
+                        ? `Delete product & ${confirmFamily.family.count.toLocaleString()} grade${confirmFamily.family.count === 1 ? '' : 's'}`
+                        : `Deactivate product & ${confirmFamily.family.count.toLocaleString()} grade${confirmFamily.family.count === 1 ? '' : 's'}`)}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {renameFamilyName !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-md rounded-2xl border-2 border-slate-200 bg-white shadow-xl">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 p-5">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Rename product</h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  This updates the name for every grade under it.
+                  Rename every grade of “{renameFamilyName}” at once.
                 </p>
               </div>
               <button
@@ -972,18 +1369,18 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
                 <X size={20} />
               </button>
             </div>
+
             <form onSubmit={handleRenameSubmit} className="space-y-4 p-6">
               <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
-                  Product name <span className="text-rose-500">*</span>
+                  New name *
                 </label>
                 <input
-                  className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   value={renameForm.name}
-                  onChange={(event) => setRenameForm({ ...renameForm, name: event.target.value })}
+                  onChange={(event) => setRenameForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="e.g. XLPE COMPOUND"
                   required
-                  autoFocus
-                  maxLength={150}
                 />
               </div>
               <div>
@@ -991,34 +1388,24 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
                   Description (optional)
                 </label>
                 <input
-                  className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   value={renameForm.description}
-                  onChange={(event) =>
-                    setRenameForm({ ...renameForm, description: event.target.value })
-                  }
-                  maxLength={500}
+                  onChange={(event) => setRenameForm((current) => ({ ...current, description: event.target.value }))}
+                  placeholder="Real cable compound powder"
                 />
               </div>
-              {error && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">
-                  {error}
-                </div>
-              )}
-              <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-4">
+
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
                 <button
                   type="button"
                   onClick={() => setRenameFamilyName(null)}
-                  className="rounded-xl px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100"
                   disabled={saving}
+                  className="rounded-xl px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {saving ? "Saving..." : "Save name"}
+                <button type="submit" disabled={saving} className="btn-primary">
+                  {saving ? "Saving…" : "Save name"}
                 </button>
               </div>
             </form>
@@ -1028,11 +1415,13 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
 
       {editGrade && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-lg rounded-2xl border-2 border-slate-200 bg-white shadow-xl">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 p-5">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Edit grade</h2>
-                <p className="mt-0.5 text-xs text-slate-500">{editGrade.name}</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Grade of “{editGrade.name}”
+                </p>
               </div>
               <button
                 type="button"
@@ -1043,83 +1432,138 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
                 <X size={20} />
               </button>
             </div>
+
             <form onSubmit={handleGradeSubmit} className="space-y-4 p-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="sm:col-span-2">
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
-                    Grade name <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                    value={gradeForm.grade}
-                    onChange={(event) => setGradeForm({ ...gradeForm, grade: event.target.value })}
-                    required
-                    maxLength={100}
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
-                    SKU <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 font-mono text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                    value={gradeForm.sku}
-                    onChange={(event) => setGradeForm({ ...gradeForm, sku: event.target.value })}
-                    required
-                    maxLength={80}
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
-                    UOM
-                  </label>
-                  <select
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                    value={gradeForm.bag_quantity_id}
-                    onChange={(event) =>
-                      setGradeForm({ ...gradeForm, bag_quantity_id: event.target.value })
-                    }
-                  >
-                    <option value="">Select UOM</option>
-                    {uoms.map((uom) => (
-                      <option key={uom.id} value={String(uom.id)}>
-                        {uom.name}
-                      </option>
-                    ))}
-                    {bagQuantities.map((bag) => (
-                      <option key={`bag-${bag.id}`} value={String(bag.id)}>
-                        {bag.name || `${bag.quantity} ${bag.unit}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
+                  Grade name *
+                </label>
+                <input
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  value={gradeForm.grade}
+                  onChange={(event) => setGradeForm((current) => ({ ...current, grade: event.target.value }))}
+                  placeholder="e.g. XLPE BK 9406"
+                  required
+                />
               </div>
-              {error && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">
-                  {error}
-                </div>
-              )}
-              <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-4">
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
+                  SKU *
+                </label>
+                <input
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 font-mono text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  value={gradeForm.sku}
+                  onChange={(event) => setGradeForm((current) => ({ ...current, sku: event.target.value }))}
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
+                  UOM
+                </label>
+                <select
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  value={gradeForm.bag_quantity_id}
+                  onChange={(event) => setGradeForm((current) => ({ ...current, bag_quantity_id: event.target.value }))}
+                >
+                  <option value="">—</option>
+                  {uoms.map((uom: any) => (
+                    <option key={`uom-${uom.id}`} value={String(uom.id)}>{uom.name}</option>
+                  ))}
+                  {bagQuantities.map((bag: any) => (
+                    <option key={`bag-${bag.id}`} value={String(bag.id)}>{bag.name} {bag.quantity ? `(${bag.quantity})` : ""}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
                 <button
                   type="button"
                   onClick={() => setEditGrade(null)}
-                  className="rounded-xl px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100"
                   disabled={saving}
+                  className="rounded-xl px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {saving ? "Saving..." : "Update grade"}
+                <button type="submit" disabled={saving} className="btn-primary">
+                  {saving ? "Saving…" : "Save grade"}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {/* 4-step import wizard modal */}
+      {showImportWizard && canManage && (
+        <ImportWizard
+          onClose={() => setShowImportWizard(false)}
+          onImported={() => { void load(); setNotice('Products imported successfully.'); }}
+        />
+      )}
+
+      {/* Deactivated families — manage + reactivate */}
+      {showDeactivated && canManage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs" role="dialog" aria-modal="true" aria-labelledby="deactivated-title">
+          <div className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border-2 border-amber-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-amber-100 bg-amber-50 p-5">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+                  <EyeOff size={20} />
+                </span>
+                <div>
+                  <h2 id="deactivated-title" className="text-lg font-extrabold text-slate-900">Deactivated products</h2>
+                  <p className="mt-0.5 text-xs text-slate-600">Records are kept but hidden from every screen. Reactivate to restore the family in the catalogue.</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setShowDeactivated(false)} className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-100 hover:text-slate-700" aria-label="Close"><X size={18} /></button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {deactivatedLoading ? (
+                <div className="flex items-center justify-center gap-2 py-10 text-sm font-semibold text-slate-500"><Loader2 size={18} className="animate-spin" /> Loading deactivated products…</div>
+              ) : !deactivatedFamilies || deactivatedFamilies.length === 0 ? (
+                <div className="flex flex-col items-center gap-3 py-10 text-center">
+                  <EyeOff size={30} className="text-slate-300" />
+                  <p className="text-sm font-bold text-slate-600">Nothing is deactivated right now</p>
+                  <p className="max-w-[24rem] text-xs text-slate-500">Deactivating a product keeps its rows in the database, hidden from every screen. Use the Deactivate button on a family to hide it here.</p>
+                </div>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {deactivatedFamilies.map((family) => (
+                    <li key={family.name} className="flex items-center justify-between gap-3 py-2.5">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-800">{family.name}</p>
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{family.count.toLocaleString()} grade{family.count === 1 ? "" : "s"} · hidden</p>
+                        {family.description && <p className="mt-0.5 truncate text-[11px] text-slate-500">{family.description}</p>}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleReactivateFamily(family.name)}
+                        disabled={reactivating !== null}
+                        title={`Reactivate "${family.name}" and its ${family.count.toLocaleString()} grade${family.count === 1 ? "" : "s"}`}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-extrabold text-emerald-800 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {reactivating === family.name
+                          ? <><Loader2 size={13} className="animate-spin" /> Restoring…</>
+                          : <><Eye size={13} /> Reactivate</>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/60 px-5 py-3">
+              <p className="text-[10px] font-semibold text-slate-500">{deactivatedFamilies !== null && !deactivatedLoading ? `${deactivatedFamilies.length} deactivated ${deactivatedFamilies.length === 1 ? "family" : "families"}` : " "}</p>
+              <button type="button" onClick={() => setShowDeactivated(false)} className="rounded-xl bg-slate-200 px-3.5 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-300">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Division context indicator when ADMIN picks a division at the top */}
+      {canManage && <DivisionContextNote />}
     </div>
   );
 }

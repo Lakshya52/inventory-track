@@ -1,8 +1,8 @@
-import { useEffect, useState, FormEvent, useMemo } from 'react';
+import { useEffect, useState, FormEvent, useMemo, useRef } from 'react';
 import JSZip from 'jszip';
 import { api } from '../services/api';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
-import { Product, Batch } from '../types';
+import { Batch } from '../types';
 import {
   Layers,
   Plus,
@@ -77,7 +77,7 @@ export default function Batches() {
   // Batch creation moved to Dispatch. QC decisions happen on the QC Review page.
   const canManageBatches = false;
   const canDownloadQr = user?.role === 'ADMIN';
-  const [products, setProducts] = useState<Product[]>([]);
+  // products state removed — server-side combobox with debounced search
   const [batches, setBatches] = useState<Batch[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [vendors, setVendors] = useState<any[]>([]);
@@ -111,15 +111,13 @@ export default function Batches() {
 
   useEffect(() => {
     Promise.all([
-      api.products.list(),
       api.batches.list(),
       api.shelfLocations.list(),
       api.vendors.list({ status: 'active' }),
       api.masters.list('grades'),
       api.masters.list('bag-quantities'),
     ])
-      .then(([productRows, batchRows, locationRows, vendorRows, gradeRows, bagQuantityRows]) => {
-        setProducts(productRows);
+      .then(([batchRows, locationRows, vendorRows, gradeRows, bagQuantityRows]) => {
         setBatches(batchRows);
         setLocations(locationRows.filter((loc: any) => hasUsableMasterId(loc) && isActiveMaster(loc)));
         setVendors(vendorRows.filter((ven: any) => hasUsableMasterId(ven) && isActiveMaster(ven)));
@@ -141,7 +139,30 @@ export default function Batches() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [creatingBatch, savingFinishGoods]);
 
-  const selectedProduct = useMemo(() => products.find((p) => String(p.id) === productId), [productId, products]);
+  // Server-side product search — avoids loading the entire catalogue into the browser.
+  const [productSearch, setProductSearch] = useState('');
+  const debouncedProductSearch = useDebouncedValue(productSearch, 250);
+  const [productHits, setProductHits] = useState<any[]>([]);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
+
+  useEffect(() => {
+    const q = debouncedProductSearch.trim();
+    if (!q) { setProductHits([]); setProductSearchLoading(false); return; }
+    let cancelled = false;
+    setProductSearchLoading(true);
+    api.products?.search(q)
+      .then((rows: any[]) => { if (!cancelled) setProductHits(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (!cancelled) setProductHits([]); })
+      .finally(() => { if (!cancelled) setProductSearchLoading(false); });
+    return () => { cancelled = true; };
+  }, [debouncedProductSearch]);
+
+  const isProductSearchOpen = productSearch.trim().length > 0 && !productId;
+  const selectProductHit = (p: any) => {
+    setProductId(String(p.id));
+    if (p?.price && Number(p.price) > 0) setUnitPrice(String(p.price));
+    setProductSearch(''); // clear the typed query — selection sticks in productId
+  };
 
   const groupedBatches = useMemo(() => {
     const groups = new Map<string, any>();
@@ -609,23 +630,44 @@ export default function Batches() {
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
                   Product *
                 </label>
-                <select
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                  value={productId}
-                  onChange={(e) => {
-                    setProductId(e.target.value);
-                    const p = products.find((x) => String(x.id) === e.target.value);
-                    if (p?.price && p.price > 0) setUnitPrice(String(p.price));
-                  }}
-                  required
-                >
-                  <option value="">-- Select Product --</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku})
-                    </option>
-                  ))}
-                </select>
+                <div className="relative" role="combobox" aria-expanded={Boolean(productHits.length)} aria-controls="product-hits-listbox" aria-autocomplete="list">
+                  <input
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    value={productSearch}
+                    onChange={(event) => setProductSearch(event.target.value)}
+                    onFocus={() => { if (productId) { setProductId(''); } }}
+                    placeholder={productId ? 'Change product…' : 'Type product, grade or SKU…'}
+                    required
+                    autoFocus
+                    autoComplete="off"
+                  />
+                  {isProductSearchOpen && (
+                    <ul id="product-hits-listbox" role="listbox" className="absolute z-30 left-0 right-0 top-full mt-1.5 max-h-64 overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl">
+                      {productSearchLoading ? (
+                        <li className="px-3 py-2 text-xs font-semibold text-slate-500">Searching…</li>
+                      ) : productHits.length === 0 && productSearch.trim() ? (
+                        <li className="px-3 py-2 text-xs font-semibold text-slate-500">No products match &ldquo;{productSearch.trim()}&rdquo;</li>
+                      ) : (
+                        productHits.slice(0, 25).map((p: any) => (
+                          <li key={p.id} role="option">
+                            <button
+                              type="button"
+                              onMouseDown={(event) => { event.preventDefault(); selectProductHit(p); }}
+                              className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-brand-50"
+                            >
+                              <span className="font-bold text-slate-800">{p.name} <span className="font-mono text-xs font-semibold text-slate-500">({p.sku})</span></span>
+                              {(p.grade || p.description) && <span className="text-[11px] font-medium text-slate-500">{[p.grade, p.description].filter(Boolean).join(' · ')}</span>}
+                              {p.price != null && Number(p.price) > 0 && <span className="text-[10px] font-bold uppercase tracking-wide text-brand-700">₹ {Number(p.price).toLocaleString()}</span>}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  )}
+                </div>
+                {productId && (
+                  <input type="hidden" value={productId} readOnly />
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -729,8 +771,8 @@ export default function Batches() {
                 </button>
                 <button
                   type="submit"
-                  disabled={creatingBatch || !products.length}
-                  className="px-5 py-2 rounded-xl text-sm font-bold bg-brand-600 hover:bg-brand-700 text-white shadow-sm"
+                  disabled={creatingBatch || !productId}
+                  className="px-5 py-2 rounded-xl text-sm font-bold bg-brand-600 hover:bg-brand-700 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {creatingBatch ? 'Creating Batches & QR Codes...' : 'Create QC Batch'}
                 </button>

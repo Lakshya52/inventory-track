@@ -6,6 +6,7 @@ import type { EntityId } from '../types';
 import Clients from './Clients';
 import Vendors from './Vendors';
 import Products from './Products';
+import Divisions from './Divisions';
 import {
   Building2,
   Factory,
@@ -22,9 +23,10 @@ import {
   Pencil,
   Scale,
   Printer,
+  LayoutGrid,
 } from 'lucide-react';
 
-type MasterTab = 'clients' | 'vendors' | 'products' | 'uoms' | 'printer-label';
+type MasterTab = 'clients' | 'vendors' | 'products' | 'uoms' | 'printer-label' | 'divisions';
 type SimpleMasterKind = 'uoms';
 type StatusFilter = 'all' | 'active' | 'inactive';
 
@@ -44,6 +46,7 @@ const TABS: { id: MasterTab; label: string; icon: any }[] = [
   { id: 'products', label: 'Products', icon: Package },
   { id: 'uoms', label: 'Units of Measure (UOM)', icon: Scale },
   { id: 'printer-label', label: 'Printer Label Size', icon: Printer },
+  { id: 'divisions', label: 'Divisions', icon: LayoutGrid },
 ];
 
 function normalizeTab(value: string | null): MasterTab {
@@ -324,7 +327,7 @@ export default function Masters() {
               Masters Management
             </h1>
             <p className="text-sm sm:text-base text-slate-500 mt-0.5">
-              Manage customers, vendors, products and their grades, units of measure, and printer labels.
+              Manage customers, vendors, products and their grades, units of measure, printer labels and divisions.
             </p>
           </div>
         </div>
@@ -359,6 +362,7 @@ export default function Masters() {
       {activeTab === 'clients' && <Clients embedded />}
       {activeTab === 'vendors' && <Vendors embedded />}
       {activeTab === 'products' && <Products embedded />}
+      {activeTab === 'divisions' && <Divisions embedded />}
       {activeTab === 'printer-label' && <PrinterLabelSettings />}
       {/* UOM master register */}
       {isSimpleMaster && (
