@@ -32,7 +32,9 @@ export function toNullableNumber(value: unknown): number | null {
 export async function mapByIds<T extends Record<string, any> = Record<string, any>>(
   ctx: DbContext,
   collection: string,
-  ids: Array<EntityId | null | undefined>
+  ids: Array<EntityId | null | undefined>,
+  tenantId?: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Map<string, T>> {
   const unique = [...new Set(
     ids
@@ -40,9 +42,12 @@ export async function mapByIds<T extends Record<string, any> = Record<string, an
       .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
+  const filter: Record<string, any> = { _id: { $in: unique } };
+  if (tenantId !== undefined && tenantId !== null) filter.tenant_id = tenantId;
+  if (divisionScope) Object.assign(filter, divisionScope);
   const documents = await ctx.find<T & { id: EntityId }>(
     collection,
-    { _id: { $in: unique } } as any
+    filter as any
   );
   return new Map(documents.map((document) => [idKey(document.id), document as T]));
 }
@@ -50,9 +55,11 @@ export async function mapByIds<T extends Record<string, any> = Record<string, an
 export async function mapNames(
   ctx: DbContext,
   collection: string,
-  ids: Array<EntityId | null | undefined>
+  ids: Array<EntityId | null | undefined>,
+  tenantId?: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Map<string, string>> {
-  const documents = await mapByIds<{ id: EntityId; name: string }>(ctx, collection, ids);
+  const documents = await mapByIds<{ id: EntityId; name: string }>(ctx, collection, ids, tenantId, divisionScope);
   return new Map([...documents.entries()].map(([id, document]) => [id, document.name]));
 }
 
@@ -63,15 +70,22 @@ export async function mapNames(
 export async function batchIdsForSearch(
   ctx: DbContext,
   term: string,
-  extraFilter: Record<string, any> = {}
+  extraFilter: Record<string, any> = {},
+  tenantId?: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<string[]> {
   if (!term) return [];
   const pattern = contains(term);
+  const tenantFilter = tenantId !== undefined && tenantId !== null ? { tenant_id: tenantId } : {};
   const products = await ctx.find('products', {
     $or: [{ name: pattern }, { sku: pattern }],
+    ...tenantFilter,
+    ...(divisionScope ?? {}),
   }, { projection: { _id: 0, id: 1 } });
   const productIds = products.map((product) => idKey(product.id));
   const batches = await ctx.find('batches', {
+    ...tenantFilter,
+    ...(divisionScope ?? {}),
     ...extraFilter,
     $or: [
       { batch_number: pattern },
@@ -107,7 +121,9 @@ export function pagination(page: number, limit: number, offset: number): { page:
  */
 export async function batchPrintStats(
   ctx: DbContext,
-  batchIds: Array<EntityId | null | undefined>
+  batchIds: Array<EntityId | null | undefined>,
+  tenantId?: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Map<string, { total: number; printed: number }>> {
   const unique = [...new Set(
     batchIds
@@ -115,8 +131,9 @@ export async function batchPrintStats(
       .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
+  const tenantFilter = tenantId !== undefined && tenantId !== null ? { tenant_id: tenantId } : {};
   const rows = await ctx.aggregate('qr_labels', [
-    { $match: { batch_id: { $in: unique } } },
+    { $match: { batch_id: { $in: unique }, ...tenantFilter, ...(divisionScope ?? {}) } },
     {
       $group: {
         _id: '$batch_id',
@@ -136,7 +153,9 @@ export async function batchPrintStats(
 /** Per-batch label count and the print job that produced the labels. */
 export async function batchQrStats(
   ctx: DbContext,
-  batchIds: Array<EntityId | null | undefined>
+  batchIds: Array<EntityId | null | undefined>,
+  tenantId?: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Map<string, { count: number; jobId: EntityId | null }>> {
   const unique = [...new Set(
     batchIds
@@ -144,8 +163,9 @@ export async function batchQrStats(
       .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
+  const tenantFilter = tenantId !== undefined && tenantId !== null ? { tenant_id: tenantId } : {};
   const rows = await ctx.aggregate('qr_labels', [
-    { $match: { batch_id: { $in: unique } } },
+    { $match: { batch_id: { $in: unique }, ...tenantFilter, ...(divisionScope ?? {}) } },
     {
       $group: {
         _id: '$batch_id',
@@ -166,7 +186,9 @@ export async function batchQrStats(
 /** All unit QR values keyed by batch ID (used by the offline pull endpoint). */
 export async function batchQrValues(
   ctx: DbContext,
-  batchIds: Array<EntityId | null | undefined>
+  batchIds: Array<EntityId | null | undefined>,
+  tenantId?: string | number,
+  divisionScope?: Record<string, any>
 ): Promise<Map<string, string[]>> {
   const unique = [...new Set(
     batchIds
@@ -174,7 +196,8 @@ export async function batchQrValues(
       .map((id) => idKey(id))
   )];
   if (unique.length === 0) return new Map();
-  const labels = await ctx.find('qr_labels', { batch_id: { $in: unique } }, {
+  const tenantFilter = tenantId !== undefined && tenantId !== null ? { tenant_id: tenantId } : {};
+  const labels = await ctx.find('qr_labels', { batch_id: { $in: unique }, ...tenantFilter, ...(divisionScope ?? {}) }, {
     sort: { serial_no: 1 },
     projection: { _id: 0, batch_id: 1, qr_value: 1 },
   });

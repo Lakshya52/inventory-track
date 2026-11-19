@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { DbContext, daysAgo, getContext, idKey, startOfDay, startOfWeek, withTransaction } from '../config/database';
 import { batchIdsForSearch, contains, EntityId, mapByIds, mapNames } from '../services/queryService';
+import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 
 function pageParams(req: Request, defaultLimit = 20): { page: number; limit: number; offset: number } {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -8,18 +9,22 @@ function pageParams(req: Request, defaultLimit = 20): { page: number; limit: num
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichQcRecords(ctx: DbContext, records: Record<string, any>[], tenantId: string | number, divisionScope?: Record<string, any>): Promise<Record<string, any>[]> {
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => record.batch_id)
+    records.map((record) => record.batch_id),
+    tenantId,
+    divisionScope
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => batch.product_id)
+    [...batches.values()].map((batch) => batch.product_id),
+    tenantId,
+    divisionScope
   );
-  const testers = await mapNames(ctx, 'qc_users', records.map((record) => record.tester_id));
+  const testers = await mapNames(ctx, 'qc_users', records.map((record) => record.tester_id), tenantId);
   return records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
     const product = batch ? products.get(idKey(batch.product_id)) : undefined;
@@ -53,6 +58,7 @@ export async function reopenFailedBatch(_req: Request, res: Response): Promise<v
 }
 
 export async function decideBatchGroup(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const groupId = String(req.params.id || '').trim();
   const result = String(req.body?.result || '').toUpperCase();
   const remarks = typeof req.body?.remarks === 'string' ? req.body.remarks.trim().slice(0, 1000) : '';
@@ -67,7 +73,7 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
 
   try {
     const outcome = await withTransaction(async (tx) => {
-      const group = await tx.findOne('batch_groups', { group_key: groupId }, { projection: { _id: 0 } });
+      const group = await tx.findOne('batch_groups', { group_key: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
       if (!group) {
         throw Object.assign(new Error('Batch not found'), { statusCode: 404 });
       }
@@ -78,7 +84,7 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
           { statusCode: 409 }
         );
       }
-      const children = await tx.find('batches', { batch_group_id: groupId }, {
+      const children = await tx.find('batches', { batch_group_id: groupId, tenant_id: tenantId, ...divisionFilter(req) }, {
         projection: { _id: 0, id: 1, product_id: 1, quantity: 1 },
       });
       if (children.length === 0) {
@@ -86,11 +92,13 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
       }
 
       const status = result === 'PASS' ? 'QC_PASSED' : 'QC_FAILED';
-      await tx.updateOne('batch_groups', { group_key: groupId }, { $set: { status } });
-      await tx.updateMany('batches', { batch_group_id: groupId }, { $set: { status } });
+      await tx.updateOne('batch_groups', { group_key: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { $set: { status } });
+      await tx.updateMany('batches', { batch_group_id: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { $set: { status } });
 
       for (const child of children) {
         await tx.insert('qc_records', {
+          tenant_id: tenantId,
+          division_id: divisionStamp(req),
           batch_id: child.id,
           tester_id: req.user!.userId,
           result,
@@ -110,12 +118,14 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
       if (result === 'PASS') {
         for (const line of quantityByProduct.values()) {
           if (line.quantity > 0) {
-            await tx.updateOne('products', { id: line.id }, { $inc: { quantity: line.quantity } });
+            await tx.updateOne('products', { id: line.id, tenant_id: tenantId, ...divisionFilter(req) }, { $inc: { quantity: line.quantity } });
           }
         }
       }
 
       await tx.insert('activity_logs', {
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         user_id: req.user!.userId,
         user_name: req.user!.name,
         user_role: req.user!.role,
@@ -151,6 +161,7 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
  * stale selection can never overwrite a decision somebody else already made.
  */
 export async function decideBatchGroupsBulk(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const rawIds: unknown[] = Array.isArray(req.body?.group_ids) ? req.body.group_ids : [];
   const groupIds: string[] = [...new Set(rawIds.map((value) => String(value).trim()).filter(Boolean))].slice(0, 100);
   const remarks = typeof req.body?.remarks === 'string' ? req.body.remarks.trim().slice(0, 1000) : '';
@@ -164,7 +175,7 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
   const skipped: Array<{ group_id: string; reason: string }> = [];
 
   for (const groupId of groupIds) {
-    const group = await ctx.findOne('batch_groups', { group_key: groupId }, { projection: { _id: 0, status: 1 } }) as Record<string, any> | null;
+    const group = await ctx.findOne('batch_groups', { group_key: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, status: 1 } }) as Record<string, any> | null;
     if (!group) { skipped.push({ group_id: groupId, reason: 'not found' }); continue; }
     const groupStatus = String(group.status || '').toUpperCase();
     if (groupStatus !== 'PENDING_QC') {
@@ -173,22 +184,24 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
     }
     try {
       await withTransaction(async (tx) => {
-        const fresh = await tx.findOne('batch_groups', { group_key: groupId }, { projection: { _id: 0, status: 1, batch_number: 1 } }) as Record<string, any> | null;
+        const fresh = await tx.findOne('batch_groups', { group_key: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, status: 1, batch_number: 1 } }) as Record<string, any> | null;
         if (!fresh || String(fresh.status || '').toUpperCase() !== 'PENDING_QC') {
           throw Object.assign(new Error('Batch is no longer waiting for QC'), { statusCode: 409 });
         }
-        const children = await tx.find('batches', { batch_group_id: groupId }, {
+        const children = await tx.find('batches', { batch_group_id: groupId, tenant_id: tenantId, ...divisionFilter(req) }, {
           projection: { _id: 0, id: 1, product_id: 1, quantity: 1 },
         });
         if (children.length === 0) {
           throw Object.assign(new Error('Batch has no units to review'), { statusCode: 409 });
         }
 
-        await tx.updateOne('batch_groups', { group_key: groupId }, { $set: { status: 'QC_PASSED' } });
-        await tx.updateMany('batches', { batch_group_id: groupId }, { $set: { status: 'QC_PASSED' } });
+        await tx.updateOne('batch_groups', { group_key: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { $set: { status: 'QC_PASSED' } });
+        await tx.updateMany('batches', { batch_group_id: groupId, tenant_id: tenantId, ...divisionFilter(req) }, { $set: { status: 'QC_PASSED' } });
 
         for (const child of children) {
           await tx.insert('qc_records', {
+            tenant_id: tenantId,
+            division_id: divisionStamp(req),
             batch_id: child.id,
             tester_id: req.user!.userId,
             result: 'PASS',
@@ -206,11 +219,13 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
         }
         for (const line of quantityByProduct.values()) {
           if (line.quantity > 0) {
-            await tx.updateOne('products', { id: line.id }, { $inc: { quantity: line.quantity } });
+            await tx.updateOne('products', { id: line.id, tenant_id: tenantId, ...divisionFilter(req) }, { $inc: { quantity: line.quantity } });
           }
         }
 
         await tx.insert('activity_logs', {
+          tenant_id: tenantId,
+          division_id: divisionStamp(req),
           user_id: req.user!.userId,
           user_name: req.user!.name,
           user_role: req.user!.role,
@@ -235,18 +250,19 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
 
 export async function stats(req: Request, res: Response): Promise<void> {
   const user = req.user!;
+  const tenantId = req.user!.tenantId;
   const personal = user.role === 'QC';
   const ctx = await getContext();
   const scopeFilter = personal ? { tester_id: user.userId } : {};
 
-  const totalTests = await ctx.count('qc_records', scopeFilter);
-  const testsToday = await ctx.count('qc_records', { ...scopeFilter, created_at: { $gte: startOfDay() } });
-  const testsThisWeek = await ctx.count('qc_records', { ...scopeFilter, created_at: { $gte: startOfWeek() } });
-  const passed = await ctx.count('qc_records', { ...scopeFilter, result: 'PASS' });
-  const failed = await ctx.count('qc_records', { ...scopeFilter, result: 'FAIL' });
+  const totalTests = await ctx.count('qc_records', { ...scopeFilter, tenant_id: tenantId, ...divisionFilter(req) });
+  const testsToday = await ctx.count('qc_records', { ...scopeFilter, tenant_id: tenantId, created_at: { $gte: startOfDay() }, ...divisionFilter(req) });
+  const testsThisWeek = await ctx.count('qc_records', { ...scopeFilter, tenant_id: tenantId, created_at: { $gte: startOfWeek() }, ...divisionFilter(req) });
+  const passed = await ctx.count('qc_records', { ...scopeFilter, tenant_id: tenantId, result: 'PASS', ...divisionFilter(req) });
+  const failed = await ctx.count('qc_records', { ...scopeFilter, tenant_id: tenantId, result: 'FAIL', ...divisionFilter(req) });
 
-  const pendingQc = await ctx.count('batch_groups', { status: 'PENDING_QC' });
-  const pendingRows = await ctx.find('batches', { status: 'PENDING_QC' }, {
+  const pendingQc = await ctx.count('batch_groups', { status: 'PENDING_QC', tenant_id: tenantId, ...divisionFilter(req) });
+  const pendingRows = await ctx.find('batches', { status: 'PENDING_QC', tenant_id: tenantId, ...divisionFilter(req) }, {
     sort: { created_at: 1 },
     limit: 50,
     projection: { _id: 0 },
@@ -254,7 +270,9 @@ export async function stats(req: Request, res: Response): Promise<void> {
   const pendingProducts = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    pendingRows.map((batch) => batch.product_id)
+    pendingRows.map((batch) => batch.product_id),
+    tenantId,
+    divisionFilter(req)
   );
   const pendingBatches = pendingRows.map((batch) => {
     const product = pendingProducts.get(idKey(batch.product_id));
@@ -265,12 +283,12 @@ export async function stats(req: Request, res: Response): Promise<void> {
     };
   });
 
-  const recent = await ctx.find('qc_records', scopeFilter, {
+  const recent = await ctx.find('qc_records', { ...scopeFilter, tenant_id: tenantId, ...divisionFilter(req) }, {
     sort: { created_at: -1 },
     limit: 20,
     projection: { _id: 0 },
   });
-  const today = await ctx.find('qc_records', { ...scopeFilter, created_at: { $gte: startOfDay() } }, {
+  const today = await ctx.find('qc_records', { ...scopeFilter, tenant_id: tenantId, created_at: { $gte: startOfDay() }, ...divisionFilter(req) }, {
     sort: { created_at: -1 },
     projection: { _id: 0 },
   });
@@ -279,7 +297,9 @@ export async function stats(req: Request, res: Response): Promise<void> {
     {
       $match: {
         ...scopeFilter,
+        tenant_id: tenantId,
         created_at: { $gte: daysAgo(6) },
+        ...divisionFilter(req),
       },
     },
     {
@@ -294,13 +314,14 @@ export async function stats(req: Request, res: Response): Promise<void> {
   ]);
 
   const [recentRecords, todayRecords] = await Promise.all([
-    enrichQcRecords(ctx, recent),
-    enrichQcRecords(ctx, today),
+    enrichQcRecords(ctx, recent, tenantId, divisionFilter(req)),
+    enrichQcRecords(ctx, today, tenantId, divisionFilter(req)),
   ]);
 
   // Per-QC-person performance: how many batches each QC user reviewed,
   // how many passed, and how many are still waiting for them.
   const perUserRows = await ctx.aggregate('qc_records', [
+    { $match: { tenant_id: tenantId, ...divisionFilter(req) } },
     {
       $group: {
         _id: '$tester_id',
@@ -313,9 +334,9 @@ export async function stats(req: Request, res: Response): Promise<void> {
   const testerIds: EntityId[] = perUserRows
     .map((row: any) => row._id)
     .filter((id: any) => id !== null && id !== undefined);
-  const testerNames = await mapNames(ctx, 'qc_users', testerIds);
+  const testerNames = await mapNames(ctx, 'qc_users', testerIds, tenantId);
   const perUserToday = await ctx.aggregate('qc_records', [
-    { $match: { created_at: { $gte: startOfDay() } } },
+    { $match: { tenant_id: tenantId, created_at: { $gte: startOfDay() }, ...divisionFilter(req) } },
     { $group: { _id: '$tester_id', total: { $sum: 1 } } },
   ]);
   const todayByUser = new Map(
@@ -364,13 +385,14 @@ export async function stats(req: Request, res: Response): Promise<void> {
 }
 
 export async function pending(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { page, limit, offset } = pageParams(req, 20);
   const q = String(req.query.q || '').trim();
   const ctx = await getContext();
 
-  const filter: Record<string, any> = { status: 'PENDING_QC' };
+  const filter: Record<string, any> = { status: 'PENDING_QC', tenant_id: tenantId, ...divisionFilter(req) };
   if (q) {
-    const batchIds = await batchIdsForSearch(ctx, q);
+    const batchIds = await batchIdsForSearch(ctx, q, {}, tenantId, divisionFilter(req));
     filter.$or = [{ id: { $in: batchIds } }, { batch_number: contains(q) }];
   }
 
@@ -384,16 +406,20 @@ export async function pending(req: Request, res: Response): Promise<void> {
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    rows.map((batch) => batch.product_id)
+    rows.map((batch) => batch.product_id),
+    tenantId,
+    divisionFilter(req)
   );
   // Show who raised each batch so QC knows who to ask about it. The creator
   // is recorded on the batch group, not on each unit batch.
   const groupRows = await ctx.find('batch_groups', {
     group_key: { $in: [...new Set(rows.map((batch) => batch.batch_group_id).filter(Boolean))] },
+    tenant_id: tenantId,
+    ...divisionFilter(req),
   }, { projection: { _id: 0, group_key: 1, created_by: 1 } });
   const groupsByKey = new Map(groupRows.map((group) => [String(group.group_key), group]));
   const creatorIds = [...new Set(groupRows.map((group) => group.created_by).filter(Boolean))];
-  const creators = await mapNames(ctx, 'dispatch_users', creatorIds);
+  const creators = await mapNames(ctx, 'dispatch_users', creatorIds, tenantId);
   const items = rows.map((batch) => {
     const product = products.get(idKey(batch.product_id));
     const group = groupsByKey.get(String(batch.batch_group_id));
@@ -410,6 +436,7 @@ export async function pending(req: Request, res: Response): Promise<void> {
 
 export async function records(req: Request, res: Response): Promise<void> {
   const user = req.user!;
+  const tenantId = req.user!.tenantId;
   const { page, limit, offset } = pageParams(req, 20);
   const requestedScope = String(req.query.scope || (user.role === 'QC' ? 'mine' : 'all'));
   const scope = user.role === 'QC' ? 'mine' : requestedScope;
@@ -417,11 +444,11 @@ export async function records(req: Request, res: Response): Promise<void> {
   const result = String(req.query.result || '').toUpperCase();
   const ctx = await getContext();
 
-  const filter: Record<string, any> = {};
+  const filter: Record<string, any> = { tenant_id: tenantId, ...divisionFilter(req) };
   if (result === 'PASS' || result === 'FAIL') filter.result = result;
   if (scope === 'mine') filter.tester_id = user.userId;
   if (q) {
-    const batchIds = await batchIdsForSearch(ctx, q);
+    const batchIds = await batchIdsForSearch(ctx, q, {}, tenantId, divisionFilter(req));
     filter.$or = [{ batch_id: { $in: batchIds } }, { remarks: contains(q) }];
   }
 
@@ -432,7 +459,7 @@ export async function records(req: Request, res: Response): Promise<void> {
     limit,
     projection: { _id: 0 },
   });
-  const items = await enrichQcRecords(ctx, rows);
+  const items = await enrichQcRecords(ctx, rows, tenantId, divisionFilter(req));
 
   res.json({ items, total, page, limit, pages: Math.ceil(total / limit), scope });
 }

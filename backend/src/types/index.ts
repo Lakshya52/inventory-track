@@ -8,11 +8,25 @@ export type BatchStatus = 'PENDING_QC' | 'QC_PASSED' | 'QC_FAILED'
 export type DispatchOrderStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
   | 'CLOSED_DISPATCHED' | 'CLOSED_NOT_DISPATCHED';
 
+export interface Division {
+  id: string | number;
+  tenant_id?: string | number | null;
+  tenantId?: string | number | null;
+  name: string;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type LoadingSessionStatus = 'ACTIVE' | 'CLOSED' | 'CANCELLED';
 export type LoadingScanResult = 'OK' | 'DUPLICATE' | 'WRONG_BATCH' | 'QTY_EXCEEDED';
 export type DispatchOutcome = 'DISPATCHED' | 'NOT_DISPATCHED';
 
 export interface Product {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   name: string;
   description: string | null;
@@ -32,6 +46,10 @@ export interface Product {
 }
 
 export interface Batch {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   product_id: string | number;
   batch_number: string;
@@ -52,6 +70,10 @@ export interface Batch {
 }
 
 export interface QcRecord {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   batch_id: string | number;
   tester_id: string | number;
@@ -61,6 +83,10 @@ export interface QcRecord {
 }
 
 export interface DispatchRecord {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   batch_id: string | number;
   dispatch_order_id?: string | number | null;
@@ -73,6 +99,10 @@ export interface DispatchRecord {
 }
 
 export interface DispatchOrder {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   batch_id: string | number;
   raised_by: string | number;
@@ -94,6 +124,10 @@ export interface DispatchOrder {
 }
 
 export interface ShelfLocation {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   location_code: string;
   description: string | null;
@@ -105,6 +139,8 @@ export interface ShelfLocation {
 }
 
 export interface Client {
+  /** Owning workspace. */
+  tenantId?: string | number;
   id: string | number;
   name: string;
   contact_person: string | null;
@@ -117,6 +153,10 @@ export interface Client {
 }
 
 export interface PackingListItem {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   dispatch_order_id: string | number;
   batch_id: string | number;
@@ -130,6 +170,10 @@ export interface PackingListItem {
 }
 
 export interface FixRecord {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   batch_id: string | number;
   fixed_by: string | number;
@@ -138,6 +182,10 @@ export interface FixRecord {
 }
 
 export interface ActivityLog {
+  /** Owning workspace. */
+  tenantId?: string | number;
+  /** Owning division; null = shared across divisions. */
+  divisionId?: string | number | null;
   id: string | number;
   user_id: string | number | null;
   user_name: string | null;
@@ -154,6 +202,8 @@ export interface JwtPayload {
   email: string;
   table: 'admins' | 'qc_users' | 'dispatch_users';
   tenantId: string | number;
+  /** Division the user is assigned to; null/undefined = tenant-wide (ADMIN or unassigned). */
+  divisionId?: string | number | null;
 }
 
 export type SyncOperationType =

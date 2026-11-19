@@ -1,13 +1,17 @@
 import { Request, Response } from 'express';
 import { getContext, idKey } from '../config/database';
 import { mapByIds, mapNames } from '../services/queryService';
+import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 
-export async function listBatches(_req: Request, res: Response): Promise<void> {
+export async function listBatches(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
   // Legacy production queue: batches are auto QC-passed in SRS v2, so only
   // show lots that still exist downstream of creation.
   const batches = await ctx.find('batches', {
     status: { $in: ['QC_PASSED', 'DISPATCH_APPROVED', 'LOADING'] },
+    tenant_id: tenantId,
+    ...divisionFilter(req),
   }, {
     sort: { created_at: -1 },
     projection: { _id: 0 },
@@ -15,7 +19,9 @@ export async function listBatches(_req: Request, res: Response): Promise<void> {
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    batches.map((batch) => batch.product_id)
+    batches.map((batch) => batch.product_id),
+    tenantId,
+    divisionFilter(req)
   );
   res.json(batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
@@ -34,9 +40,10 @@ export async function fixBatch(_req: Request, res: Response): Promise<void> {
   });
 }
 
-export async function listFixRecords(_req: Request, res: Response): Promise<void> {
+export async function listFixRecords(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const records = await ctx.find('fix_records', {}, {
+  const records = await ctx.find('fix_records', { tenant_id: tenantId, ...divisionFilter(req) }, {
     sort: { created_at: -1 },
     limit: 50,
     projection: { _id: 0 },
@@ -44,14 +51,18 @@ export async function listFixRecords(_req: Request, res: Response): Promise<void
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    records.map((record) => record.batch_id)
+    records.map((record) => record.batch_id),
+    tenantId,
+    divisionFilter(req)
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    [...batches.values()].map((batch) => batch.product_id)
+    [...batches.values()].map((batch) => batch.product_id),
+    tenantId,
+    divisionFilter(req)
   );
-  const fixedBy = await mapNames(ctx, 'production_users', records.map((record) => record.fixed_by));
+  const fixedBy = await mapNames(ctx, 'production_users', records.map((record) => record.fixed_by), tenantId);
 
   res.json(records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));

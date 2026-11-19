@@ -4,6 +4,7 @@ import { query, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
 import { applyOperation } from '../services/syncService';
 import { SyncOperationInput } from '../types';
+import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 
 function pageParams(req: Request, defaultLimit = 20): { page: number; limit: number; offset: number } {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -112,6 +113,8 @@ export async function submitBulk(req: Request, res: Response): Promise<void> {
 }
 
 export async function reopenFailedBatch(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
   const reason = String(req.body.reason || '').trim();
   if (!reason) {
     res.status(400).json({ error: 'A reason is required to send a failed batch back for QC' });
@@ -119,8 +122,8 @@ export async function reopenFailedBatch(req: Request, res: Response): Promise<vo
   }
   const result = await withTransaction(async (conn) => {
     const [rows] = await conn.execute<RowDataPacket[]>(
-      'SELECT id, batch_number, status FROM batches WHERE id = ? FOR UPDATE',
-      [req.params.id]
+      `SELECT id, batch_number, status FROM batches WHERE id = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+      [req.params.id, tenantId, ...dv.params]
     );
     if (rows.length === 0) return { error: 'Batch not found', statusCode: 404 } as const;
     if (rows[0].status !== 'QC_FAILED') {
@@ -128,13 +131,13 @@ export async function reopenFailedBatch(req: Request, res: Response): Promise<vo
     }
     await conn.execute(
       `UPDATE batches SET status = 'CREATED', updated_at = CURRENT_TIMESTAMP(3)
-       WHERE id = ? AND status = 'QC_FAILED'`,
-      [req.params.id]
+       WHERE id = ? AND status = 'QC_FAILED' AND tenant_id = ?${dv.sql}`,
+      [req.params.id, tenantId, ...dv.params]
     );
     await conn.execute(
-      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-       VALUES (?, ?, ?, 'BATCH_SENT_FOR_REQC', ?)`,
-      [req.user!.userId, req.user!.name, req.user!.role, `Batch ${rows[0].batch_number} sent back for QC: ${reason.slice(0, 1000)}`]
+      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+       VALUES (?, ?, ?, 'BATCH_SENT_FOR_REQC', ?, ?, ?)`,
+      [req.user!.userId, req.user!.name, req.user!.role, `Batch ${rows[0].batch_number} sent back for QC: ${reason.slice(0, 1000)}`, tenantId, divisionStamp(req)]
     );
     return { batch_id: Number(rows[0].id), status: 'CREATED' } as const;
   });
@@ -146,6 +149,8 @@ export async function reopenFailedBatch(req: Request, res: Response): Promise<vo
 }
 
 export async function decideBatchGroup(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
   const groupId = String(req.params.id || '').trim();
   const result = String(req.body?.result || '').toUpperCase();
   const remarks = typeof req.body?.remarks === 'string' ? req.body.remarks.trim().slice(0, 1000) : '';
@@ -172,8 +177,8 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
         }
     > => {
       const [groupRows] = await conn.execute<RowDataPacket[]>(
-        'SELECT group_key, batch_number, status FROM batch_groups WHERE group_key = ? FOR UPDATE',
-        [groupId]
+        `SELECT group_key, batch_number, status FROM batch_groups WHERE group_key = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+        [groupId, tenantId, ...dv.params]
       );
       const group = groupRows[0];
       if (!group) return { error: 'Batch not found', statusCode: 404 } as const;
@@ -186,26 +191,28 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
       }
 
       const [children] = await conn.execute<RowDataPacket[]>(
-        'SELECT id, product_id, quantity FROM batches WHERE batch_group_id = ? FOR UPDATE',
-        [groupId]
+        `SELECT id, product_id, quantity FROM batches WHERE batch_group_id = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+        [groupId, tenantId, ...dv.params]
       );
       if (children.length === 0) {
         return { error: 'This batch has no units to review', statusCode: 409 } as const;
       }
 
       const status = result === 'PASS' ? 'QC_PASSED' : 'QC_FAILED';
-      await conn.execute('UPDATE batch_groups SET status = ? WHERE group_key = ?', [status, groupId]);
-      await conn.execute('UPDATE batches SET status = ? WHERE batch_group_id = ?', [status, groupId]);
+      await conn.execute(`UPDATE batch_groups SET status = ? WHERE group_key = ? AND tenant_id = ?${dv.sql}`, [status, groupId, tenantId, ...dv.params]);
+      await conn.execute(`UPDATE batches SET status = ? WHERE batch_group_id = ? AND tenant_id = ?${dv.sql}`, [status, groupId, tenantId, ...dv.params]);
 
       for (const child of children) {
         await conn.execute(
-          `INSERT INTO qc_records (batch_id, tester_id, result, method, remarks)
-           VALUES (?, ?, ?, 'MANUAL_REVIEW', ?)`,
+          `INSERT INTO qc_records (batch_id, tester_id, result, method, remarks, tenant_id, division_id)
+           VALUES (?, ?, ?, 'MANUAL_REVIEW', ?, ?, ?)`,
           [
             child.id,
             req.user!.userId,
             result,
             remarks || `Marked ${result} during QC review of ${group.batch_number}`,
+            tenantId,
+            divisionStamp(req),
           ]
         );
       }
@@ -219,20 +226,22 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
         }
         for (const [productId, quantity] of quantityByProduct) {
           if (quantity > 0) {
-            await conn.execute('UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ?', [quantity, productId]);
+            await conn.execute(`UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ? AND tenant_id = ?${dv.sql}`, [quantity, productId, tenantId, ...dv.params]);
           }
         }
       }
 
       await conn.execute(
-        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           req.user!.userId,
           req.user!.name,
           req.user!.role,
           result === 'PASS' ? 'BATCH_QC_PASSED' : 'BATCH_QC_FAILED',
           `Batch ${group.batch_number} marked ${result} by QC review (${children.length} unit${children.length === 1 ? '' : 's'})${remarks ? `: ${remarks}` : ''}`,
+          tenantId,
+          divisionStamp(req),
         ]
       );
 
@@ -268,6 +277,8 @@ export async function decideBatchGroup(req: Request, res: Response): Promise<voi
  * stale selection can never overwrite a decision somebody else already made.
  */
 export async function decideBatchGroupsBulk(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
   const rawIds: unknown[] = Array.isArray(req.body?.group_ids) ? req.body.group_ids : [];
   const groupIds: string[] = [...new Set(rawIds.map((value) => String(value).trim()).filter(Boolean))].slice(0, 100);
   const remarks = typeof req.body?.remarks === 'string' ? req.body.remarks.trim().slice(0, 1000) : '';
@@ -283,8 +294,8 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
     try {
       const outcome = await withTransaction(async (conn) => {
         const [groupRows] = await conn.execute<RowDataPacket[]>(
-          'SELECT group_key, batch_number, status FROM batch_groups WHERE group_key = ? FOR UPDATE',
-          [groupId]
+          `SELECT group_key, batch_number, status FROM batch_groups WHERE group_key = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+          [groupId, tenantId, ...dv.params]
         );
         const group = groupRows[0] as Record<string, any> | undefined;
         if (!group) return { error: 'Batch not found' } as const;
@@ -294,19 +305,19 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
         }
 
         const [children] = await conn.execute<RowDataPacket[]>(
-          'SELECT id, product_id, quantity FROM batches WHERE batch_group_id = ? FOR UPDATE',
-          [groupId]
+          `SELECT id, product_id, quantity FROM batches WHERE batch_group_id = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+          [groupId, tenantId, ...dv.params]
         );
         if (children.length === 0) return { error: 'batch has no units to review' } as const;
 
-        await conn.execute("UPDATE batch_groups SET status = 'QC_PASSED' WHERE group_key = ?", [groupId]);
-        await conn.execute("UPDATE batches SET status = 'QC_PASSED' WHERE batch_group_id = ?", [groupId]);
+        await conn.execute(`UPDATE batch_groups SET status = 'QC_PASSED' WHERE group_key = ? AND tenant_id = ?${dv.sql}`, [groupId, tenantId, ...dv.params]);
+        await conn.execute(`UPDATE batches SET status = 'QC_PASSED' WHERE batch_group_id = ? AND tenant_id = ?${dv.sql}`, [groupId, tenantId, ...dv.params]);
 
         for (const child of children) {
           await conn.execute(
-            `INSERT INTO qc_records (batch_id, tester_id, result, method, remarks)
-             VALUES (?, ?, 'PASS', 'MANUAL_REVIEW', ?)`,
-            [child.id, req.user!.userId, remarks || `Marked PASS during bulk QC review of ${group.batch_number}`]
+            `INSERT INTO qc_records (batch_id, tester_id, result, method, remarks, tenant_id, division_id)
+             VALUES (?, ?, 'PASS', 'MANUAL_REVIEW', ?, ?, ?)`,
+            [child.id, req.user!.userId, remarks || `Marked PASS during bulk QC review of ${group.batch_number}`, tenantId, divisionStamp(req)]
           );
         }
 
@@ -317,18 +328,20 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
         }
         for (const [productId, quantity] of quantityByProduct) {
           if (quantity > 0) {
-            await conn.execute('UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ?', [quantity, productId]);
+            await conn.execute(`UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ? AND tenant_id = ?${dv.sql}`, [quantity, productId, tenantId, ...dv.params]);
           }
         }
 
         await conn.execute(
-          `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-           VALUES (?, ?, ?, 'BATCH_QC_PASSED', ?)`,
+          `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+           VALUES (?, ?, ?, 'BATCH_QC_PASSED', ?, ?, ?)`,
           [
             req.user!.userId,
             req.user!.name,
             req.user!.role,
             `Batch ${group.batch_number} marked PASS in a bulk QC review (${children.length} unit${children.length === 1 ? '' : 's'})${remarks ? `: ${remarks}` : ''}`,
+            tenantId,
+            divisionStamp(req),
           ]
         );
 
@@ -356,63 +369,73 @@ export async function decideBatchGroupsBulk(req: Request, res: Response): Promis
 
 export async function stats(req: Request, res: Response): Promise<void> {
   const user = req.user!;
+  const tenantId = req.user!.tenantId;
   const personal = user.role === 'QC';
   const scope = personal ? 'AND tester_id = ?' : '';
-  const params = personal ? [user.userId] : [];
+  const params = [...(personal ? [user.userId] : []), tenantId];
+  const dv = divisionWhere(req);
+  const dvb = divisionWhere(req, 'b.division_id');
+  const dvl = divisionWhere(req, 'l.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
+  const dvq = divisionWhere(req, 'q.division_id');
 
   const count = async (sql: string, extraParams: any[] = []): Promise<number> => {
     const rows = await query<RowDataPacket[]>(sql, [...params, ...extraParams]);
     return Number(rows[0]?.count || 0);
   };
 
-  const totalTests = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE 1=1 ${scope}`);
+  const totalTests = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE 1=1 ${scope} AND tenant_id = ?${dv.sql}`, dv.params);
   const testsToday = await count(
-    `SELECT COUNT(*) AS count FROM qc_records WHERE created_at >= CURDATE() ${scope}`
+    `SELECT COUNT(*) AS count FROM qc_records WHERE created_at >= CURDATE() ${scope} AND tenant_id = ?${dv.sql}`,
+    dv.params
   );
   const testsThisWeek = await count(
     `SELECT COUNT(*) AS count FROM qc_records
-     WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) ${scope}`
+     WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) ${scope} AND tenant_id = ?${dv.sql}`,
+    dv.params
   );
-  const passed = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE result = 'PASS' ${scope}`);
-  const failed = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE result = 'FAIL' ${scope}`);
+  const passed = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE result = 'PASS' ${scope} AND tenant_id = ?${dv.sql}`, dv.params);
+  const failed = await count(`SELECT COUNT(*) AS count FROM qc_records WHERE result = 'FAIL' ${scope} AND tenant_id = ?${dv.sql}`, dv.params);
 
   const pendingRows = await query<RowDataPacket[]>(
     `SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvl.sql}) AS qr_count,
             b.created_at, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.grade AS product_grade, p.purity AS product_purity,
             TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes
-     FROM batches b JOIN products p ON b.product_id = p.id
-     WHERE b.status = 'PENDING_QC'
-     ORDER BY b.created_at ASC LIMIT 50`
+     FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     WHERE b.status = 'PENDING_QC' AND b.tenant_id = ?${dvb.sql}
+     ORDER BY b.created_at ASC LIMIT 50`,
+    [tenantId, ...dvl.params, tenantId, ...dvp.params, tenantId, ...dvb.params]
   );
   const pendingQcRows = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS count FROM batches WHERE status = 'PENDING_QC'`
+    `SELECT COUNT(*) AS count FROM batches WHERE status = 'PENDING_QC' AND tenant_id = ?${dv.sql}`,
+    [tenantId, ...dv.params]
   );
 
-  const recordWhere = personal ? 'WHERE q.tester_id = ?' : '';
-  const recordParams = personal ? [user.userId] : [];
+  const recordWhere = personal ? 'WHERE q.tester_id = ? AND q.tenant_id = ?' : 'WHERE q.tenant_id = ?';
+  const recordParams = [...(personal ? [user.userId] : []), tenantId];
   const recentRecords = await query<RowDataPacket[]>(
     `SELECT q.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku,
             u.name AS tester_name
      FROM qc_records q
-     JOIN batches b ON q.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN qc_users u ON q.tester_id = u.id
-     ${recordWhere}
+     JOIN batches b ON q.batch_id = b.id AND b.tenant_id = ?${dvb.sql}
+     JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     LEFT JOIN qc_users u ON q.tester_id = u.id AND u.tenant_id = ?
+     ${recordWhere}${dvq.sql}
      ORDER BY q.created_at DESC LIMIT 20`,
-    recordParams
+    [tenantId, ...dvb.params, tenantId, ...dvp.params, tenantId, ...recordParams, ...dvq.params]
   );
   const todayRecords = await query<RowDataPacket[]>(
     `SELECT q.*, b.batch_number, b.barcode_value, p.name AS product_name,
             u.name AS tester_name
      FROM qc_records q
-     JOIN batches b ON q.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN qc_users u ON q.tester_id = u.id
-     WHERE q.created_at >= CURDATE() ${personal ? 'AND q.tester_id = ?' : ''}
+     JOIN batches b ON q.batch_id = b.id AND b.tenant_id = ?${dvb.sql}
+     JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     LEFT JOIN qc_users u ON q.tester_id = u.id AND u.tenant_id = ?
+     WHERE q.created_at >= CURDATE() AND q.tenant_id = ? ${personal ? 'AND q.tester_id = ?' : ''}${dvq.sql}
      ORDER BY q.created_at DESC`,
-    recordParams
+    [tenantId, ...dvb.params, tenantId, ...dvp.params, tenantId, tenantId, ...(personal ? [user.userId] : []), ...dvq.params]
   );
   const trend = await query<RowDataPacket[]>(
     `SELECT DATE(created_at) AS day,
@@ -420,10 +443,10 @@ export async function stats(req: Request, res: Response): Promise<void> {
             SUM(result = 'FAIL') AS failed,
             COUNT(*) AS total
      FROM qc_records
-     WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) ${scope}
+     WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) ${scope} AND tenant_id = ?${dv.sql}
      GROUP BY DATE(created_at)
      ORDER BY day ASC`,
-    params
+    [...params, ...dv.params]
   );
 
   // Per-QC-person performance: how many batches each QC user reviewed,
@@ -435,9 +458,11 @@ export async function stats(req: Request, res: Response): Promise<void> {
             SUM(q.result = 'FAIL') AS failed,
             SUM(q.created_at >= CURDATE()) AS today_count
      FROM qc_records q
-     LEFT JOIN qc_users u ON u.id = q.tester_id
+     LEFT JOIN qc_users u ON u.id = q.tester_id AND u.tenant_id = ?
+     WHERE q.tenant_id = ?${dvq.sql}
      GROUP BY q.tester_id, u.name
-     ORDER BY total DESC`
+     ORDER BY total DESC`,
+    [tenantId, tenantId, ...dvq.params]
   );
   const perUser = perUserRows.map((row: any) => {
     const total = Number(row.total || 0);
@@ -477,10 +502,15 @@ export async function stats(req: Request, res: Response): Promise<void> {
 }
 
 export async function pending(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req, 'b.division_id');
+  const dvl = divisionWhere(req, 'l.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
+  const dvg = divisionWhere(req);
   const { page, limit, offset } = pageParams(req, 20);
   const q = String(req.query.q || '').trim();
-  const where = ["b.status = 'PENDING_QC'"];
-  const params: any[] = [];
+  const where = ["b.status = 'PENDING_QC'", 'b.tenant_id = ?'];
+  const params: any[] = [tenantId];
   if (q) {
     where.push('(b.batch_number LIKE ? OR b.barcode_value LIKE ? OR p.name LIKE ? OR p.sku LIKE ?)');
     const like = `%${q}%`;
@@ -489,35 +519,35 @@ export async function pending(req: Request, res: Response): Promise<void> {
   const whereSql = `WHERE ${where.join(' AND ')}`;
 
   const totalRows = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS count FROM batches b JOIN products p ON b.product_id = p.id ${whereSql}`,
-    params
+    `SELECT COUNT(*) AS count FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql} ${whereSql}${dv.sql}`,
+    [tenantId, ...dvp.params, ...params, ...dv.params]
   );
   const items = await query<RowDataPacket[]>(
     `SELECT b.id, b.batch_number, b.barcode_value, b.quantity, b.uom, b.storage_location,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvl.sql}) AS qr_count,
             b.created_at, b.batch_group_id, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.grade AS product_grade, p.purity AS product_purity,
             TIMESTAMPDIFF(MINUTE, b.created_at, NOW()) AS age_minutes
-     FROM batches b JOIN products p ON b.product_id = p.id
-     ${whereSql}
+     FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     ${whereSql}${dv.sql}
      ORDER BY b.created_at ASC
      LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
+    [tenantId, ...dvl.params, tenantId, ...dvp.params, ...params, ...dv.params, limit, offset]
   );
   // Show who raised each batch so QC knows who to ask about it. The creator is
   // recorded on the batch group, not on each unit batch.
   const groupKeys = [...new Set(items.map((row: any) => String(row.batch_group_id ?? '')).filter(Boolean))];
   const groupRows = groupKeys.length
     ? await query<RowDataPacket[]>(
-        `SELECT group_key, created_by FROM batch_groups WHERE group_key IN (${groupKeys.map(() => '?').join(',')})`,
-        groupKeys,
+        `SELECT group_key, created_by FROM batch_groups WHERE group_key IN (${groupKeys.map(() => '?').join(',')}) AND tenant_id = ?${dvg.sql}`,
+        [...groupKeys, tenantId, ...dvg.params],
       )
     : [];
   const creatorIds = [...new Set(groupRows.map((row: any) => String(row.created_by ?? '')).filter(Boolean))];
   const creatorRows = creatorIds.length
     ? await query<RowDataPacket[]>(
-        `SELECT id, name FROM dispatch_users WHERE id IN (${creatorIds.map(() => '?').join(',')})`,
-        creatorIds,
+        `SELECT id, name FROM dispatch_users WHERE id IN (${creatorIds.map(() => '?').join(',')}) AND tenant_id = ?`,
+        [...creatorIds, tenantId],
       )
     : [];
   const creatorNames = new Map(creatorRows.map((row: any) => [String(row.id), row.name]));
@@ -531,11 +561,15 @@ export async function pending(req: Request, res: Response): Promise<void> {
 
 export async function records(req: Request, res: Response): Promise<void> {
   const user = req.user!;
+  const tenantId = req.user!.tenantId;
   const { page, limit, offset } = pageParams(req, 20);
   const requestedScope = String(req.query.scope || (user.role === 'QC' ? 'mine' : 'all'));
   const scope = user.role === 'QC' ? 'mine' : requestedScope;
   const result = String(req.query.result || '').toUpperCase();
   const q = String(req.query.q || '').trim();
+  const dvq = divisionWhere(req, 'q.division_id');
+  const dvb = divisionWhere(req, 'b.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
 
   const where: string[] = [];
   const params: any[] = [];
@@ -543,6 +577,8 @@ export async function records(req: Request, res: Response): Promise<void> {
     where.push('q.tester_id = ?');
     params.push(user.userId);
   }
+  where.push('q.tenant_id = ?');
+  params.push(tenantId);
   if (result === 'PASS' || result === 'FAIL') {
     where.push('q.result = ?');
     params.push(result);
@@ -557,22 +593,22 @@ export async function records(req: Request, res: Response): Promise<void> {
   const totalRows = await query<RowDataPacket[]>(
     `SELECT COUNT(*) AS count
      FROM qc_records q
-     JOIN batches b ON q.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     ${whereSql}`,
-    params
+     JOIN batches b ON q.batch_id = b.id AND b.tenant_id = ?${dvb.sql}
+     JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     ${whereSql}${dvq.sql}`,
+    [tenantId, ...dvb.params, tenantId, ...dvp.params, ...params, ...dvq.params]
   );
   const items = await query<RowDataPacket[]>(
     `SELECT q.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku,
             u.name AS tester_name
      FROM qc_records q
-     JOIN batches b ON q.batch_id = b.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN qc_users u ON q.tester_id = u.id
-     ${whereSql}
+     JOIN batches b ON q.batch_id = b.id AND b.tenant_id = ?${dvb.sql}
+     JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     LEFT JOIN qc_users u ON q.tester_id = u.id AND u.tenant_id = ?
+     ${whereSql}${dvq.sql}
      ORDER BY q.created_at DESC
      LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
+    [tenantId, ...dvb.params, tenantId, ...dvp.params, tenantId, ...params, ...dvq.params, limit, offset]
   );
   const total = Number(totalRows[0]?.count || 0);
   res.json({ items, total, page, limit, pages: Math.ceil(total / limit), scope });

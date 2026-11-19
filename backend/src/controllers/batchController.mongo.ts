@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import { getContext, idKey, isValidId, now, parseDateValue, withTransaction } from '../config/database';
 import { batchPrintStats, batchQrStats, contains, EntityId, mapByIds } from '../services/queryService';
 import { buildBatchNumbers, skuFromBatchNumber } from '../utils/batchNumbers';
+import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 
 type StoredQrLabel = {
   id: EntityId;
@@ -13,6 +14,7 @@ type StoredQrLabel = {
 };
 
 export async function create(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { product_id, batch_number, quantity, batch_count = 1, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
   if (!product_id) {
     res.status(400).json({ error: 'Product ID is required' });
@@ -38,7 +40,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     return;
   }
   const ctx = await getContext();
-  const product = await ctx.findOne('products', { id: productId }, {
+  const product = await ctx.findOne('products', { id: productId, tenant_id: tenantId, ...divisionFilter(req) }, {
     projection: { _id: 0, id: 1, name: 1, sku: 1, price: 1 },
   });
   if (!product) { res.status(404).json({ error: 'Product not found' }); return; }
@@ -61,7 +63,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     for (let suffix = 1; ; suffix += 1) {
       const clash = await ctx.findOne(
         'batches',
-        { batch_number: { $in: batchNumbers } },
+        { batch_number: { $in: batchNumbers }, tenant_id: tenantId, ...divisionFilter(req) },
         { projection: { id: 1, batch_number: 1 } }
       );
       if (!clash) break;
@@ -72,7 +74,7 @@ export async function create(req: Request, res: Response): Promise<void> {
       batchNumbers = autoNumbers(`${baseBatchNumber}-${suffix}`);
     }
   } else {
-    const existing = await ctx.findOne('batches', { batch_number: { $in: batchNumbers } }, { projection: { id: 1, batch_number: 1 } });
+    const existing = await ctx.findOne('batches', { batch_number: { $in: batchNumbers }, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { id: 1, batch_number: 1 } });
     if (existing) { res.status(409).json({ error: `Batch number "${existing.batch_number}" already exists` }); return; }
   }
   if (batchNumbers.some((number) => number.length > 100)) {
@@ -80,7 +82,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     return;
   }
   if (shelf_location_id) {
-    const location = await ctx.findOne('shelf_locations', { id: shelf_location_id, is_active: 1 }, { projection: { id: 1 } });
+    const location = await ctx.findOne('shelf_locations', { id: shelf_location_id, is_active: 1, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { id: 1 } });
     if (!location) { res.status(400).json({ error: 'Select an active shelf location' }); return; }
   }
 
@@ -97,6 +99,8 @@ export async function create(req: Request, res: Response): Promise<void> {
     for (const number of batchNumbers) {
       const qcBarcode = `QC:${randomUUID()}`;
       const batchId = await tx.insert('batches', {
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         product_id: productId,
         batch_number: number,
         batch_group_id: batchGroupId,
@@ -112,6 +116,8 @@ export async function create(req: Request, res: Response): Promise<void> {
         barcode_value: qcBarcode,
       });
       const qcRecordId = await tx.insert('qc_records', {
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         batch_id: batchId,
         tester_id: req.user!.userId,
         result: 'PASS',
@@ -120,6 +126,8 @@ export async function create(req: Request, res: Response): Promise<void> {
       });
       const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
       const jobId = await tx.insert('qr_print_jobs', {
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         job_code: jobCode,
         product_id: productId,
         quantity: bagCount,
@@ -127,6 +135,8 @@ export async function create(req: Request, res: Response): Promise<void> {
         created_by_role: req.user!.role,
       });
       const labelDocuments = Array.from({ length: bagCount }, (_, index) => ({
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         print_job_id: jobId,
         batch_id: batchId,
         // Printed QR payload: job code + unit serial, e.g. QRJ-20261103-07BDD3-0001.
@@ -158,6 +168,8 @@ export async function create(req: Request, res: Response): Promise<void> {
         labels,
       });
       await tx.insert('activity_logs', {
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         user_id: req.user!.userId,
         user_name: req.user!.name,
         user_role: req.user!.role,
@@ -165,7 +177,7 @@ export async function create(req: Request, res: Response): Promise<void> {
         description: `QC batch ${number} created for ${product.name} with ${bagCount} products (auto-passed)`,
       });
     }
-    await tx.updateOne('products', { id: productId }, { $inc: { quantity: bagCount * batchCount } });
+    await tx.updateOne('products', { id: productId, tenant_id: tenantId, ...divisionFilter(req) }, { $inc: { quantity: bagCount * batchCount } });
     return createdBatches;
   });
 
@@ -183,6 +195,7 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function finishGoods(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   const vendorId = req.body.vendor_id as EntityId;
   const gradeId = req.body.grade_id as EntityId;
@@ -194,7 +207,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
   }
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const ctx = await getContext();
-  const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0 } });
+  const batch = await ctx.findOne('batches', { id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
   if (batch.status !== 'QC_PASSED') {
     res.status(409).json({ error: 'Finished-goods details can only be entered after QC passes' });
@@ -205,24 +218,24 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     return;
   }
   const [vendor, grade, bagQuantity, location] = await Promise.all([
-    ctx.findOne('vendors', { id: vendorId, is_active: 1 }, { projection: { _id: 0, id: 1 } }),
-    ctx.findOne('grades', { id: gradeId, is_active: 1 }, { projection: { _id: 0, id: 1 } }),
-    ctx.findOne('bag_quantities', { id: bagQuantityId, is_active: 1 }, { projection: { _id: 0, id: 1 } }),
-    locationId ? ctx.findOne('shelf_locations', { id: locationId, is_active: 1 }, { projection: { _id: 0, id: 1 } }) : Promise.resolve(null),
+    ctx.findOne('vendors', { id: vendorId, is_active: 1, tenant_id: tenantId }, { projection: { _id: 0, id: 1 } }),
+    ctx.findOne('grades', { id: gradeId, is_active: 1, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, id: 1 } }),
+    ctx.findOne('bag_quantities', { id: bagQuantityId, is_active: 1, tenant_id: tenantId }, { projection: { _id: 0, id: 1 } }),
+    locationId ? ctx.findOne('shelf_locations', { id: locationId, is_active: 1, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, id: 1 } }) : Promise.resolve(null),
   ]);
   if (!vendor || !grade || !bagQuantity || (locationId && !location)) {
     res.status(400).json({ error: 'Select active supplier, grade, bag quantity, and shelf location values' });
     return;
   }
-  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } });
+  const product = await ctx.findOne('products', { id: batch.product_id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
   if (!product) { res.status(404).json({ error: 'Product not found' }); return; }
   const result = await withTransaction(async (tx) => {
-    const current = await tx.findOne('batches', { id, status: 'QC_PASSED' }, { projection: { _id: 0 } });
+    const current = await tx.findOne('batches', { id, status: 'QC_PASSED', tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
     if (!current) throw new Error('Batch is no longer QC-passed');
     if (current.fg_details_completed_at) {
       throw new Error('Finished-goods details already exist for this batch');
     }
-    const existingLabels: StoredQrLabel[] = await tx.find('qr_labels', { batch_id: id }, {
+    const existingLabels: StoredQrLabel[] = await tx.find('qr_labels', { batch_id: id, tenant_id: tenantId, ...divisionFilter(req) }, {
       sort: { serial_no: 1 },
       projection: { _id: 0 },
     });
@@ -239,7 +252,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     let labels: Array<Record<string, unknown>>;
     if (existingLabels.length > 0) {
       jobId = existingLabels[0].print_job_id;
-      const existingJob = await tx.findOne('qr_print_jobs', { id: jobId }, { projection: { _id: 0 } });
+      const existingJob = await tx.findOne('qr_print_jobs', { id: jobId, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
       if (!existingJob) throw new Error('QR label job for this batch could not be found');
       jobCode = String(existingJob.job_code);
       firstBarcode = String(existingLabels[0].qr_value);
@@ -253,6 +266,8 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     } else {
       jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
       jobId = await tx.insert('qr_print_jobs', {
+        tenant_id: tenantId,
+        division_id: divisionStamp(req),
         job_code: jobCode,
         product_id: batch.product_id,
         quantity: Number(batch.quantity),
@@ -264,6 +279,8 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
         const qrValue = `${jobCode}-${String(index + 1).padStart(4, '0')}`;
         if (index === 0) firstBarcode = qrValue;
         return {
+          tenant_id: tenantId,
+          division_id: divisionStamp(req),
           print_job_id: jobId,
           batch_id: id,
           qr_value: qrValue,
@@ -283,7 +300,7 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     }
     const updated = await tx.updateOne(
       'batches',
-      { id, status: 'QC_PASSED', fg_details_completed_at: { $exists: false } },
+      { id, status: 'QC_PASSED', fg_details_completed_at: { $exists: false }, tenant_id: tenantId, ...divisionFilter(req) },
       { $set: {
         vendor_id: vendorId,
         grade_id: gradeId,
@@ -297,6 +314,8 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
       throw new Error('Batch finished-goods details changed while labels were being generated');
     }
     await tx.insert('activity_logs', {
+      tenant_id: tenantId,
+      division_id: divisionStamp(req),
       user_id: req.user!.userId,
       user_name: req.user!.name,
       user_role: req.user!.role,
@@ -318,32 +337,37 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
   });
 }
 
-export async function list(_req: Request, res: Response): Promise<void> {
+export async function list(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const ctx = await getContext();
-  const batches = await ctx.find('batches', {}, { sort: { created_at: -1 }, projection: { _id: 0, avg_standard_quantity: 0 } });
+  const batches = await ctx.find('batches', { tenant_id: tenantId, ...divisionFilter(req) }, { sort: { created_at: -1 }, projection: { _id: 0, avg_standard_quantity: 0 } });
   const products = await mapByIds<{ id: EntityId; name: string; sku: string; grade?: string | null }>(
     ctx,
     'products',
-    batches.map((batch) => batch.product_id)
+    batches.map((batch) => batch.product_id),
+    tenantId,
+    divisionFilter(req)
   );
   const locations = await mapByIds<{ id: EntityId; location_code: string; warehouse?: string | null }>(
     ctx,
     'shelf_locations',
-    batches.map((batch) => batch.shelf_location_id)
+    batches.map((batch) => batch.shelf_location_id),
+    tenantId,
+    divisionFilter(req)
   );
-  const qr = await batchQrStats(ctx, batches.map((batch) => batch.id));
+  const qr = await batchQrStats(ctx, batches.map((batch) => batch.id), tenantId, divisionFilter(req));
   const reservedByBatch = new Map<string, number>();
   const recalledByBatch = new Map<string, number>();
-  const labels = await ctx.find('qr_labels', { batch_id: { $in: batches.map((batch) => batch.id) } }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1 } });
+  const labels = await ctx.find('qr_labels', { batch_id: { $in: batches.map((batch) => batch.id) }, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1 } });
   for (const label of labels) {
     const key = idKey(label.batch_id);
     if (label.dispatch_order_id) reservedByBatch.set(key, (reservedByBatch.get(key) || 0) + 1);
     if (label.recall_status === 'RECALLED') recalledByBatch.set(key, (recalledByBatch.get(key) || 0) + 1);
   }
-  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', batches.map((batch) => batch.vendor_id));
-  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', batches.map((batch) => batch.grade_id));
-  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', batches.map((batch) => batch.bag_quantity_id));
-  const printStats = await batchPrintStats(ctx, batches.map((batch) => batch.id));
+  const vendors = await mapByIds<Record<string, any>>(ctx, 'vendors', batches.map((batch) => batch.vendor_id), tenantId);
+  const grades = await mapByIds<Record<string, any>>(ctx, 'grades', batches.map((batch) => batch.grade_id), tenantId, divisionFilter(req));
+  const bagQuantities = await mapByIds<Record<string, any>>(ctx, 'bag_quantities', batches.map((batch) => batch.bag_quantity_id), tenantId);
+  const printStats = await batchPrintStats(ctx, batches.map((batch) => batch.id), tenantId, divisionFilter(req));
   res.json(batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
     const location = locations.get(idKey(batch.shelf_location_id));
@@ -376,16 +400,17 @@ export async function list(_req: Request, res: Response): Promise<void> {
 }
 
 export async function getByBarcode(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const { barcode } = req.params;
   const ctx = await getContext();
-  const label = await ctx.findOne('qr_labels', { qr_value: barcode }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1, recall_condition: 1 } });
-  let batch = await ctx.findOne('batches', { barcode_value: barcode }, { projection: { _id: 0 } });
+  const label = await ctx.findOne('qr_labels', { qr_value: barcode, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1, recall_condition: 1 } });
+  let batch = await ctx.findOne('batches', { barcode_value: barcode, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
   let matchedByBatchNumber = false;
   if (!batch && label) {
-    batch = await ctx.findOne('batches', { id: label.batch_id }, { projection: { _id: 0 } });
+    batch = await ctx.findOne('batches', { id: label.batch_id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
   }
   if (!batch) {
-    const matchingBatches = await ctx.find('batches', { batch_number: barcode }, {
+    const matchingBatches = await ctx.find('batches', { batch_number: barcode, tenant_id: tenantId, ...divisionFilter(req) }, {
       limit: 2,
       projection: { _id: 0 },
     });
@@ -394,23 +419,23 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
       return;
     }
     if (matchingBatches.length === 1) {
-      batch = await ctx.findOne('batches', { id: matchingBatches[0].id }, { projection: { _id: 0 } });
+      batch = await ctx.findOne('batches', { id: matchingBatches[0].id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
       matchedByBatchNumber = Boolean(batch);
     }
   }
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
 
-  const product = await ctx.findOne('products', { id: batch.product_id }, { projection: { _id: 0 } });
+  const product = await ctx.findOne('products', { id: batch.product_id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0 } });
   const location = batch.shelf_location_id
-    ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id }, { projection: { _id: 0, location_code: 1 } })
+    ? await ctx.findOne('shelf_locations', { id: batch.shelf_location_id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, location_code: 1 } })
     : null;
-  const qrCount = await ctx.count('qr_labels', { batch_id: batch.id });
+  const qrCount = await ctx.count('qr_labels', { batch_id: batch.id, tenant_id: tenantId, ...divisionFilter(req) });
 
   // A label that is committed to a dispatch order is no longer stock: the
   // units left the inventory when the order was created. Report that so the
   // label is never treated as free stock again.
   const committedOrder = label?.dispatch_order_id
-    ? await ctx.findOne('dispatch_orders', { id: label.dispatch_order_id }, { projection: { _id: 0, id: 1, status: 1, order_lines: 1 } })
+    ? await ctx.findOne('dispatch_orders', { id: label.dispatch_order_id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, id: 1, status: 1, order_lines: 1 } })
     : null;
   const openOrder = committedOrder && String(committedOrder.status) === 'APPROVED'
     ? committedOrder
@@ -444,7 +469,7 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
     location_code: location?.location_code ?? null,
     qr_count: qrCount,
     grade_name: batch.grade_id
-      ? (await ctx.findOne('grades', { id: batch.grade_id }, { projection: { _id: 0, name: 1 } }))?.name ?? product?.grade ?? null
+      ? (await ctx.findOne('grades', { id: batch.grade_id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, name: 1 } }))?.name ?? product?.grade ?? null
       : product?.grade ?? null,
     label_state: labelState,
     // Only a label that is still free stock can be picked up again.
@@ -457,14 +482,19 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
 }
 
 export async function search(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const q = req.query.q as string || '';
   const ctx = await getContext();
   const pattern = contains(q);
   const products = await ctx.find('products', {
     $or: [{ name: pattern }, { sku: pattern }],
+    tenant_id: tenantId,
+    ...divisionFilter(req),
   }, { projection: { id: 1 } });
   const productIds = products.map((product) => idKey(product.id));
   const batches = await ctx.find('batches', {
+    tenant_id: tenantId,
+    ...divisionFilter(req),
     $or: [
       { product_id: { $in: productIds } },
       { batch_number: pattern },
@@ -473,7 +503,9 @@ export async function search(req: Request, res: Response): Promise<void> {
   const productMap = await mapByIds<{ id: EntityId; name: string; sku: string }>(
     ctx,
     'products',
-    batches.map((batch) => batch.product_id)
+    batches.map((batch) => batch.product_id),
+    tenantId,
+    divisionFilter(req)
   );
   res.json(batches.map((batch) => {
     const product = productMap.get(idKey(batch.product_id));
@@ -486,11 +518,12 @@ export async function search(req: Request, res: Response): Promise<void> {
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const { shelf_location_id, storage_location, notes, quantity, unit_price, manufacturing_date, expiry_date } = req.body;
   const ctx = await getContext();
-  const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0, id: 1, quantity: 1 } });
+  const batch = await ctx.findOne('batches', { id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, id: 1, quantity: 1 } });
   if (!batch) {
     res.status(404).json({ error: 'Batch not found' });
     return;
@@ -507,13 +540,13 @@ export async function update(req: Request, res: Response): Promise<void> {
       res.status(400).json({ error: 'Select a valid shelf location' });
       return;
     }
-    const location = await ctx.findOne('shelf_locations', { id: locationId, is_active: 1 }, { projection: { id: 1 } });
+    const location = await ctx.findOne('shelf_locations', { id: locationId, is_active: 1, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { id: 1 } });
     if (!location) {
       res.status(400).json({ error: 'Select an active shelf location' });
       return;
     }
   }
-  await ctx.updateOne('batches', { id }, {
+  await ctx.updateOne('batches', { id, tenant_id: tenantId, ...divisionFilter(req) }, {
     $set: {
       shelf_location_id: locationId,
       storage_location: storage_location || null,
@@ -524,6 +557,8 @@ export async function update(req: Request, res: Response): Promise<void> {
     },
   });
   await ctx.insert('activity_logs', {
+    tenant_id: tenantId,
+    division_id: divisionStamp(req),
     user_name: req.user?.name || 'System',
     user_role: req.user?.role || 'ADMIN',
     action: 'BATCH_UPDATED',
@@ -533,12 +568,13 @@ export async function update(req: Request, res: Response): Promise<void> {
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
   const ctx = await getContext();
-  const batch = await ctx.findOne('batches', { id }, { projection: { _id: 0, avg_standard_quantity: 0 } });
+  const batch = await ctx.findOne('batches', { id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, avg_standard_quantity: 0 } });
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
-  const product = await ctx.findOne('products', { id: batch.product_id }, {
+  const product = await ctx.findOne('products', { id: batch.product_id, tenant_id: tenantId, ...divisionFilter(req) }, {
     projection: { _id: 0, name: 1, sku: 1 },
   });
   res.json({

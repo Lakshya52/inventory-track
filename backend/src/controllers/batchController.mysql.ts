@@ -3,8 +3,11 @@ import { randomBytes, randomUUID } from 'crypto';
 import { query, execute, withTransaction } from '../config/database.mysql';
 import { RowDataPacket } from 'mysql2';
 import { buildBatchNumbers, skuFromBatchNumber } from '../utils/batchNumbers';
+import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 
 export async function create(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
   const { product_id, batch_number, quantity, batch_count = 1, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
   if (!product_id) {
     res.status(400).json({ error: 'Product ID is required' });
@@ -29,7 +32,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'A single generation can contain no more than 10,000 products' });
     return;
   }
-  const products = await query<RowDataPacket[]>('SELECT id, name, sku, price FROM products WHERE id = ?', [productId]);
+  const products = await query<RowDataPacket[]>(`SELECT id, name, sku, price FROM products WHERE id = ? AND tenant_id = ?${dv.sql}`, [productId, tenantId, ...dv.params]);
   if (products.length === 0) { res.status(404).json({ error: 'Product not found' }); return; }
   const product = products[0];
   const providedBatchNumber = String(batch_number || '').trim();
@@ -44,8 +47,8 @@ export async function create(req: Request, res: Response): Promise<void> {
     for (let suffix = 1; ; suffix += 1) {
       const placeholders = batchNumbers.map(() => '?').join(',');
       const clash = await query<RowDataPacket[]>(
-        `SELECT batch_number FROM batches WHERE batch_number IN (${placeholders}) LIMIT 1`,
-        batchNumbers
+        `SELECT batch_number FROM batches WHERE batch_number IN (${placeholders}) AND tenant_id = ?${dv.sql} LIMIT 1`,
+        [...batchNumbers, tenantId, ...dv.params]
       );
       if (clash.length === 0) break;
       if (suffix > 500) {
@@ -61,8 +64,8 @@ export async function create(req: Request, res: Response): Promise<void> {
   }
   const placeholders = batchNumbers.map(() => '?').join(',');
   const existing = await query<RowDataPacket[]>(
-    `SELECT batch_number FROM batches WHERE batch_number IN (${placeholders})`,
-    batchNumbers
+    `SELECT batch_number FROM batches WHERE batch_number IN (${placeholders}) AND tenant_id = ?${dv.sql}`,
+    [...batchNumbers, tenantId, ...dv.params]
   );
   if (existing.length > 0) {
     res.status(409).json({ error: `Batch number "${existing[0].batch_number}" already exists` });
@@ -70,8 +73,8 @@ export async function create(req: Request, res: Response): Promise<void> {
   }
   if (shelf_location_id) {
     const locations = await query<RowDataPacket[]>(
-      'SELECT id, location_code FROM shelf_locations WHERE id = ? AND is_active = 1',
-      [shelf_location_id]
+      `SELECT id, location_code FROM shelf_locations WHERE id = ? AND is_active = 1 AND tenant_id = ?${dv.sql}`,
+      [shelf_location_id, tenantId, ...dv.params]
     );
     if (locations.length === 0) { res.status(400).json({ error: 'Select an active shelf location' }); return; }
   }
@@ -91,25 +94,25 @@ export async function create(req: Request, res: Response): Promise<void> {
       const [batchInsert] = await conn.execute<any>(
         `INSERT INTO batches
           (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date,
-           shelf_location_id, storage_location, notes, barcode_value, batch_group_id, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QC_PASSED')`,
+           shelf_location_id, storage_location, notes, barcode_value, batch_group_id, status, tenant_id, division_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QC_PASSED', ?, ?)`,
         [
           productId, number, bagCount, String(uom || 'pcs').trim().slice(0, 40) || 'pcs', Number(unit_price) || 0,
           manufacturing_date || null, expiry_date || null, shelf_location_id || null,
-          storage_location || null, notes || null, qcBarcode, batchGroupId,
+          storage_location || null, notes || null, qcBarcode, batchGroupId, tenantId, divisionStamp(req),
         ]
       );
       const batchId = Number(batchInsert.insertId);
       const [qcInsert] = await conn.execute<any>(
-        `INSERT INTO qc_records (batch_id, tester_id, result, method, remarks)
-         VALUES (?, ?, 'PASS', 'AUTO_PASS', ?)`,
-        [batchId, req.user!.userId, notes || null]
+        `INSERT INTO qc_records (batch_id, tester_id, result, method, remarks, tenant_id, division_id)
+         VALUES (?, ?, 'PASS', 'AUTO_PASS', ?, ?, ?)`,
+        [batchId, req.user!.userId, notes || null, tenantId, divisionStamp(req)]
       );
       const jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
       const [jobInsert] = await conn.execute<any>(
-        `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
-         VALUES (?, ?, ?, ?, ?)`,
-        [jobCode, productId, bagCount, req.user!.userId, req.user!.role]
+        `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role, tenant_id, division_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [jobCode, productId, bagCount, req.user!.userId, req.user!.role, tenantId, divisionStamp(req)]
       );
       const jobId = Number(jobInsert.insertId);
       const labelRows = Array.from({ length: bagCount }, (_, index) => ({
@@ -117,18 +120,18 @@ export async function create(req: Request, res: Response): Promise<void> {
         qr_value: `${jobCode}-${String(index + 1).padStart(4, '0')}`,
         serial_no: index + 1,
       }));
-      const labelPlaceholders = labelRows.map(() => '(?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))').join(', ');
+      const labelPlaceholders = labelRows.map(() => '(?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3), ?, ?)').join(', ');
       await conn.execute(
-        `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
+        `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at, tenant_id, division_id)
          VALUES ${labelPlaceholders}`,
-        labelRows.flatMap((label) => [jobId, batchId, label.qr_value, label.serial_no])
+        labelRows.flatMap((label) => [jobId, batchId, label.qr_value, label.serial_no, tenantId, divisionStamp(req)])
       );
       const [insertedLabels] = await conn.execute<RowDataPacket[]>(
         `SELECT id, qr_value, serial_no, print_count
          FROM qr_labels
-         WHERE print_job_id = ?
+         WHERE print_job_id = ? AND tenant_id = ?${dv.sql}
          ORDER BY serial_no ASC`,
-        [jobId]
+        [jobId, tenantId, ...dv.params]
       );
       const labels = insertedLabels.map((label) => ({
         id: Number(label.id),
@@ -152,12 +155,12 @@ export async function create(req: Request, res: Response): Promise<void> {
         labels,
       });
       await conn.execute(
-        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-         VALUES (?, ?, ?, 'BATCH_CREATED', ?)`,
-        [req.user!.userId, req.user!.name, req.user!.role, `QC batch ${number} created for ${product.name} with ${bagCount} products`]
+        `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+         VALUES (?, ?, ?, 'BATCH_CREATED', ?, ?, ?)`,
+        [req.user!.userId, req.user!.name, req.user!.role, `QC batch ${number} created for ${product.name} with ${bagCount} products`, tenantId, divisionStamp(req)]
       );
     }
-    await conn.execute('UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ?', [bagCount * batchCount, productId]);
+    await conn.execute(`UPDATE products SET quantity = COALESCE(quantity, 0) + ? WHERE id = ? AND tenant_id = ?${dv.sql}`, [bagCount * batchCount, productId, tenantId, ...dv.params]);
     return createdBatches;
   });
   res.status(201).json({
@@ -173,6 +176,10 @@ export async function create(req: Request, res: Response): Promise<void> {
 }
 
 export async function finishGoods(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
+  const dvl = divisionWhere(req, 'l.division_id');
+  const dvj = divisionWhere(req, 'j.division_id');
   const id = Number(req.params.id);
   const vendorId = Number(req.body.vendor_id);
   const gradeId = Number(req.body.grade_id);
@@ -184,8 +191,8 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
   }
   const result = await withTransaction(async (conn) => {
     const [batches] = await conn.execute<RowDataPacket[]>(
-      'SELECT * FROM batches WHERE id = ? FOR UPDATE',
-      [id]
+      `SELECT * FROM batches WHERE id = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+      [id, tenantId, ...dv.params]
     );
     if (batches.length === 0) return { status: 404 as const, error: 'Batch not found' };
     const batch = batches[0];
@@ -197,11 +204,11 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     }
     const [masters] = await conn.execute<RowDataPacket[]>(
       `SELECT
-         (SELECT COUNT(*) FROM vendors WHERE id = ? AND is_active = 1) AS vendor_count,
-         (SELECT COUNT(*) FROM grades WHERE id = ? AND is_active = 1) AS grade_count,
-         (SELECT COUNT(*) FROM bag_quantities WHERE id = ? AND is_active = 1) AS bag_quantity_count,
-         (SELECT COUNT(*) FROM shelf_locations WHERE id = ? AND is_active = 1) AS location_count`,
-      [vendorId, gradeId, bagQuantityId, locationId]
+         (SELECT COUNT(*) FROM vendors WHERE id = ? AND is_active = 1 AND tenant_id = ?) AS vendor_count,
+         (SELECT COUNT(*) FROM grades WHERE id = ? AND is_active = 1 AND tenant_id = ?${dv.sql}) AS grade_count,
+         (SELECT COUNT(*) FROM bag_quantities WHERE id = ? AND is_active = 1 AND tenant_id = ?) AS bag_quantity_count,
+         (SELECT COUNT(*) FROM shelf_locations WHERE id = ? AND is_active = 1 AND tenant_id = ?${dv.sql}) AS location_count`,
+      [vendorId, tenantId, gradeId, tenantId, ...dv.params, bagQuantityId, tenantId, locationId, tenantId, ...dv.params]
     );
     if (
       Number(masters[0]?.vendor_count) !== 1 ||
@@ -212,19 +219,19 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
       return { status: 400 as const, error: 'Select active supplier, grade, bag quantity, and shelf location values' };
     }
     const [products] = await conn.execute<RowDataPacket[]>(
-      'SELECT id, name, sku FROM products WHERE id = ?',
-      [batch.product_id]
+      `SELECT id, name, sku FROM products WHERE id = ? AND tenant_id = ?${dv.sql}`,
+      [batch.product_id, tenantId, ...dv.params]
     );
     if (products.length === 0) return { status: 404 as const, error: 'Product not found' };
     const [existingLabels] = await conn.execute<RowDataPacket[]>(
       `SELECT l.id, l.print_job_id, l.qr_value, l.serial_no, l.print_count,
               j.job_code
        FROM qr_labels l
-       JOIN qr_print_jobs j ON j.id = l.print_job_id
-       WHERE l.batch_id = ?
+       JOIN qr_print_jobs j ON j.id = l.print_job_id AND j.tenant_id = ?${dvj.sql}
+       WHERE l.batch_id = ? AND l.tenant_id = ?${dvl.sql}
        ORDER BY l.serial_no ASC
        FOR UPDATE`,
-      [id]
+      [tenantId, ...dvj.params, id, tenantId, ...dvl.params]
     );
     if (
       existingLabels.length > 0 &&
@@ -251,9 +258,9 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
     } else {
       jobCode = `QRJ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`;
       const [jobInsert] = await conn.execute<any>(
-        `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role)
-         VALUES (?, ?, ?, ?, ?)`,
-        [jobCode, batch.product_id, batch.quantity, req.user!.userId, req.user!.role]
+        `INSERT INTO qr_print_jobs (job_code, product_id, quantity, created_by, created_by_role, tenant_id, division_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [jobCode, batch.product_id, batch.quantity, req.user!.userId, req.user!.role, tenantId, divisionStamp(req)]
       );
       jobId = Number(jobInsert.insertId);
       firstBarcode = '';
@@ -261,9 +268,9 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
         const qrValue = `${jobCode}-${String(serial).padStart(4, '0')}`;
         if (serial === 1) firstBarcode = qrValue;
         const [labelInsert] = await conn.execute<any>(
-          `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at)
-           VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`,
-          [jobId, id, qrValue, serial]
+          `INSERT INTO qr_labels (print_job_id, batch_id, qr_value, serial_no, print_count, last_printed_at, tenant_id, division_id)
+           VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3), ?, ?)`,
+          [jobId, id, qrValue, serial, tenantId, divisionStamp(req)]
         );
         labels.push({
           id: Number(labelInsert.insertId),
@@ -278,14 +285,14 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
       `UPDATE batches
        SET vendor_id = ?, grade_id = ?, bag_quantity_id = ?, shelf_location_id = ?,
            fg_details_completed_at = CURRENT_TIMESTAMP(3), barcode_value = ?
-       WHERE id = ? AND status = 'QC_PASSED'`,
-      [vendorId, gradeId, bagQuantityId, locationId, firstBarcode, id]
+       WHERE id = ? AND status = 'QC_PASSED' AND tenant_id = ?${dv.sql}`,
+      [vendorId, gradeId, bagQuantityId, locationId, firstBarcode, id, tenantId, ...dv.params]
     );
     if ((update as any).affectedRows !== 1) throw new Error('Batch changed while finished-goods labels were generated');
     await conn.execute(
-      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-       VALUES (?, ?, ?, 'FINISHED_GOODS_COMPLETED', ?)`,
-      [req.user!.userId, req.user!.name, req.user!.role, `Finished-goods details completed for batch ${batch.batch_number}; ${labels.length} bag QR labels available`]
+      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+       VALUES (?, ?, ?, 'FINISHED_GOODS_COMPLETED', ?, ?, ?)`,
+      [req.user!.userId, req.user!.name, req.user!.role, `Finished-goods details completed for batch ${batch.batch_number}; ${labels.length} bag QR labels available`, tenantId, divisionStamp(req)]
     );
     return {
       status: 201 as const,
@@ -305,22 +312,32 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
 }
 
 export async function list(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req, 'b.division_id');
+  const dvl = divisionWhere(req, 'l.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
+  const dvs = divisionWhere(req, 's.division_id');
+  const dvg = divisionWhere(req, 'g.division_id');
   const batches = await query<RowDataPacket[]>(
     `SELECT b.*, p.name as product_name, p.sku as product_sku, p.grade AS product_grade,
             s.location_code, s.warehouse AS warehouse_name, v.name AS vendor_name, g.name AS grade_name,
             q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_count,
-            (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id) AS qr_job_id,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.print_count > 0) AS printed_label_count,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL) AS reserved_quantity,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED') AS recalled_quantity,
-            GREATEST(0, b.quantity - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL) - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED')) AS available_quantity
-     FROM batches b LEFT JOIN products p ON b.product_id = p.id
-     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
-     LEFT JOIN vendors v ON v.id = b.vendor_id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
-     ORDER BY b.created_at DESC`
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvl.sql}) AS qr_count,
+            (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvl.sql}) AS qr_job_id,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.print_count > 0 AND l.tenant_id = ?${dvl.sql}) AS printed_label_count,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL AND l.tenant_id = ?${dvl.sql}) AS reserved_quantity,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED' AND l.tenant_id = ?${dvl.sql}) AS recalled_quantity,
+            GREATEST(0, b.quantity - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL AND l.tenant_id = ?${dvl.sql}) - (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED' AND l.tenant_id = ?${dvl.sql})) AS available_quantity
+     FROM batches b LEFT JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id AND s.tenant_id = ?${dvs.sql}
+     LEFT JOIN vendors v ON v.id = b.vendor_id AND v.tenant_id = ?
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ?${dvg.sql}
+     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id AND q.tenant_id = ?
+     WHERE b.tenant_id = ?${dv.sql}
+     ORDER BY b.created_at DESC`,
+    [tenantId, ...dvl.params, tenantId, ...dvl.params, tenantId, ...dvl.params, tenantId, ...dvl.params,
+     tenantId, ...dvl.params, tenantId, ...dvl.params, tenantId, ...dvl.params,
+     tenantId, ...dvp.params, tenantId, ...dvs.params, tenantId, tenantId, ...dvg.params, tenantId, tenantId, ...dv.params]
   );
   // The average standard quantity is an internal-only reference; never return it.
   for (const batch of batches) {
@@ -338,6 +355,14 @@ export async function list(req: Request, res: Response): Promise<void> {
 }
 
 export async function getByBarcode(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvU = divisionWhere(req, 'units.division_id');
+  const dvl = divisionWhere(req, 'l.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
+  const dvs = divisionWhere(req, 's.division_id');
+  const dvg = divisionWhere(req, 'g.division_id');
   const { barcode } = req.params;
   const batches = await query<RowDataPacket[]>(
     `SELECT b.*,
@@ -349,19 +374,19 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
             l.qr_value AS scanned_qr, s.location_code,
             l.dispatch_order_id AS label_dispatch_order_id,
             l.recall_status AS label_recall_status, l.recall_condition AS label_recall_condition,
-            (SELECT COUNT(*) FROM qr_labels units WHERE units.batch_id = b.id) AS qr_count,
+            (SELECT COUNT(*) FROM qr_labels units WHERE units.batch_id = b.id AND units.tenant_id = ?${dvU.sql}) AS qr_count,
             CASE
               WHEN b.batch_number = ? AND b.barcode_value <> ? AND l.qr_value IS NULL THEN 1
               ELSE 0
             END AS matched_by_batch_number
-     FROM batches b JOIN products p ON b.product_id = p.id
-     LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ?
-     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id
-     LEFT JOIN grades g ON g.id = b.grade_id
-     WHERE b.barcode_value = ? OR l.qr_value = ? OR b.batch_number = ?
+     FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     LEFT JOIN qr_labels l ON l.batch_id = b.id AND l.qr_value = ? AND l.tenant_id = ?${dvl.sql}
+     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id AND s.tenant_id = ?${dvs.sql}
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ?${dvg.sql}
+     WHERE (b.barcode_value = ? OR l.qr_value = ? OR b.batch_number = ?) AND b.tenant_id = ?${dvB.sql}
      ORDER BY CASE WHEN b.barcode_value = ? OR l.qr_value IS NOT NULL THEN 0 ELSE 1 END
      LIMIT 2`,
-    [barcode, barcode, barcode, barcode, barcode, barcode]
+    [tenantId, ...dvU.params, barcode, barcode, tenantId, ...dvp.params, barcode, tenantId, ...dvl.params, tenantId, ...dvs.params, tenantId, ...dvg.params, barcode, barcode, barcode, tenantId, ...dvB.params, barcode]
   );
   if (batches.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
   if (batches.length > 1 && Number(batches[0].matched_by_batch_number)) {
@@ -373,7 +398,7 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
   // units left the inventory when the order was created. Report that so the
   // label is never treated as free stock again.
   const committedOrder = batch.label_dispatch_order_id
-    ? (await query<RowDataPacket[]>('SELECT id, status FROM dispatch_orders WHERE id = ?', [batch.label_dispatch_order_id]))[0]
+    ? (await query<RowDataPacket[]>(`SELECT id, status FROM dispatch_orders WHERE id = ? AND tenant_id = ?${dv.sql}`, [batch.label_dispatch_order_id, tenantId, ...dv.params]))[0]
     : null;
   const openOrder = committedOrder && String(committedOrder.status) === 'APPROVED' ? committedOrder : null;
   const labelState = batch.label_recall_status === 'RECALLED'
@@ -398,23 +423,28 @@ export async function getByBarcode(req: Request, res: Response): Promise<void> {
 }
 
 export async function search(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req, 'b.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
   const q = req.query.q as string || '';
   const batches = await query<RowDataPacket[]>(
     `SELECT b.*, p.name as product_name, p.sku as product_sku
-     FROM batches b JOIN products p ON b.product_id = p.id
-     WHERE p.name LIKE ? OR p.sku LIKE ? OR b.batch_number LIKE ?
+     FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql}
+     WHERE (p.name LIKE ? OR p.sku LIKE ? OR b.batch_number LIKE ?) AND b.tenant_id = ?${dv.sql}
      ORDER BY b.created_at DESC LIMIT 50`,
-    [`%${q}%`, `%${q}%`, `%${q}%`]
+    [tenantId, ...dvp.params, `%${q}%`, `%${q}%`, `%${q}%`, tenantId, ...dv.params]
   );
   res.json(batches);
 }
 
 export async function update(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
   const { id } = req.params;
   const { shelf_location_id, storage_location, notes, quantity, unit_price, manufacturing_date, expiry_date } = req.body;
   const batches = await query<RowDataPacket[]>(
-    'SELECT b.id, b.quantity FROM batches b WHERE b.id = ?',
-    [id]
+    `SELECT b.id, b.quantity FROM batches b WHERE b.id = ? AND b.tenant_id = ?${dv.sql}`,
+    [id, tenantId, ...dv.params]
   );
   if (batches.length === 0) {
     res.status(404).json({ error: 'Batch not found' });
@@ -433,8 +463,8 @@ export async function update(req: Request, res: Response): Promise<void> {
       return;
     }
     const locations = await query<RowDataPacket[]>(
-      'SELECT id FROM shelf_locations WHERE id = ? AND is_active = 1',
-      [locationId]
+      `SELECT id FROM shelf_locations WHERE id = ? AND is_active = 1 AND tenant_id = ?${dv.sql}`,
+      [locationId, tenantId, ...dv.params]
     );
     if (locations.length === 0) {
       res.status(400).json({ error: 'Select an active shelf location' });
@@ -442,18 +472,21 @@ export async function update(req: Request, res: Response): Promise<void> {
     }
   }
   await execute(
-    'UPDATE batches SET shelf_location_id = ?, storage_location = ?, notes = ?, unit_price = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ?',
-    [locationId, storage_location || null, notes || null, unit_price || 0, manufacturing_date || null, expiry_date || null, id]
+    `UPDATE batches SET shelf_location_id = ?, storage_location = ?, notes = ?, unit_price = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ? AND tenant_id = ?${dv.sql}`,
+    [locationId, storage_location || null, notes || null, unit_price || 0, manufacturing_date || null, expiry_date || null, id, tenantId, ...dv.params]
   );
-  await execute('INSERT INTO activity_logs (user_name, user_role, action, description) VALUES (?, ?, ?, ?)',
-    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'BATCH_UPDATED', `Batch #${id} updated`]);
+  await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'BATCH_UPDATED', `Batch #${id} updated`, tenantId, divisionStamp(req)]);
   res.json({ message: 'Batch updated' });
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req, 'b.division_id');
+  const dvp = divisionWhere(req, 'p.division_id');
   const batches = await query<RowDataPacket[]>(
     `SELECT b.*, p.name as product_name, p.sku as product_sku
-     FROM batches b JOIN products p ON b.product_id = p.id WHERE b.id = ?`, [req.params.id]
+     FROM batches b JOIN products p ON b.product_id = p.id AND p.tenant_id = ?${dvp.sql} WHERE b.id = ? AND b.tenant_id = ?${dv.sql}`, [tenantId, ...dvp.params, req.params.id, tenantId, ...dv.params]
   );
   if (batches.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
   res.json(batches[0]);
