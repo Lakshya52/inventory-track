@@ -74,9 +74,9 @@ export async function createQrPdfBlob(labels: QrLabel[], job: QrJob): Promise<Bl
     doc.setLineWidth(0.25);
     doc.roundedRect(x, y, cellWidth, cellHeight, 1.5, 1.5);
 
-    const qrSize = 37;
+    const qrSize = 30;
     const qrX = x + (cellWidth - qrSize) / 2;
-    const qrY = y + 4;
+    const qrY = y + 3;
     doc.addImage(images[index], 'PNG', qrX, qrY, qrSize, qrSize);
 
     const payload = parseQrPayload(label.qr_value);
@@ -88,27 +88,42 @@ export async function createQrPdfBlob(labels: QrLabel[], job: QrJob): Promise<Bl
     const storageLocation = label.storage_location || payload?.storage_location;
     const textX = x + 3;
     const maxWidth = cellWidth - 6;
+    const bigValueY = qrY + qrSize + 5.6;
+    // The raw QR value is the most important thing on the label, so it goes
+    // directly below the code in large bold type.
     doc.setTextColor(15, 23, 42);
     doc.setFont('helvetica', 'bold');
+    // Shrink the big value line just enough to keep the full raw value on one line.
+    let bigFontSize = 12;
+    doc.setFontSize(bigFontSize);
+    while (bigFontSize > 5 && doc.getTextWidth(String(label.qr_value)) > maxWidth) {
+      bigFontSize -= 0.5;
+      doc.setFontSize(bigFontSize);
+    }
+    doc.text(String(label.qr_value), x + cellWidth / 2, bigValueY, {
+      align: 'center',
+      maxWidth,
+    });
+
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(7);
-    doc.text(String(productName).slice(0, 70), textX, qrY + qrSize + 4, {
+    doc.text(String(productName).slice(0, 70), textX, bigValueY + 5.2, {
       maxWidth,
     });
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6);
     doc.setTextColor(51, 65, 85);
-    doc.text(`Batch: ${label.batch_number}`, textX, qrY + qrSize + 8, { maxWidth });
+    doc.text(`Batch: ${label.batch_number}`, textX, bigValueY + 9.2, { maxWidth });
     if (packageQuantity != null) {
-      doc.text(`Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`, textX, qrY + qrSize + 12, { maxWidth });
+      doc.text(`Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`, textX, bigValueY + 13.2, { maxWidth });
     }
     if (godown) {
-      doc.text(`Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, textX, qrY + qrSize + 16, { maxWidth });
+      doc.text(`Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, textX, bigValueY + 17.2, { maxWidth });
     }
     doc.setFontSize(5);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Bag ${String(payload?.bag_serial ?? label.serial_no).padStart(4, '0')}`, textX, qrY + qrSize + 20, { maxWidth });
-    doc.text(`QR ID: ${payload?.id || label.qr_value}`, textX, qrY + qrSize + 23, { maxWidth });
+    doc.text(`Bag ${String(payload?.bag_serial ?? label.serial_no).padStart(4, '0')}`, textX, y + cellHeight - 3.2, { maxWidth });
   });
 
   return doc.output('blob');

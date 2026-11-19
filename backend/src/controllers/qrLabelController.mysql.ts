@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { query, withTransaction } from '../config/database.mysql';
+import { divisionStamp, divisionWhere } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 const QC_PASSED_STATUSES = new Set([
   'QC_PASSED',
@@ -10,12 +12,39 @@ const QC_PASSED_STATUSES = new Set([
   'DISPATCHED',
 ]);
 
-const FIRST_GROUP_STATUS = `(SELECT COALESCE(bg.status, b.status)
+/**
+ * Division fragments bind the requester's division id exactly once each.
+ * `divisionCollector` returns a `dvv(column)` helper; calling it appends the
+ * SQL fragment to the template under construction and pushes the bound
+ * parameter into `divParams` in the same (textual) order. Anything interpolated
+ * into the SELECT/FROM is collected this way, while fragments for the main
+ * WHERE are kept in a separate `dv` so they can be appended after the
+ * pre-existing WHERE parameters.
+ */
+type DivisionFragment = { sql: string; params: unknown[] };
+type DivisionFragmentFor = (column: string) => DivisionFragment;
+
+const NO_DIVISION_FRAGMENT: DivisionFragment = { sql: '', params: [] };
+
+function divisionCollector(divisionReq?: Request): { divParams: any[]; dvv: DivisionFragmentFor } {
+  const divParams: any[] = [];
+  const dvv: DivisionFragmentFor = (column: string) => {
+    if (!divisionReq) return { sql: '', params: [] };
+    const fragment = divisionWhere(divisionReq, column);
+    divParams.push(...fragment.params);
+    return fragment;
+  };
+  return { divParams, dvv };
+}
+
+function firstGroupStatus(dvv: DivisionFragmentFor): string {
+  return `(SELECT COALESCE(bg.status, b.status)
    FROM qr_labels l
-   JOIN batches b ON l.batch_id = b.id
-   LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id
-   WHERE l.print_job_id = j.id
+   JOIN batches b ON l.batch_id = b.id${dvv('b.division_id').sql}
+   LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id${dvv('bg.division_id').sql}
+   WHERE l.print_job_id = j.id${dvv('l.division_id').sql}
    ORDER BY l.serial_no ASC LIMIT 1)`;
+}
 
 function decorateJob(row: Record<string, any>): Record<string, any> {
   const batchStatus = String(row?.batch_status || '').toUpperCase();
@@ -32,30 +61,39 @@ function decorateJob(row: Record<string, any>): Record<string, any> {
   };
 }
 
-async function jobDetail(id: number, tenantId?: number | string | null): Promise<{ job: any; labels: any[] } | null> {
+async function jobDetail(id: number, tenantId?: number | string | null, divisionReq?: Request): Promise<{ job: any; labels: any[] } | null> {
   const tenantClause = tenantId === undefined || tenantId === null
     ? ''
     : ' AND j.tenant_id = ?';
   const tenantParams = tenantId === undefined || tenantId === null ? [] : [tenantId];
-  const jobs = await query<RowDataPacket[]>(
+  const dvJ = divisionReq ? divisionWhere(divisionReq, 'j.division_id') : NO_DIVISION_FRAGMENT;
+  const jobsQuery = divisionCollector(divisionReq);
+  const dvv = jobsQuery.dvv;
+  const jobsSql =
     `SELECT j.*, p.name AS product_name, p.sku AS product_sku,
             COALESCE(q.name, a.name, 'QC User') AS created_by_name,
-            (SELECT COALESCE(SUM(l.print_count), 0) FROM qr_labels l WHERE l.print_job_id = j.id) AS total_prints,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.print_job_id = j.id) AS label_count,
-            (SELECT COALESCE(SUM(CASE WHEN COALESCE(l.print_count, 0) > 0 THEN 1 ELSE 0 END), 0) FROM qr_labels l WHERE l.print_job_id = j.id) AS printed_count,
-            (SELECT MAX(l.last_printed_at) FROM qr_labels l WHERE l.print_job_id = j.id) AS last_printed_at,
-            (SELECT b.batch_group_id FROM qr_labels l JOIN batches b ON l.batch_id = b.id WHERE l.print_job_id = j.id ORDER BY l.serial_no ASC LIMIT 1) AS batch_group_id,
-            (SELECT COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) FROM qr_labels l JOIN batches b ON l.batch_id = b.id LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id WHERE l.print_job_id = j.id ORDER BY l.serial_no ASC LIMIT 1) AS batch_number,
-            ${FIRST_GROUP_STATUS} AS batch_status
+            (SELECT COALESCE(SUM(l.print_count), 0) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS total_prints,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS label_count,
+            (SELECT COALESCE(SUM(CASE WHEN COALESCE(l.print_count, 0) > 0 THEN 1 ELSE 0 END), 0) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS printed_count,
+            (SELECT MAX(l.last_printed_at) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS last_printed_at,
+            (SELECT b.batch_group_id FROM qr_labels l JOIN batches b ON l.batch_id = b.id${dvv('b.division_id').sql} WHERE l.print_job_id = j.id${dvv('l.division_id').sql} ORDER BY l.serial_no ASC LIMIT 1) AS batch_group_id,
+            (SELECT COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) FROM qr_labels l JOIN batches b ON l.batch_id = b.id${dvv('b.division_id').sql} LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id${dvv('bg.division_id').sql} WHERE l.print_job_id = j.id${dvv('l.division_id').sql} ORDER BY l.serial_no ASC LIMIT 1) AS batch_number,
+            ${firstGroupStatus(dvv)} AS batch_status
      FROM qr_print_jobs j
-     JOIN products p ON j.product_id = p.id
+     JOIN products p ON j.product_id = p.id${dvv('p.division_id').sql}
      LEFT JOIN qc_users q ON j.created_by = q.id AND j.created_by_role = 'QC'
      LEFT JOIN admins a ON j.created_by = a.id AND j.created_by_role = 'ADMIN'
-     WHERE j.id = ?${tenantClause}`,
-    [id, ...tenantParams]
-  );
+     WHERE j.id = ?${tenantClause}${dvJ.sql}`;
+  const jobs = await query<RowDataPacket[]>(jobsSql, [...jobsQuery.divParams, id, ...tenantParams, ...dvJ.params]);
+  const labelsTenantClause = tenantId === undefined || tenantId === null
+    ? ''
+    : ' AND l.tenant_id = ?';
+  const labelsTenantParams = tenantId === undefined || tenantId === null ? [] : [tenantId];
   if (jobs.length === 0) return null;
-  const labels = await query<RowDataPacket[]>(
+  const labelsQuery = divisionCollector(divisionReq);
+  const ldvv = labelsQuery.dvv;
+  const dvL = divisionReq ? divisionWhere(divisionReq, 'l.division_id') : NO_DIVISION_FRAGMENT;
+  const labelsSql =
     `SELECT l.*, COALESCE(b.parent_batch_number, b.batch_number) AS batch_number,
             b.batch_number AS child_batch_number, COALESCE(bg.status, b.status) AS status,
             b.batch_group_id, j.quantity,
@@ -63,15 +101,14 @@ async function jobDetail(id: number, tenantId?: number | string | null): Promise
             b.shelf_location_id, COALESCE(s.location_code, b.storage_location) AS storage_location,
             s.warehouse AS warehouse_name
      FROM qr_labels l
-     JOIN batches b ON l.batch_id = b.id
-     LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id
-     JOIN qr_print_jobs j ON l.print_job_id = j.id
-     JOIN products p ON b.product_id = p.id
-     LEFT JOIN shelf_locations s ON b.shelf_location_id = s.id
-     WHERE l.print_job_id = ?
-     ORDER BY l.serial_no ASC`,
-    [id]
-  );
+     JOIN batches b ON l.batch_id = b.id AND b.tenant_id = l.tenant_id${ldvv('b.division_id').sql}
+     LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id${ldvv('bg.division_id').sql}
+     JOIN qr_print_jobs j ON l.print_job_id = j.id${ldvv('j.division_id').sql}
+     JOIN products p ON b.product_id = p.id${ldvv('p.division_id').sql}
+     LEFT JOIN shelf_locations s ON b.shelf_location_id = s.id${ldvv('s.division_id').sql}
+     WHERE l.print_job_id = ?${labelsTenantClause}${dvL.sql}
+     ORDER BY l.serial_no ASC`;
+  const labels = await query<RowDataPacket[]>(labelsSql, [...labelsQuery.divParams, id, ...labelsTenantParams, ...dvL.params]);
   return { job: decorateJob(jobs[0]), labels };
 }
 
@@ -86,50 +123,56 @@ export async function list(req: Request, res: Response): Promise<void> {
   // Product names are excluded because one product can own thousands of QR
   // labels; job codes, batch numbers, and label QR values identify a job.
   // Print jobs are tenant-scoped: a workspace never sees another one's jobs.
+  const dv = divisionWhere(req, 'j.division_id');
   const conditions: string[] = ['j.tenant_id = ?'];
   const params: any[] = [req.user!.tenantId];
   if (q) {
     const searchConditions = ['j.job_code LIKE ?'];
-    params.push(`%${q}%`);
+    params.push(`${q}%`);
+    const dvAB = divisionWhere(req, 'b.division_id');
+    const dvABG = divisionWhere(req, 'bg.division_id');
+    const dvAL = divisionWhere(req, 'l.division_id');
     searchConditions.push(`j.id IN (
       SELECT l.print_job_id
       FROM qr_labels l
-      JOIN batches b ON l.batch_id = b.id
-      LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id
-      WHERE COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) LIKE ?
+      JOIN batches b ON l.batch_id = b.id${dvAB.sql}
+      LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id${dvABG.sql}
+      WHERE COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) LIKE ?${dvAL.sql}
     )`);
-    params.push(`%${q}%`);
+    params.push(...dvAB.params, ...dvABG.params, `${q}%`, ...dvAL.params);
     if (q.length >= 8) {
-      searchConditions.push('j.id IN (SELECT l.print_job_id FROM qr_labels l WHERE l.qr_value LIKE ?)');
-      params.push(`%${q}%`);
+      const dvBL = divisionWhere(req, 'l.division_id');
+      searchConditions.push(`j.id IN (SELECT l.print_job_id FROM qr_labels l WHERE l.qr_value LIKE ?${dvBL.sql})`);
+      params.push(`${q}%`, ...dvBL.params);
     }
     conditions.push(`(${searchConditions.join(' OR ')})`);
   }
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const items = await query<RowDataPacket[]>(
+  const listQuery = divisionCollector(req);
+  const dvv = listQuery.dvv;
+  const listSql =
     `SELECT j.*, p.name AS product_name, p.sku AS product_sku,
             COALESCE(qc.name, a.name, 'QC User') AS created_by_name,
-            (SELECT COALESCE(SUM(l.print_count), 0) FROM qr_labels l WHERE l.print_job_id = j.id) AS total_prints,
-            (SELECT COUNT(*) FROM qr_labels l WHERE l.print_job_id = j.id) AS label_count,
-            (SELECT COALESCE(SUM(CASE WHEN COALESCE(l.print_count, 0) > 0 THEN 1 ELSE 0 END), 0) FROM qr_labels l WHERE l.print_job_id = j.id) AS printed_count,
-            (SELECT MAX(l.last_printed_at) FROM qr_labels l WHERE l.print_job_id = j.id) AS last_printed_at,
-            (SELECT b.batch_group_id FROM qr_labels l JOIN batches b ON l.batch_id = b.id WHERE l.print_job_id = j.id ORDER BY l.serial_no ASC LIMIT 1) AS batch_group_id,
-            (SELECT COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) FROM qr_labels l JOIN batches b ON l.batch_id = b.id LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id WHERE l.print_job_id = j.id ORDER BY l.serial_no ASC LIMIT 1) AS batch_number,
-            ${FIRST_GROUP_STATUS} AS batch_status
+            (SELECT COALESCE(SUM(l.print_count), 0) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS total_prints,
+            (SELECT COUNT(*) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS label_count,
+            (SELECT COALESCE(SUM(CASE WHEN COALESCE(l.print_count, 0) > 0 THEN 1 ELSE 0 END), 0) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS printed_count,
+            (SELECT MAX(l.last_printed_at) FROM qr_labels l WHERE l.print_job_id = j.id${dvv('l.division_id').sql}) AS last_printed_at,
+            (SELECT b.batch_group_id FROM qr_labels l JOIN batches b ON l.batch_id = b.id${dvv('b.division_id').sql} WHERE l.print_job_id = j.id${dvv('l.division_id').sql} ORDER BY l.serial_no ASC LIMIT 1) AS batch_group_id,
+            (SELECT COALESCE(bg.batch_number, b.parent_batch_number, b.batch_number) FROM qr_labels l JOIN batches b ON l.batch_id = b.id${dvv('b.division_id').sql} LEFT JOIN batch_groups bg ON bg.group_key = b.batch_group_id${dvv('bg.division_id').sql} WHERE l.print_job_id = j.id${dvv('l.division_id').sql} ORDER BY l.serial_no ASC LIMIT 1) AS batch_number,
+            ${firstGroupStatus(dvv)} AS batch_status
      FROM qr_print_jobs j
-     JOIN products p ON j.product_id = p.id
+     JOIN products p ON j.product_id = p.id${dvv('p.division_id').sql}
      LEFT JOIN qc_users qc ON j.created_by = qc.id AND j.created_by_role = 'QC'
      LEFT JOIN admins a ON j.created_by = a.id AND j.created_by_role = 'ADMIN'
-     ${where}
+     ${where}${dv.sql}
      ORDER BY j.created_at DESC
-     LIMIT 100`,
-    params
-  );
+     LIMIT 100`;
+  const items = await query<RowDataPacket[]>(listSql, [...listQuery.divParams, ...params, ...dv.params] as any[]);
   res.json({ items: items.map(decorateJob), total: items.length });
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {
-  const detail = await jobDetail(Number(req.params.id), req.user!.tenantId);
+  const detail = await jobDetail(Number(req.params.id), req.user!.tenantId, req);
   if (!detail) {
     res.status(404).json({ error: 'QR label job not found' });
     return;
@@ -149,27 +192,31 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
   }
 
   const result = await withTransaction(async (conn) => {
+    const dv = divisionWhere(req);
     const [jobs] = await conn.execute<RowDataPacket[]>(
-      'SELECT * FROM qr_print_jobs WHERE id = ? AND tenant_id = ? FOR UPDATE',
-      [id, req.user!.tenantId]
+      `SELECT * FROM qr_print_jobs WHERE id = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+      [id, req.user!.tenantId, ...dv.params] as any[]
     );
     if (jobs.length === 0) return null;
     const job = jobs[0];
 
     const [labels] = await conn.execute<RowDataPacket[]>(
-      'SELECT * FROM qr_labels WHERE print_job_id = ? ORDER BY serial_no ASC FOR UPDATE',
-      [id]
+      `SELECT * FROM qr_labels WHERE print_job_id = ? AND tenant_id = ?${dv.sql} ORDER BY serial_no ASC FOR UPDATE`,
+      [id, req.user!.tenantId, ...dv.params] as any[]
     );
     if (labels.length === 0) return { empty: true as const };
     if (labels.some((label) => Number(label.print_count || 0) > 0)) {
       return { alreadyPrinted: true as const };
     }
 
+    const statusQuery = divisionCollector(req);
+    const statusDvv = statusQuery.dvv;
+    const dvStatusJ = divisionWhere(req, 'j.division_id');
     const [statusRows] = await conn.execute<RowDataPacket[]>(
-      `SELECT ${FIRST_GROUP_STATUS} AS batch_status
+      `SELECT ${firstGroupStatus(statusDvv)} AS batch_status
        FROM qr_print_jobs j
-       WHERE j.id = ?`,
-      [id]
+       WHERE j.id = ? AND j.tenant_id = ?${dvStatusJ.sql}`,
+      [...statusQuery.divParams, id, req.user!.tenantId, ...dvStatusJ.params] as any[]
     );
     const batchStatus = String(statusRows[0]?.batch_status || '').toUpperCase();
     if (!QC_PASSED_STATUSES.has(batchStatus)) {
@@ -179,27 +226,32 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
     await conn.execute(
       `UPDATE qr_labels
        SET print_count = 1, last_printed_at = CURRENT_TIMESTAMP(3)
-       WHERE print_job_id = ?`,
-      [id]
+       WHERE print_job_id = ? AND tenant_id = ?${dv.sql}`,
+      [id, req.user!.tenantId, ...dv.params] as any[]
     );
 
     // Mark the batches as "QR printed" so a dispatch order can only be raised
     // for stock whose labels have physically been printed.
+    const dvLabelsSub = divisionWhere(req, 'division_id');
+    const dvBatch = divisionWhere(req, 'b.division_id');
     await conn.execute(
       `UPDATE batches b
        SET qr_printed_at = CURRENT_TIMESTAMP(3)
-       WHERE b.id IN (SELECT DISTINCT batch_id FROM qr_labels WHERE print_job_id = ?)`,
-      [id]
+       WHERE b.tenant_id = ?
+         AND b.id IN (SELECT DISTINCT batch_id FROM qr_labels WHERE print_job_id = ?${dvLabelsSub.sql})${dvBatch.sql}`,
+      [req.user!.tenantId, id, ...dvLabelsSub.params, ...dvBatch.params] as any[]
     );
 
     await conn.execute(
-      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-       VALUES (?, ?, ?, 'QR_LABELS_PRINTED', ?)`,
+      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+       VALUES (?, ?, ?, 'QR_LABELS_PRINTED', ?, ?, ?)`,
       [
         req.user!.userId,
         req.user!.name,
         req.user!.role,
         `${labels.length} QR label${labels.length === 1 ? '' : 's'} printed for ${job.job_code} after QC passed`,
+        req.user!.tenantId,
+        divisionStamp(req),
       ]
     );
 
@@ -223,7 +275,8 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const detail = await jobDetail(result.jobId, req.user!.tenantId);
+  publish(req, 'batch.printed', { jobId: result.jobId, selectedCount: result.selectedIds.length });
+  const detail = await jobDetail(result.jobId, req.user!.tenantId, req);
   const selectedIdSet = new Set(result.selectedIds.map(Number));
   res.json({
     ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(Number(label.id))) } : {}),
@@ -246,6 +299,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
   }
 
   const result = await withTransaction(async (conn) => {
+    const dv = divisionWhere(req);
     let approvedIds: number[] | null = null;
     if (approvedRequestId) {
       const ownerClause = isAdmin ? '' : ' AND requested_by = ?';
@@ -257,8 +311,8 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       } catch { approvedIds = []; }
     }
     const [jobs] = await conn.execute<RowDataPacket[]>(
-      'SELECT * FROM qr_print_jobs WHERE id = ? AND tenant_id = ? FOR UPDATE',
-      [id, req.user!.tenantId]
+      `SELECT * FROM qr_print_jobs WHERE id = ? AND tenant_id = ?${dv.sql} FOR UPDATE`,
+      [id, req.user!.tenantId, ...dv.params] as any[]
     );
     if (jobs.length === 0) return null;
     const job = jobs[0];
@@ -266,16 +320,16 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     let labels: RowDataPacket[] = [];
     if (approvedIds !== null) {
       const placeholders = approvedIds.map(() => '?').join(',');
-      const [rows] = approvedIds.length ? await conn.query<RowDataPacket[]>(`SELECT * FROM qr_labels WHERE print_job_id = ? AND id IN (${placeholders}) ORDER BY serial_no ASC FOR UPDATE`, [id, ...approvedIds]) : [[] as any, []] as any;
+      const [rows] = approvedIds.length ? await conn.query<RowDataPacket[]>(`SELECT * FROM qr_labels WHERE print_job_id = ? AND tenant_id = ? AND id IN (${placeholders})${dv.sql} ORDER BY serial_no ASC FOR UPDATE`, [id, req.user!.tenantId, ...approvedIds, ...dv.params] as any[]) : [[] as any, []] as any;
       labels = rows;
       if (labels.length !== approvedIds.length) return { empty: true as const };
     } else if (requestedIds.length > 0) {
       const placeholders = requestedIds.map(() => '?').join(',');
       const [rows] = await conn.query<RowDataPacket[]>(
         `SELECT * FROM qr_labels
-         WHERE print_job_id = ? AND id IN (${placeholders})
+         WHERE print_job_id = ? AND tenant_id = ? AND id IN (${placeholders})${dv.sql}
          ORDER BY serial_no ASC FOR UPDATE`,
-        [id, ...requestedIds]
+        [id, req.user!.tenantId, ...requestedIds, ...dv.params] as any[]
       );
       labels = rows;
     } else {
@@ -284,9 +338,9 @@ export async function reprint(req: Request, res: Response): Promise<void> {
         : Number(job.quantity);
       const [rows] = await conn.execute<RowDataPacket[]>(
         `SELECT * FROM qr_labels
-         WHERE print_job_id = ?
+         WHERE print_job_id = ? AND tenant_id = ?${dv.sql}
          ORDER BY serial_no ASC LIMIT ? FOR UPDATE`,
-        [id, quantity]
+        [id, req.user!.tenantId, ...(dv.params as any[]), quantity]
       );
       labels = rows;
     }
@@ -297,8 +351,8 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       await conn.execute(
         `UPDATE qr_labels
          SET print_count = print_count + 1, last_printed_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ?`,
-        [label.id]
+         WHERE id = ? AND tenant_id = ?${dv.sql}`,
+        [label.id, req.user!.tenantId, ...dv.params] as any[]
       );
     }
     if (approvedIds !== null) {
@@ -307,20 +361,22 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       const [consumed] = await conn.execute<ResultSetHeader>(
         `UPDATE qr_reprint_requests
          SET status = 'FULFILLED', fulfilled_by = ?, fulfilled_by_name = ?, fulfilled_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND status = 'APPROVED'`,
-        [String(req.user!.userId), req.user!.name, approvedRequestId]
+         WHERE id = ? AND tenant_id = ? AND status = 'APPROVED'`,
+        [String(req.user!.userId), req.user!.name, approvedRequestId, String(req.user!.tenantId)]
       );
       if (consumed.affectedRows !== 1) return { forbidden: true as const };
     }
 
     await conn.execute(
-      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description)
-       VALUES (?, ?, ?, 'QR_CODES_REPRINTED', ?)`,
+      `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+       VALUES (?, ?, ?, 'QR_CODES_REPRINTED', ?, ?, ?)`,
       [
         req.user!.userId,
         req.user!.name,
         req.user!.role,
         `${labels.length} QR label${labels.length === 1 ? '' : 's'} reprinted for ${job.job_code}`,
+        req.user!.tenantId,
+        divisionStamp(req),
       ]
     );
     return { jobId: id, selectedIds: labels.map((label) => Number(label.id)) };
@@ -338,7 +394,8 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'No labels were selected for reprint' });
     return;
   }
-  const detail = await jobDetail(result.jobId, req.user!.tenantId);
+  publish(req, 'batch.printed', { jobId: result.jobId, selectedCount: result.selectedIds.length });
+  const detail = await jobDetail(result.jobId, req.user!.tenantId, req);
   const selectedIdSet = new Set(result.selectedIds.map(Number));
   res.json({
     ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(Number(label.id))) } : {}),

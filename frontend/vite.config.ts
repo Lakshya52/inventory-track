@@ -11,7 +11,11 @@ export default defineConfig({
     port: 3000,
     https: true,
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        ws: true,
+      },
       '/uploads': 'http://localhost:3001',
     },
   },

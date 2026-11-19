@@ -10,7 +10,11 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 3002,
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        ws: true,
+      },
       '/uploads': 'http://localhost:3001',
     },
   },

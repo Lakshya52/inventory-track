@@ -123,7 +123,7 @@ export async function printQrLabelsDirect(
   // QZ's embedded HTML renderer and gives the printer driver a fixed-size page.
   const pageWidth = Math.round(widthMm * 8);
   const pageHeight = Math.round(heightMm * 8);
-  const qrSide = Math.max(96, Math.min(pageWidth - 48, Math.round(pageHeight * 0.54)));
+  const qrSide = Math.max(96, Math.min(pageWidth - 48, Math.round(pageHeight * 0.46)));
   const queueJobs: ReturnType<typeof watchQueueJob>[] = [];
   try {
   for (let start = 0; start < labels.length; start += 6) {
@@ -187,30 +187,42 @@ export async function printQrLabelsDirect(
         const inset = Math.round(pageWidth * 0.045);
         const maxTextWidth = pageWidth - inset * 2;
         const textX = inset;
-        const detailY = qrTop + drawnQrSide + Math.round(pageHeight * 0.065);
+        const qrBottom = qrTop + drawnQrSide;
+        // The raw QR value goes directly below the code in large bold type.
+        // Shrink the font just enough to keep the full raw value on one line.
+        const bigValue = String(label.qr_value);
+        context.textAlign = 'center';
+        context.fillStyle = '#0f172a';
+        let bigFont = Math.max(22, Math.round(pageWidth * 0.062));
+        context.font = `bold ${bigFont}px Arial`;
+        while (bigFont > 12 && context.measureText(bigValue).width > maxTextWidth) {
+          bigFont -= 2;
+          context.font = `bold ${bigFont}px Arial`;
+        }
+        const bigValueY = qrBottom + Math.round(pageHeight * 0.068);
+        context.fillText(fitText(context, bigValue, maxTextWidth), pageWidth / 2, bigValueY);
         context.textAlign = 'left';
+        const detailY = bigValueY + Math.round(pageHeight * 0.062);
         context.fillStyle = '#0f172a';
         context.font = `bold ${Math.max(20, Math.round(pageWidth * 0.042))}px Arial`;
         context.fillText(fitText(context, productName, maxTextWidth), textX, detailY);
         context.fillStyle = '#334155';
         context.font = `${Math.max(17, Math.round(pageWidth * 0.035))}px Arial`;
-        context.fillText(fitText(context, `Batch: ${batchNumber}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.062));
+        context.fillText(fitText(context, `Batch: ${batchNumber}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.055));
         context.fillStyle = '#334155';
         context.font = `${Math.max(17, Math.round(pageWidth * 0.035))}px Arial`;
         const packageLabel = packageQuantity == null
           ? ''
           : `Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`;
         if (packageLabel) {
-          context.fillText(fitText(context, packageLabel, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.124));
+          context.fillText(fitText(context, packageLabel, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.11));
         }
         if (godown) {
-          context.fillText(fitText(context, `Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.186));
+          context.fillText(fitText(context, `Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.165));
         }
         context.fillStyle = '#64748b';
         context.font = `${Math.max(14, Math.round(pageWidth * 0.029))}px Arial`;
-        context.fillText(fitText(context, `Bag ${String(bagSerial).padStart(4, '0')}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.248));
-        context.font = `${Math.max(14, Math.round(pageWidth * 0.029))}px Arial`;
-        context.fillText(fitText(context, `QR ID: ${displayQrId(label.qr_value)}`, maxTextWidth), textX, Math.min(pageHeight - 10, detailY + Math.round(pageHeight * 0.294)));
+        context.fillText(fitText(context, `Bag ${String(bagSerial).padStart(4, '0')}`, maxTextWidth), textX, Math.min(pageHeight - 10, detailY + Math.round(pageHeight * 0.22)));
         return {
           type: 'pixel' as const,
           format: 'image' as const,
@@ -246,10 +258,6 @@ function fitText(context: CanvasRenderingContext2D, value: unknown, maxWidth: nu
   let shortened = text;
   while (shortened.length > 1 && context.measureText(`${shortened}…`).width > maxWidth) shortened = shortened.slice(0, -1);
   return `${shortened}…`;
-}
-
-function displayQrId(value: string): string {
-  return parseQrPayload(value)?.id || value;
 }
 
 function parseQrPayload(value: string): Record<string, any> | null {

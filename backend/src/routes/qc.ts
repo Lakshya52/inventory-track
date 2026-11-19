@@ -29,7 +29,7 @@ const printRateLimit = rateLimit({
 });
 router.post('/qr-jobs/:id/print', authorize('ADMIN', 'DISPATCH'), printRateLimit, printInitial);
 // Reprint requests belong to Dispatch only. QC neither raises nor completes them.
-router.post('/qr-jobs/:id/reprint-request', authorize('DISPATCH'), createQrReprintRequest);
+router.post('/qr-jobs/:id/reprint-request', authorize('ADMIN', 'DISPATCH'), createQrReprintRequest);
 router.get('/qr-jobs/reprint-requests', authorize('ADMIN', 'DISPATCH'), listQrReprintRequests);
 router.post('/qr-jobs/reprint-requests/:requestId/review', authorize('ADMIN'), reviewQrReprintRequest);
 router.post('/qr-jobs/reprint-requests/:requestId/complete', authorize('ADMIN', 'DISPATCH'), completeQrReprintRequest);

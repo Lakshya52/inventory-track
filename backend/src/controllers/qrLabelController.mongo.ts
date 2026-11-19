@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { DbContext, getContext, idKey, isValidId, now, withTransaction } from '../config/database';
 import { contains, EntityId, mapByIds } from '../services/queryService';
+import { divisionFilter, divisionStamp } from '../utils/division';
+import { publish } from '../realtime/hub';
 
 const QC_PASSED_STATUSES = new Set([
   'QC_PASSED',
@@ -12,11 +14,14 @@ const QC_PASSED_STATUSES = new Set([
 
 async function jobStats(
   ctx: DbContext,
-  jobIds: EntityId[]
+  jobIds: EntityId[],
+  tenantId?: EntityId,
+  divisionScope?: Record<string, any>
 ): Promise<Map<string, { total_prints: number; label_count: number; last_printed_at: Date | null }>> {
   if (jobIds.length === 0) return new Map();
+  const tenantFilter = tenantId === undefined || tenantId === null ? {} : { tenant_id: tenantId };
   const rows = await ctx.aggregate('qr_labels', [
-    { $match: { print_job_id: { $in: jobIds } } },
+    { $match: { print_job_id: { $in: jobIds }, ...tenantFilter, ...(divisionScope ?? {}) } },
     {
       $group: {
         _id: '$print_job_id',
@@ -36,28 +41,38 @@ async function jobStats(
   ]));
 }
 
-async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<Record<string, any>[]> {
+async function enrichJobs(
+  ctx: DbContext,
+  jobs: Record<string, any>[],
+  tenantId?: EntityId,
+  divisionScope?: Record<string, any>
+): Promise<Record<string, any>[]> {
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    jobs.map((job) => job.product_id)
+    jobs.map((job) => job.product_id),
+    tenantId,
+    divisionScope
   );
   const qcCreators = await mapByIds<Record<string, any>>(
     ctx,
     'qc_users',
-    jobs.filter((job) => job.created_by_role === 'QC').map((job) => job.created_by)
+    jobs.filter((job) => job.created_by_role === 'QC').map((job) => job.created_by),
+    tenantId
   );
   const adminCreators = await mapByIds<Record<string, any>>(
     ctx,
     'admins',
-    jobs.filter((job) => job.created_by_role === 'ADMIN').map((job) => job.created_by)
+    jobs.filter((job) => job.created_by_role === 'ADMIN').map((job) => job.created_by),
+    tenantId
   );
-  const stats = await jobStats(ctx, jobs.map((job) => job.id));
+  const stats = await jobStats(ctx, jobs.map((job) => job.id), tenantId, divisionScope);
+  const tenantFilter = tenantId === undefined || tenantId === null ? {} : { tenant_id: tenantId };
 
   const jobIds = jobs.map((job) => job.id);
   const firstLabels = jobIds.length
     ? await ctx.aggregate('qr_labels', [
-        { $match: { print_job_id: { $in: jobIds } } },
+        { $match: { print_job_id: { $in: jobIds }, ...tenantFilter, ...(divisionScope ?? {}) } },
         { $sort: { serial_no: 1 } },
         {
           $group: {
@@ -73,7 +88,9 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    firstLabels.map((row) => row.batch_id)
+    firstLabels.map((row) => row.batch_id),
+    tenantId,
+    divisionScope
   );
   const groupKeys = [...new Set(
     [...batches.values()]
@@ -81,7 +98,7 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
       .filter((key) => key !== null && key !== undefined && key !== '')
   )];
   const groupRows = groupKeys.length
-    ? await ctx.find('batch_groups', { group_key: { $in: groupKeys } }, {
+    ? await ctx.find('batch_groups', { group_key: { $in: groupKeys }, ...tenantFilter, ...(divisionScope ?? {}) }, {
         projection: { _id: 0, group_key: 1, batch_number: 1, status: 1 },
       })
     : [];
@@ -120,33 +137,45 @@ async function enrichJobs(ctx: DbContext, jobs: Record<string, any>[]): Promise<
 
 async function jobDetail(
   id: EntityId,
-  tenantId?: EntityId
+  tenantId?: EntityId,
+  divisionScope?: Record<string, any>
 ): Promise<{ job: Record<string, any>; labels: Record<string, any>[] } | null> {
   const ctx = await getContext();
   const jobFilter: Record<string, any> = { id };
   if (tenantId !== undefined && tenantId !== null) jobFilter.tenant_id = tenantId;
+  Object.assign(jobFilter, divisionScope ?? {});
   const job = await ctx.findOne('qr_print_jobs', jobFilter, { projection: { _id: 0 } });
   if (!job) return null;
 
-  const [enrichedJob] = await enrichJobs(ctx, [job]);
-  const labels = await ctx.find('qr_labels', { print_job_id: id }, {
+  const [enrichedJob] = await enrichJobs(ctx, [job], tenantId, divisionScope);
+  const labels = await ctx.find('qr_labels', {
+    print_job_id: id,
+    ...(tenantId === undefined || tenantId === null ? {} : { tenant_id: tenantId }),
+    ...(divisionScope ?? {}),
+  }, {
     sort: { serial_no: 1 },
     projection: { _id: 0 },
   });
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    labels.map((label) => label.batch_id)
+    labels.map((label) => label.batch_id),
+    tenantId,
+    divisionScope
   );
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
-    labels.map((label) => batches.get(idKey(label.batch_id))?.product_id)
+    labels.map((label) => batches.get(idKey(label.batch_id))?.product_id),
+    tenantId,
+    divisionScope
   );
   const locations = await mapByIds<Record<string, any>>(
     ctx,
     'shelf_locations',
-    labels.map((label) => batches.get(idKey(label.batch_id))?.shelf_location_id)
+    labels.map((label) => batches.get(idKey(label.batch_id))?.shelf_location_id),
+    tenantId,
+    divisionScope
   );
 
   return {
@@ -187,10 +216,11 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
   }
 
   const result = await withTransaction(async (ctx: DbContext) => {
-    const job = await ctx.findOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId }, { projection: { _id: 0 } });
+    const divisionScope = divisionFilter(req);
+    const job = await ctx.findOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId, ...divisionScope }, { projection: { _id: 0 } });
     if (!job) return null;
 
-    const labels = await ctx.find('qr_labels', { print_job_id: id }, {
+    const labels = await ctx.find('qr_labels', { print_job_id: id, tenant_id: req.user!.tenantId, ...divisionScope }, {
       sort: { serial_no: 1 },
       projection: { _id: 0 },
     });
@@ -200,10 +230,10 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
     }
 
     const firstBatch = labels[0].batch_id
-      ? await ctx.findOne('batches', { id: labels[0].batch_id }, { projection: { _id: 0 } })
+      ? await ctx.findOne('batches', { id: labels[0].batch_id, tenant_id: req.user!.tenantId, ...divisionScope }, { projection: { _id: 0 } })
       : null;
     const group = firstBatch?.batch_group_id
-      ? await ctx.findOne('batch_groups', { group_key: firstBatch.batch_group_id }, {
+      ? await ctx.findOne('batch_groups', { group_key: firstBatch.batch_group_id, tenant_id: req.user!.tenantId, ...divisionScope }, {
           projection: { _id: 0, group_key: 1, batch_number: 1, status: 1 },
         })
       : null;
@@ -213,7 +243,7 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
     }
 
     for (const label of labels) {
-      await ctx.updateOne('qr_labels', { id: label.id }, {
+      await ctx.updateOne('qr_labels', { id: label.id, tenant_id: req.user!.tenantId, ...divisionScope }, {
         $set: { print_count: 1, last_printed_at: now() },
       });
     }
@@ -225,12 +255,14 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
       labels.map((label) => label.batch_id).filter((batchId) => batchId !== null && batchId !== undefined)
     )];
     for (const batchId of printedBatchIds) {
-      await ctx.updateOne('batches', { id: batchId }, {
+      await ctx.updateOne('batches', { id: batchId, tenant_id: req.user!.tenantId, ...divisionScope }, {
         $set: { qr_printed_at: printedAt },
       });
     }
 
     await ctx.insert('activity_logs', {
+      tenant_id: req.user!.tenantId,
+      division_id: divisionStamp(req),
       user_id: req.user!.userId,
       user_name: req.user!.name,
       user_role: req.user!.role,
@@ -258,8 +290,9 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const detail = await jobDetail(result.jobId);
+  const detail = await jobDetail(result.jobId, req.user!.tenantId, divisionFilter(req));
   const selectedIdSet = new Set(result.selectedIds.map(idKey));
+  publish(req, 'batch.printed', { jobId: result.jobId, selectedCount: result.selectedIds.length });
   res.json({
     ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(idKey(label.id))) } : {}),
     selected_ids: result.selectedIds,
@@ -272,13 +305,14 @@ export async function list(req: Request, res: Response): Promise<void> {
   const ctx = await getContext();
 
   // Print jobs are tenant-scoped: a workspace never sees another one's jobs.
-  const filter: Record<string, any> = { tenant_id: req.user!.tenantId };
+  const divisionScope = divisionFilter(req);
+  const filter: Record<string, any> = { tenant_id: req.user!.tenantId, ...divisionScope };
   if (q) {
     // Product names are excluded because one product can own thousands of QR
     // labels; job codes, batch numbers, and label QR values identify a job.
     const [qrLabels, matchingGroups] = await Promise.all([
       q.length >= 8
-        ? ctx.find('qr_labels', { qr_value: contains(q) }, {
+        ? ctx.find('qr_labels', { qr_value: contains(q), tenant_id: req.user!.tenantId, ...divisionScope }, {
             limit: 50,
             projection: { print_job_id: 1 },
           })
@@ -286,6 +320,7 @@ export async function list(req: Request, res: Response): Promise<void> {
       ctx.find('batch_groups', {
         tenant_id: req.user!.tenantId,
         batch_number: contains(q),
+        ...divisionScope,
       }, { projection: { group_key: 1 } }),
     ]);
     const qrJobIds = qrLabels
@@ -294,6 +329,7 @@ export async function list(req: Request, res: Response): Promise<void> {
     const matchingGroupKeys = matchingGroups.map((group) => group.group_key);
     const matchingBatches = await ctx.find('batches', {
       tenant_id: req.user!.tenantId,
+      ...divisionScope,
       $or: [
         { batch_number: contains(q) },
         { parent_batch_number: contains(q) },
@@ -302,7 +338,7 @@ export async function list(req: Request, res: Response): Promise<void> {
     }, { projection: { id: 1 } });
     const batchJobRows = matchingBatches.length
       ? await ctx.aggregate('qr_labels', [
-          { $match: { batch_id: { $in: matchingBatches.map((batch) => batch.id) } } },
+          { $match: { batch_id: { $in: matchingBatches.map((batch) => batch.id) }, tenant_id: req.user!.tenantId, ...divisionScope } },
           { $group: { _id: '$print_job_id' } },
         ])
       : [];
@@ -319,7 +355,7 @@ export async function list(req: Request, res: Response): Promise<void> {
     limit: 100,
     projection: { _id: 0 },
   });
-  const items = await enrichJobs(ctx, jobs);
+  const items = await enrichJobs(ctx, jobs, req.user!.tenantId, divisionScope);
   res.json({ items, total: items.length });
 }
 
@@ -328,7 +364,7 @@ export async function getById(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Invalid QR label job id' });
     return;
   }
-  const detail = await jobDetail(req.params.id, req.user!.tenantId);
+  const detail = await jobDetail(req.params.id, req.user!.tenantId, divisionFilter(req));
   if (!detail) {
     res.status(404).json({ error: 'QR label job not found' });
     return;
@@ -358,6 +394,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
   }
 
   const result = await withTransaction(async (ctx: DbContext) => {
+    const divisionScope = divisionFilter(req);
     let approvedRequest: Record<string, any> | null = null;
     if (approvedRequestId) {
       approvedRequest = await ctx.findOne('qr_reprint_requests', {
@@ -369,7 +406,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       });
       if (!approvedRequest) return { forbidden: true as const };
     }
-    const job = await ctx.findOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId }, { projection: { _id: 0 } });
+    const job = await ctx.findOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId, ...divisionScope }, { projection: { _id: 0 } });
     if (!job) return null;
 
     let labels: Record<string, any>[];
@@ -378,12 +415,16 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       labels = approvedIds.length ? await ctx.find('qr_labels', {
         print_job_id: id,
         id: { $in: approvedIds },
+        tenant_id: req.user!.tenantId,
+        ...divisionScope,
       }, { sort: { serial_no: 1 }, projection: { _id: 0 } }) : [];
       if (labels.length !== approvedIds.length) return { empty: true as const };
     } else if (requestedIds.length > 0) {
       labels = await ctx.find('qr_labels', {
         print_job_id: id,
         id: { $in: requestedIds },
+        tenant_id: req.user!.tenantId,
+        ...divisionScope,
       }, {
         sort: { serial_no: 1 },
         projection: { _id: 0 },
@@ -392,7 +433,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       const quantity = Number.isInteger(requestedQuantity) && requestedQuantity > 0
         ? Math.min(requestedQuantity, Number(job.quantity))
         : Number(job.quantity);
-      labels = await ctx.find('qr_labels', { print_job_id: id }, {
+      labels = await ctx.find('qr_labels', { print_job_id: id, tenant_id: req.user!.tenantId, ...divisionScope }, {
         sort: { serial_no: 1 },
         limit: quantity,
         projection: { _id: 0 },
@@ -402,7 +443,7 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     if (labels.length === 0) return { empty: true as const };
 
     if (!approvedRequest) for (const label of labels) {
-      await ctx.updateOne('qr_labels', { id: label.id }, {
+      await ctx.updateOne('qr_labels', { id: label.id, tenant_id: req.user!.tenantId, ...divisionScope }, {
         $inc: { print_count: 1 },
         $set: { last_printed_at: now() },
       });
@@ -410,14 +451,14 @@ export async function reprint(req: Request, res: Response): Promise<void> {
       // An approved reprint request is single use: the print itself consumes
       // the approval, so it can never be replayed for a second copy.
       for (const label of labels) {
-        await ctx.updateOne('qr_labels', { id: label.id }, {
+        await ctx.updateOne('qr_labels', { id: label.id, tenant_id: req.user!.tenantId, ...divisionScope }, {
           $inc: { print_count: 1 },
           $set: { last_printed_at: now() },
         });
       }
       const consumed = await ctx.updateOne(
         'qr_reprint_requests',
-        { id: approvedRequest.id, status: 'APPROVED' },
+        { id: approvedRequest.id, tenant_id: req.user!.tenantId, status: 'APPROVED' },
         {
           $set: {
             status: 'FULFILLED',
@@ -433,6 +474,8 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     }
 
     await ctx.insert('activity_logs', {
+      tenant_id: req.user!.tenantId,
+      division_id: divisionStamp(req),
       user_id: req.user!.userId,
       user_name: req.user!.name,
       user_role: req.user!.role,
@@ -454,8 +497,9 @@ export async function reprint(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'No labels were selected for reprint' });
     return;
   }
-  const detail = await jobDetail(result.jobId);
+  const detail = await jobDetail(result.jobId, req.user!.tenantId, divisionFilter(req));
   const selectedIdSet = new Set(result.selectedIds.map(idKey));
+  publish(req, 'batch.printed', { jobId: result.jobId, selectedCount: result.selectedIds.length });
   res.json({
     ...(detail ? { job: detail.job, labels: detail.labels.filter((label) => selectedIdSet.has(idKey(label.id))) } : {}),
     selected_ids: result.selectedIds,
