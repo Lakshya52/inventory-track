@@ -13,8 +13,11 @@ export async function list(req: Request, res: Response): Promise<void> {
 export async function create(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const { name, contact_person, email, phone, address, gst_number } = req.body;
-  if (!name) { res.status(400).json({ error: 'Client name is required' }); return; }
+  if (!name || !String(name).trim()) { res.status(400).json({ error: 'Client name is required' }); return; }
   const ctx = await getContext();
+  const safe = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const duplicate = await ctx.findOne('clients', { tenant_id: tenantId, name: { $regex: `^${safe}$`, $options: 'i' } }, { projection: { id: 1 } });
+  if (duplicate) { res.status(409).json({ error: 'A client with that name already exists' }); return; }
   const id = await ctx.insert('clients', {
     tenant_id: tenantId,
     name,
@@ -51,6 +54,9 @@ export async function update(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Client name is required' });
     return;
   }
+  const safeName = nextName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const duplicate = await ctx.findOne('clients', { tenant_id: tenantId, id: { $ne: id }, name: { $regex: `^${safeName}$`, $options: 'i' } }, { projection: { id: 1 } });
+  if (duplicate) { res.status(409).json({ error: 'A client with that name already exists' }); return; }
   const active = is_active === undefined ? existing.is_active : Number(is_active) === 1 ? 1 : 0;
   await ctx.updateOne('clients', { id, tenant_id: tenantId }, {
     $set: {

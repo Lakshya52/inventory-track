@@ -19,6 +19,77 @@ function idPath(id: EntityId): string {
   return encodeURIComponent(String(id));
 }
 
+/** Shared shapes returned by the products / clients / vendors import endpoints. */
+export type MasterImportSummary = {
+  total: number;
+  valid: number;
+  warnings: number;
+  errors: number;
+  duplicatesInFile: number;
+  duplicatesInDb: number;
+  noDivision: number;
+  missingSku: number;
+  missingManufacturer: number;
+  defaults: number;
+  missingUom: number;
+  missingCode: number;
+};
+export type MasterImportRow = {
+  row: number;
+  label?: string;
+  code?: string;
+  division?: string;
+  product?: string;
+  grade?: string;
+  sku?: string | null;
+  manufacturer?: string;
+  description?: string;
+  status: 'valid' | 'warning' | 'error';
+  errors: string[];
+  warnings: string[];
+};
+export type MasterImportValidation = {
+  templateDivision?: string | null;
+  summary: MasterImportSummary;
+  rows: MasterImportRow[];
+};
+export type MasterImportResult = {
+  imported: number;
+  skippedRows: number;
+  failed: Array<{ row: number; message: string }>;
+  summary?: MasterImportSummary;
+};
+
+function masterImportTemplate(path: string): Promise<Blob> {
+  return fetchWithSession(path).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Could not download the template');
+    }
+    return res.blob();
+  });
+}
+
+function masterImportValidate(path: string, file: File): Promise<MasterImportValidation> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return fetchWithSession(path, { method: 'POST', body: formData }).then(async (res) => {
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Validation failed');
+    return body as MasterImportValidation;
+  });
+}
+
+function masterImportApply(path: string, file: File): Promise<MasterImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return fetchWithSession(path, { method: 'POST', body: formData }).then(async (res) => {
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Import failed');
+    return body as MasterImportResult;
+  });
+}
+
 export function uploadUrl(filename: string): string {
   return `${apiOrigin()}/uploads/${filename}`;
 }
@@ -247,6 +318,9 @@ export const api = {
     setStatus: (id: EntityId, is_active: boolean) =>
       request<any>(`/vendors/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
     delete: (id: EntityId) => request<any>(`/vendors/${idPath(id)}`, { method: 'DELETE' }),
+    importTemplate: () => masterImportTemplate('/vendors/import/template'),
+    importValidate: (file: File) => masterImportValidate('/vendors/import/validate', file),
+    importApply: (file: File) => masterImportApply('/vendors/import/apply', file),
   },
   reports: {
     summary: () => request<any>('/reports/summary'),
@@ -615,6 +689,9 @@ export const api = {
       request<any>('/clients', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: EntityId, data: any) => request<any>(`/clients/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: EntityId) => request<any>(`/clients/${idPath(id)}`, { method: 'DELETE' }),
+    importTemplate: () => masterImportTemplate('/clients/import/template'),
+    importValidate: (file: File) => masterImportValidate('/clients/import/validate', file),
+    importApply: (file: File) => masterImportApply('/clients/import/apply', file),
   },
   dashboard: {
     stats: () => request<any>('/dashboard'),

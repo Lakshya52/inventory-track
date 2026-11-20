@@ -4,8 +4,9 @@ import { EntityId, Vendor } from '../types';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   Factory, Plus, Search, Pencil, Trash2, X, Power, Building2,
-  Mail, Phone, MapPin, BadgeCheck, Handshake
+  Mail, Phone, MapPin, BadgeCheck, Handshake, Upload
 } from 'lucide-react';
+import ImportWizard from '../components/ImportWizard';
 
 const emptyForm = {
   name: '',
@@ -31,6 +32,7 @@ export default function Vendors({ embedded = false }: { embedded?: boolean }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
+  const [showImportWizard, setShowImportWizard] = useState(false);
 
   const loadVendors = () => {
     api.vendors.list().then(setVendors).catch(err => setError(err.message));
@@ -142,7 +144,10 @@ export default function Vendors({ embedded = false }: { embedded?: boolean }) {
               <p className="page-subtitle">Add, update, deactivate and remove raw material vendor and supplier records</p>
             </div>
           </div>
-          <button onClick={openCreate} className="btn-primary"><Plus size={16} /> Add Vendor</button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import vendors</button>
+            <button onClick={openCreate} className="btn-primary"><Plus size={16} /> Add Vendor</button>
+          </div>
         </div>
       ) : (
         <div className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-xs sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -155,9 +160,12 @@ export default function Vendors({ embedded = false }: { embedded?: boolean }) {
               <p className="mt-0.5 text-sm text-slate-500">Manage raw material suppliers, manufacturers, and source vendors ({vendors.length} total)</p>
             </div>
           </div>
-          <button onClick={openCreate} className="btn-primary shrink-0">
-            <Plus size={16} /> Add Vendor
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import vendors</button>
+            <button onClick={openCreate} className="btn-primary">
+              <Plus size={16} /> Add Vendor
+            </button>
+          </div>
         </div>
       )}
 
@@ -338,6 +346,14 @@ export default function Vendors({ embedded = false }: { embedded?: boolean }) {
             </form>
           </div>
         </div>
+      )}
+
+      {showImportWizard && (
+        <ImportWizard
+          kind="vendors"
+          onClose={() => setShowImportWizard(false)}
+          onImported={() => loadVendors()}
+        />
       )}
     </div>
   );

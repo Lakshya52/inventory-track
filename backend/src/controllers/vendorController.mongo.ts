@@ -61,6 +61,9 @@ export async function create(req: Request, res: Response): Promise<void> {
   }
 
   const ctx = await getContext();
+  const safeName = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const duplicateName = await ctx.findOne('vendors', { tenant_id: tenantId, name: { $regex: `^${safeName}$`, $options: 'i' } }, { projection: { id: 1 } });
+  if (duplicateName) { res.status(409).json({ error: 'A vendor with that name already exists' }); return; }
   const tempCode = `_TMP_${Date.now()}`;
   try {
     const id = await ctx.insert('vendors', {
@@ -113,6 +116,9 @@ export async function update(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'The built-in Self supplier cannot be edited' });
     return;
   }
+  const safeName = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const duplicateName = await ctx.findOne('vendors', { tenant_id: tenantId, id: { $ne: id }, name: { $regex: `^${safeName}$`, $options: 'i' } }, { projection: { id: 1 } });
+  if (duplicateName) { res.status(409).json({ error: 'A vendor with that name already exists' }); return; }
   const result = await ctx.updateOne('vendors', { id, tenant_id: tenantId }, {
     $set: {
       name: String(name).trim(),

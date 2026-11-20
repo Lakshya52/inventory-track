@@ -16,10 +16,13 @@ export async function list(req: Request, res: Response): Promise<void> {
 export async function create(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const { name, contact_person, email, phone, address, gst_number } = req.body;
-  if (!name) { res.status(400).json({ error: 'Client name is required' }); return; }
+  if (!name || !String(name).trim()) { res.status(400).json({ error: 'Client name is required' }); return; }
+  const trimmed = String(name).trim();
+  const duplicates = await query<RowDataPacket[]>('SELECT id FROM clients WHERE tenant_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', [tenantId, trimmed]);
+  if (duplicates.length > 0) { res.status(409).json({ error: 'A client with that name already exists' }); return; }
   const result = await execute(
     'INSERT INTO clients (name, contact_person, email, phone, address, gst_number, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [name, contact_person || null, email || null, phone || null, address || null, gst_number || null, tenantId]
+    [trimmed, contact_person || null, email || null, phone || null, address || null, gst_number || null, tenantId]
   );
   await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id) VALUES (?, ?, ?, ?, ?)',
     [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_CREATED', `Client "${name}" created`, tenantId]);
@@ -40,6 +43,8 @@ export async function update(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Client name is required' });
     return;
   }
+  const duplicates = await query<RowDataPacket[]>('SELECT id FROM clients WHERE tenant_id = ? AND id <> ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', [tenantId, id, nextName]);
+  if (duplicates.length > 0) { res.status(409).json({ error: 'A client with that name already exists' }); return; }
   const active = is_active === undefined ? existing[0].is_active : Number(is_active) === 1 ? 1 : 0;
   await execute(
     'UPDATE clients SET name = ?, contact_person = ?, email = ?, phone = ?, address = ?, gst_number = ?, is_active = ? WHERE id = ? AND tenant_id = ?',

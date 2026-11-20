@@ -51,6 +51,9 @@ export async function create(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'Vendor name is required' });
     return;
   }
+  const trimmedName = String(name).trim();
+  const duplicates = await query<RowDataPacket[]>('SELECT id FROM vendors WHERE tenant_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', [tenantId, trimmedName]);
+  if (duplicates.length > 0) { res.status(409).json({ error: 'A vendor with that name already exists' }); return; }
 
   const tempCode = `_TMP_${Date.now()}`;
   try {
@@ -107,6 +110,8 @@ export async function update(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'The built-in Self supplier cannot be edited' });
     return;
   }
+  const duplicates = await query<RowDataPacket[]>('SELECT id FROM vendors WHERE tenant_id = ? AND id <> ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', [tenantId, id, String(name).trim()]);
+  if (duplicates.length > 0) { res.status(409).json({ error: 'A vendor with that name already exists' }); return; }
 
   const result = await execute(
     `UPDATE vendors SET

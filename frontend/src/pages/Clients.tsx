@@ -1,8 +1,9 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { Client, EntityId } from '../types';
-import { Building2, Plus, Pencil, Trash2, X, Handshake } from 'lucide-react';
+import { Building2, Plus, Pencil, Trash2, X, Handshake, Upload } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import ImportWizard from '../components/ImportWizard';
 
 export default function Clients({ embedded = false }: { embedded?: boolean }) {
   const [clients, setClients] = useState<Client[]>([]);
@@ -16,6 +17,7 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
   const [gst, setGst] = useState('');
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const [showImportWizard, setShowImportWizard] = useState(false);
   const debouncedSearch = useDebouncedValue(search, 250);
 
   const loadClients = async () => {
@@ -74,7 +76,10 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
               <p className="page-subtitle">Manage client accounts and dispatch delivery destinations</p>
             </div>
           </div>
-          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import clients</button>
+            <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
+          </div>
         </div>
       ) : (
         <div className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-xs sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -87,9 +92,12 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
               <p className="mt-0.5 text-sm text-slate-500">Manage corporate client accounts and delivery destinations ({clients.length} total)</p>
             </div>
           </div>
-          <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary shrink-0">
-            <Plus size={16} /> Add Client
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import clients</button>
+            <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+              <Plus size={16} /> Add Client
+            </button>
+          </div>
         </div>
       )}
 
@@ -170,6 +178,14 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
           </table>
         </div>
       </div>
+
+      {showImportWizard && (
+        <ImportWizard
+          kind="clients"
+          onClose={() => setShowImportWizard(false)}
+          onImported={() => { void loadClients(); }}
+        />
+      )}
     </div>
   );
 }
