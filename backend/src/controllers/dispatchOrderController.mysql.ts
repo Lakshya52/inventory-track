@@ -285,6 +285,64 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   res.json(await withOrderLines(orders, tenantId, undefined, req));
 }
 
+/** Paginated order history for the dedicated history screen. */
+export async function listHistory(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const q = String(req.query.q || '').trim();
+  const status = String(req.query.status || '').toUpperCase();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  const search = searchClause(q);
+  const where = ['d.tenant_id = ?', 'b.tenant_id = ?', 'p.tenant_id = ?'];
+  const params: any[] = [tenantId, tenantId, tenantId];
+  if (req.user!.role === 'DISPATCH') {
+    where.push('d.raised_by = ?');
+    params.push(req.user!.userId);
+  }
+  if (['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'CLOSED_DISPATCHED', 'CLOSED_NOT_DISPATCHED'].includes(status)) {
+    where.push('d.status = ?');
+    params.push(status);
+  }
+  params.push(...search.params);
+  const dvD = divisionWhere(req, 'd.division_id');
+  const dvB = divisionWhere(req, 'b.division_id');
+  const dvP = divisionWhere(req, 'p.division_id');
+  const dvG = divisionWhere(req, 'g.division_id');
+  const joinTenantParams = [tenantId, ...dvG.params, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId];
+  const from = `FROM dispatch_orders d
+      JOIN batches b ON d.batch_id = b.id ${dvB.sql}
+      JOIN products p ON b.product_id = p.id ${dvP.sql}
+      LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
+      LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id AND q.tenant_id = ?
+      LEFT JOIN admins a ON d.admin_id = a.id AND a.tenant_id = ?
+      LEFT JOIN admins aa ON d.approved_by_id = aa.id AND d.approved_by_role = 'ADMIN' AND aa.tenant_id = ?
+      LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC' AND qu.tenant_id = ?
+      LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH' AND du.tenant_id = ?
+      LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
+      WHERE ${where.join(' AND ')} ${search.sql} ${dvD.sql}`;
+  const bind = [...dvB.params, ...dvP.params, ...joinTenantParams, ...params, ...dvD.params];
+  const [countRows] = await query<RowDataPacket[]>(`SELECT COUNT(DISTINCT d.id) AS count ${from}`, bind);
+  const orders = await query<RowDataPacket[]>(
+    `SELECT d.*, b.batch_number, b.barcode_value, COALESCE(d.quantity, b.quantity) AS quantity, b.uom, b.status AS batch_status,
+            p.name AS product_name,
+            p.sku AS product_sku, p.grade AS product_grade, g.name AS grade_name,
+            q.name AS bag_quantity_name, q.quantity AS bag_quantity, q.unit AS bag_quantity_unit,
+            a.name AS admin_name, c.name AS client_name,
+            d.container_number, COALESCE(aa.name, qu.name, du.name) AS approver_name
+     ${from}
+     ORDER BY d.created_at DESC LIMIT ? OFFSET ?`,
+    [...bind, limit, (page - 1) * limit]
+  );
+  const total = Number(countRows[0]?.count || 0);
+  res.json({
+    items: await withOrderLines(orders, tenantId, undefined, req),
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / limit)),
+    limit,
+  });
+}
+
 /**
  * Dispatch orders need no approval: raising one releases it straight away.
  * A raised order can still be cancelled by the dispatcher who raised it (or

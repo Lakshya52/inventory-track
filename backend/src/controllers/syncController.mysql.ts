@@ -176,7 +176,7 @@ export async function pull(req: Request, res: Response): Promise<void> {
     `SELECT b.*, p.name AS product_name, p.sku AS product_sku, p.cas_number,
             p.molecular_formula, p.grade AS product_grade, p.purity AS product_purity,
             p.hazard_classification, p.storage_conditions, p.manufacturer,
-            p.physical_state, p.hsn_code, p.price AS product_price,
+            p.physical_state, p.hsn_code,
             s.location_code,
             (SELECT JSON_ARRAYAGG(l.qr_value) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?${dvL.sql}) AS unit_qr_codes,
             UNIX_TIMESTAMP(b.updated_at) * 1000 AS _updated_ms

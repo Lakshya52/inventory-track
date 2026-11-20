@@ -74,8 +74,8 @@ function isActiveMaster(row: any): boolean {
 
 export default function Batches() {
   const { user } = useAuth();
-  // Batch creation moved to Dispatch. QC decisions happen on the QC Review page.
-  const canManageBatches = false;
+  // Legacy screen: keep admin in control if it is ever routed again.
+  const canManageBatches = user?.role === 'ADMIN';
   const canDownloadQr = user?.role === 'ADMIN';
   // products state removed — server-side combobox with debounced search
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -98,7 +98,6 @@ export default function Batches() {
   const [batchNumber, setBatchNumber] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [uom, setUom] = useState('pcs');
-  const [unitPrice, setUnitPrice] = useState('');
   const [manufacturingDate, setManufacturingDate] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [shelfLocationId, setShelfLocationId] = useState('');
@@ -160,7 +159,6 @@ export default function Batches() {
   const isProductSearchOpen = productSearch.trim().length > 0 && !productId;
   const selectProductHit = (p: any) => {
     setProductId(String(p.id));
-    if (p?.price && Number(p.price) > 0) setUnitPrice(String(p.price));
     setProductSearch(''); // clear the typed query — selection sticks in productId
   };
 
@@ -220,7 +218,6 @@ export default function Batches() {
     setBatchCount('1');
     setQuantity('1');
     setUom('pcs');
-    setUnitPrice('');
     setManufacturingDate('');
     setExpiryDate('');
     setShelfLocationId('');
@@ -235,7 +232,6 @@ export default function Batches() {
     setSuccess('');
     const batchTotal = Number(batchCount);
     const unitCount = Number(quantity);
-    const price = unitPrice.trim() ? Number(unitPrice) : 0;
     if (!Number.isInteger(batchTotal) || batchTotal < 1 || batchTotal > 100) {
       setError('Enter a whole-number batch count between 1 and 100.');
       return;
@@ -246,10 +242,6 @@ export default function Batches() {
     }
     if (batchTotal * unitCount > 10000) {
       setError('A single generation can contain no more than 10,000 products.');
-      return;
-    }
-    if (!Number.isFinite(price) || price < 0) {
-      setError('Enter a valid non-negative unit price.');
       return;
     }
     if (manufacturingDate && expiryDate && expiryDate < manufacturingDate) {
@@ -263,7 +255,6 @@ export default function Batches() {
         quantity: Number(quantity),
         batch_count: batchTotal,
         uom: uom || undefined,
-        unit_price: price,
         manufacturing_date: manufacturingDate || undefined,
         expiry_date: expiryDate || undefined,
         notes: notes || undefined,
@@ -657,7 +648,6 @@ export default function Batches() {
                             >
                               <span className="font-bold text-slate-800">{p.name} <span className="font-mono text-xs font-semibold text-slate-500">({p.sku})</span></span>
                               {(p.grade || p.description) && <span className="text-[11px] font-medium text-slate-500">{[p.grade, p.description].filter(Boolean).join(' · ')}</span>}
-                              {p.price != null && Number(p.price) > 0 && <span className="text-[10px] font-bold uppercase tracking-wide text-brand-700">₹ {Number(p.price).toLocaleString()}</span>}
                             </button>
                           </li>
                         ))
@@ -715,19 +705,6 @@ export default function Batches() {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-                    Unit Price (₹)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                    placeholder="e.g. 1500"
-                    value={unitPrice}
-                    onChange={(e) => setUnitPrice(e.target.value)}
-                  />
-                </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">

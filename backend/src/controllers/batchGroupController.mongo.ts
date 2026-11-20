@@ -4,7 +4,7 @@ import { getContext, parseDateValue, withTransaction } from '../config/database'
 import { divisionFilter, divisionStamp } from '../utils/division';
 import { publish } from '../realtime/hub';
 
-type InputLine = { product_id: string; quantity: number; package_quantity: number; uom: string; shelf_location_id: string; warehouse_id: string; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
+type InputLine = { product_id: string; quantity: number; package_quantity: number; uom: string; shelf_location_id: string; warehouse_id: string;  avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
 
 export async function createGroup(req: Request, res: Response): Promise<void> {
   const raw = req.body?.items;
@@ -17,7 +17,6 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     uom: String(item?.uom || '').trim().slice(0, 40),
     shelf_location_id: String(item?.shelf_location_id || ''),
     warehouse_id: String(item?.warehouse_id || ''),
-    unit_price: Number(item?.unit_price) || 0,
     avg_standard_quantity: item?.avg_standard_quantity === undefined || item?.avg_standard_quantity === null || item?.avg_standard_quantity === ''
       ? null
       : Number(item.avg_standard_quantity),
@@ -27,7 +26,16 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   if (items.some((item) => !item.product_id || !item.warehouse_id || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000 || !Number.isFinite(item.package_quantity) || item.package_quantity <= 0 || item.package_quantity > 1_000_000 || !item.uom || !item.shelf_location_id)) {
     res.status(400).json({ error: 'Each product needs a valid package quantity, bag count, UOM, and active godown location' }); return;
   }
-  const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+  // Date.parse rolls over impossible dates (2026-02-31 -> 3 March), so check
+  // the round-trip explicitly instead of relying on it for validation.
+  const isValidDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year
+      && date.getUTCMonth() === month - 1
+      && date.getUTCDate() === day;
+  };
   if (items.some((item) => !isValidDate(item.manufacturing_date) || !isValidDate(item.expiry_date) || item.expiry_date < item.manufacturing_date)) {
     res.status(400).json({ error: 'Each product needs a valid manufacturing date and an expiry date on or after it' }); return;
   }
@@ -70,7 +78,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
   }
   const productMap = new Map<string, any>();
   for (const item of items) {
-    const product = await ctx.findOne('products', { id: item.product_id, tenant_id: req.user!.tenantId, is_active: 1, ...df }, { projection: { _id: 0, id: 1, name: 1, sku: 1, price: 1 } });
+    const product = await ctx.findOne('products', { id: item.product_id, tenant_id: req.user!.tenantId, is_active: 1, ...df }, { projection: { _id: 0, id: 1, name: 1, sku: 1 } });
     if (!product) { res.status(404).json({ error: `Product ${item.product_id} was not found` }); return; }
     const warehouse = item.warehouse_id
       ? await ctx.findOne('warehouses', { id: item.warehouse_id, tenant_id: req.user!.tenantId, is_active: 1, ...df }, { projection: { _id: 0, id: 1, name: 1, capacity: 1 } })
@@ -176,7 +184,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
             package_quantity: item.package_quantity,
             manufacturing_date: parseDateValue(item.manufacturing_date),
             expiry_date: parseDateValue(item.expiry_date),
-            unit_price: item.unit_price || Number(product.price) || 0, shelf_location_id: location.shelf_location_id,
+            shelf_location_id: location.shelf_location_id,
             storage_location: location.location_code, status: 'PENDING_QC', barcode_value: `QC:${randomUUID()}`,
             division_id: stamp,
           });

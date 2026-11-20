@@ -8,7 +8,7 @@ import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division'
 export async function create(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const dv = divisionWhere(req);
-  const { product_id, batch_number, quantity, batch_count = 1, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
+  const { product_id, batch_number, quantity, batch_count = 1, uom, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
   if (!product_id) {
     res.status(400).json({ error: 'Product ID is required' });
     return;
@@ -32,7 +32,7 @@ export async function create(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: 'A single generation can contain no more than 10,000 products' });
     return;
   }
-  const products = await query<RowDataPacket[]>(`SELECT id, name, sku, price FROM products WHERE id = ? AND tenant_id = ?${dv.sql} AND is_active = 1`, [productId, tenantId, ...dv.params]);
+  const products = await query<RowDataPacket[]>(`SELECT id, name, sku FROM products WHERE id = ? AND tenant_id = ?${dv.sql} AND is_active = 1`, [productId, tenantId, ...dv.params]);
   if (products.length === 0) { res.status(404).json({ error: 'Product not found' }); return; }
   const product = products[0];
   const providedBatchNumber = String(batch_number || '').trim();
@@ -93,11 +93,11 @@ export async function create(req: Request, res: Response): Promise<void> {
       const qcBarcode = `QC:${randomUUID()}`;
       const [batchInsert] = await conn.execute<any>(
         `INSERT INTO batches
-          (product_id, batch_number, quantity, uom, unit_price, manufacturing_date, expiry_date,
+          (product_id, batch_number, quantity, uom, manufacturing_date, expiry_date,
            shelf_location_id, storage_location, notes, barcode_value, batch_group_id, status, tenant_id, division_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QC_PASSED', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QC_PASSED', ?, ?)`,
         [
-          productId, number, bagCount, String(uom || 'pcs').trim().slice(0, 40) || 'pcs', Number(unit_price) || 0,
+          productId, number, bagCount, String(uom || 'pcs').trim().slice(0, 40) || 'pcs',
           manufacturing_date || null, expiry_date || null, shelf_location_id || null,
           storage_location || null, notes || null, qcBarcode, batchGroupId, tenantId, divisionStamp(req),
         ]
@@ -311,6 +311,51 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
   res.status(201).json(result);
 }
 
+/** Group-level page for the Dispatch batch list (MySQL path). */
+export async function listGroups(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 10));
+  const q = String(req.query.q || '').trim();
+  const status = String(req.query.status || '').trim().toUpperCase();
+  const where = ['tenant_id = ?'];
+  const params: any[] = [tenantId, ...dv.params];
+  if (/^[A-Z_]{2,40}$/.test(status)) { where.push('status = ?'); params.push(status); }
+  if (q) { where.push('(batch_number LIKE ? OR group_key LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+  const clause = `${where.join(' AND ')} ${dv.sql}`;
+  const [countRows] = await query<RowDataPacket[]>(`SELECT COUNT(*) AS count FROM batch_groups WHERE ${clause}`, params);
+  const groups = await query<RowDataPacket[]>(
+    `SELECT * FROM batch_groups WHERE ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    [...params, limit, (page - 1) * limit]
+  );
+  const keys = groups.map((group) => String(group.group_key));
+  const children = keys.length
+    ? await query<RowDataPacket[]>(
+        `SELECT b.*, p.name AS product_name, p.sku AS product_sku, s.location_code, s.warehouse AS warehouse_name
+         FROM batches b
+         LEFT JOIN products p ON b.product_id = p.id AND p.tenant_id = ?
+         LEFT JOIN shelf_locations s ON b.shelf_location_id = s.id AND s.tenant_id = ?
+         WHERE b.tenant_id = ?${dv.sql} AND b.batch_group_id IN (?)`,
+        [tenantId, tenantId, tenantId, ...dv.params, keys]
+      )
+    : [];
+  const byGroup = new Map<string, any[]>();
+  for (const batch of children) {
+    const key = String(batch.batch_group_id);
+    byGroup.set(key, [...(byGroup.get(key) || []), batch]);
+  }
+  const total = Number(countRows[0]?.count || 0);
+  res.json({
+    items: groups.map((group) => ({ ...group, batches: byGroup.get(String(group.group_key)) || [] })),
+    children,
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / limit)),
+    limit,
+  });
+}
+
 export async function list(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const dv = divisionWhere(req, 'b.division_id');
@@ -461,7 +506,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const dv = divisionWhere(req);
   const { id } = req.params;
-  const { shelf_location_id, storage_location, notes, quantity, unit_price, manufacturing_date, expiry_date } = req.body;
+  const { shelf_location_id, storage_location, notes, quantity, manufacturing_date, expiry_date } = req.body;
   const batches = await query<RowDataPacket[]>(
     `SELECT b.id, b.quantity FROM batches b WHERE b.id = ? AND b.tenant_id = ?${dv.sql}`,
     [id, tenantId, ...dv.params]
@@ -492,8 +537,8 @@ export async function update(req: Request, res: Response): Promise<void> {
     }
   }
   await execute(
-    `UPDATE batches SET shelf_location_id = ?, storage_location = ?, notes = ?, unit_price = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ? AND tenant_id = ?${dv.sql}`,
-    [locationId, storage_location || null, notes || null, unit_price || 0, manufacturing_date || null, expiry_date || null, id, tenantId, ...dv.params]
+    `UPDATE batches SET shelf_location_id = ?, storage_location = ?, notes = ?, manufacturing_date = ?, expiry_date = ? WHERE id = ? AND tenant_id = ?${dv.sql}`,
+    [locationId, storage_location || null, notes || null, manufacturing_date || null, expiry_date || null, id, tenantId, ...dv.params]
   );
   await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?)',
     [req.user?.name || 'System', req.user?.role || 'ADMIN', 'BATCH_UPDATED', `Batch #${id} updated`, tenantId, divisionStamp(req)]);

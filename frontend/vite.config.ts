@@ -6,6 +6,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 export default defineConfig({
   envPrefix: ['VITE_', 'API_URL'],
   plugins: [tailwindcss(), react(), basicSsl()],
+  // Never ship source maps (or internal source structure) in a browser build.
+  build: { sourcemap: false },
   server: {
     host: '0.0.0.0',
     port: 3000,

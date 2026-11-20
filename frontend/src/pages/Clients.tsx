@@ -77,8 +77,8 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import clients</button>
-            <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary"><Plus size={16} /> Add Client</button>
+            <button onClick={() => setShowImportWizard(true)} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50"><Upload size={16} /> Import clients</button>
+            <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-bold text-white shadow-sm transition-colors hover:bg-brand-700"><Plus size={16} /> Add Client</button>
           </div>
         </div>
       ) : (
@@ -93,8 +93,8 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import clients</button>
-            <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="btn-primary">
+            <button onClick={() => setShowImportWizard(true)} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50"><Upload size={16} /> Import clients</button>
+            <button onClick={() => { setShowForm(!showForm); resetForm(); }} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-bold text-white shadow-sm transition-colors hover:bg-brand-700">
               <Plus size={16} /> Add Client
             </button>
           </div>

@@ -100,11 +100,11 @@ async function main(): Promise<void> {
   report(Boolean(qcTrpToken && qcXcleToken && dspTrpToken && dspXcleToken), 'all four division users can log in');
 
   console.log('\n[3] ADMIN creates products/warehouses/shelves per division (X-Division-Id header)');
-  const adminTrpProduct = await api(admin, 'POST', '/products', { name: `ISOTRPProduct-${stamp}`, sku: `ISO-TRP-${stamp}`, price: 10, quantity: 50 }, trpId);
-  const adminXcleProduct = await api(admin, 'POST', '/products', { name: `ISOXCLEProduct-${stamp}`, sku: `ISO-XCLE-${stamp}`, price: 15, quantity: 60 }, xcleId);
+  const adminTrpProduct = await api(admin, 'POST', '/products', { name: `ISOTRPProduct-${stamp}`, sku: `ISO-TRP-${stamp}`, quantity: 50 }, trpId);
+  const adminXcleProduct = await api(admin, 'POST', '/products', { name: `ISOXCLEProduct-${stamp}`, sku: `ISO-XCLE-${stamp}`, quantity: 60 }, xcleId);
   report(adminTrpProduct.status === 201, 'admin creates TRP product in TRP context', `status ${adminTrpProduct.status} ${JSON.stringify(adminTrpProduct.json)}`);
   report(adminXcleProduct.status === 201, 'admin creates XCLE product in XCLE context', `status ${adminXcleProduct.status}`);
-  const adminSharedProduct = await api(admin, 'POST', '/products', { name: `ISOSharedProduct-${stamp}`, sku: `ISO-SHARED-${stamp}`, price: 5, quantity: 25 });
+  const adminSharedProduct = await api(admin, 'POST', '/products', { name: `ISOSharedProduct-${stamp}`, sku: `ISO-SHARED-${stamp}`, quantity: 25 });
   report(adminSharedProduct.status === 201, 'admin creates shared product (All Divisions context)', `status ${adminSharedProduct.status}`);
 
   const adminTrpWarehouse = await api(admin, 'POST', '/storage', { name: `ISOTRPWHO-${stamp}`, capacity: 100 }, trpId);

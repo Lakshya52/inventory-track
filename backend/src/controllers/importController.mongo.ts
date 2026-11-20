@@ -204,7 +204,6 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
         name: row.product,
         description: row.description || null,
         sku,
-        price: 0,
         quantity: 0,
         grade: row.grade,
         manufacturer: row.resolved.manufacturer,

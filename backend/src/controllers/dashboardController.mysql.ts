@@ -17,7 +17,7 @@ export async function stats(req: Request, res: Response): Promise<void> {
     `SELECT COUNT(*) as count FROM dispatch_records WHERE DATE(created_at) = CURDATE() AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
   );
   const inventory = await query<RowDataPacket[]>(
-    `SELECT COALESCE(SUM(quantity), 0) as qty, COALESCE(SUM(quantity * price), 0) as value FROM products WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
+    `SELECT COALESCE(SUM(quantity), 0) as qty FROM products WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
   );
   const pendingOrders = await query<RowDataPacket[]>(
     `SELECT COUNT(*) as count FROM dispatch_orders WHERE status = 'APPROVED' AND tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]
@@ -33,11 +33,13 @@ export async function stats(req: Request, res: Response): Promise<void> {
   );
   const recentBatches = await query<RowDataPacket[]>(
     `SELECT b.id, b.batch_number, b.quantity, b.barcode_value, b.status, b.created_at,
-            p.name as product_name, p.sku as product_sku
+            p.name as product_name, p.sku as product_sku,
+            COALESCE(g.name, p.grade) AS grade_name
      FROM batches b JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON b.grade_id = g.id AND g.tenant_id = ?
      WHERE b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
      ORDER BY b.created_at DESC LIMIT 10`,
-    [tenantId, ...dvB.params, tenantId, ...dvP.params]
+    [tenantId, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const productionStats = await query<RowDataPacket[]>(
     `SELECT
@@ -62,7 +64,6 @@ export async function stats(req: Request, res: Response): Promise<void> {
     qcFailed: qcFailed[0].count,
     dispatchedToday: dispatchedToday[0].count,
     currentInventory: inventory[0].qty,
-    inventoryValue: inventory[0].value,
     pendingDispatchOrders: pendingOrders[0].count,
     activeClients: activeClients[0].count,
     totalLocations: totalLocations[0].count,
@@ -84,7 +85,6 @@ export async function adminStats(req: Request, res: Response): Promise<void> {
     `SELECT
        (SELECT COUNT(*) FROM products WHERE tenant_id = ?${dv.sql}) AS total_products,
        (SELECT COALESCE(SUM(quantity), 0) FROM products WHERE tenant_id = ?${dv.sql}) AS inventory_qty,
-       (SELECT COALESCE(SUM(quantity * price), 0) FROM products WHERE tenant_id = ?${dv.sql}) AS inventory_value,
        (SELECT COUNT(*) FROM batches WHERE tenant_id = ?${dv.sql}) AS total_batches,
        (SELECT COUNT(*) FROM batches WHERE status = 'CREATED' AND tenant_id = ?${dv.sql}) AS pending_qc,
        (SELECT COUNT(*) FROM qc_records WHERE tenant_id = ?${dv.sql}) AS qc_total,
@@ -115,35 +115,41 @@ export async function adminStats(req: Request, res: Response): Promise<void> {
 
   const recentQc = await query<RowDataPacket[]>(
     `SELECT q.id, q.result, q.remarks, q.created_at, b.batch_number,
-            p.name AS product_name, p.sku AS product_sku
+            p.name AS product_name, p.sku AS product_sku,
+            COALESCE(g.name, p.grade) AS grade_name
      FROM qc_records q
      JOIN batches b ON q.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON b.grade_id = g.id AND g.tenant_id = ?
      WHERE q.tenant_id = ?${dvQ.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
      ORDER BY q.created_at DESC LIMIT 5`,
-    [tenantId, ...dvQ.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
+    [tenantId, tenantId, ...dvQ.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const recentDispatches = await query<RowDataPacket[]>(
     `SELECT d.id, d.remarks, d.created_at, b.batch_number,
-            p.name AS product_name, p.sku AS product_sku
+            p.name AS product_name, p.sku AS product_sku,
+            COALESCE(g.name, p.grade) AS grade_name
      FROM dispatch_records d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON b.grade_id = g.id AND g.tenant_id = ?
      WHERE d.tenant_id = ?${dvD.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
      ORDER BY d.created_at DESC LIMIT 5`,
-    [tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
+    [tenantId, tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const pendingRequests = await query<RowDataPacket[]>(
     `SELECT d.id, d.status, d.created_at, b.batch_number, b.quantity, b.uom,
             p.name AS product_name, p.sku AS product_sku,
+            COALESCE(g.name, p.grade) AS grade_name,
             COALESCE(du.name, 'Unknown') AS raised_by_name
      FROM dispatch_orders d
      JOIN batches b ON d.batch_id = b.id
      JOIN products p ON b.product_id = p.id
+     LEFT JOIN grades g ON b.grade_id = g.id AND g.tenant_id = ?
      LEFT JOIN dispatch_users du ON d.raised_by = du.id AND du.tenant_id = ?
      WHERE d.tenant_id = ?${dvD.sql} AND b.tenant_id = ?${dvB.sql} AND p.tenant_id = ?${dvP.sql}
      ORDER BY d.created_at DESC LIMIT 5`,
-    [tenantId, tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
+    [tenantId, tenantId, tenantId, ...dvD.params, tenantId, ...dvB.params, tenantId, ...dvP.params]
   );
   const recentActivity = await query<RowDataPacket[]>(
     `SELECT * FROM activity_logs WHERE tenant_id = ?${dv.sql} ORDER BY created_at DESC LIMIT 8`,
@@ -158,7 +164,6 @@ export async function adminStats(req: Request, res: Response): Promise<void> {
     stats: {
       totalProducts: Number(s.total_products) || 0,
       inventoryQty: Number(s.inventory_qty) || 0,
-      inventoryValue: Number(s.inventory_value) || 0,
       totalBatches: Number(s.total_batches) || 0,
       pendingQc: Number(s.pending_qc) || 0,
       qcTotal,

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { create, createFamily, list, getById, renameFamily, search, remove, removeFamily, deactivateFamily, reactivateFamily, update, listFamilies, listFamilyProducts, nextSku } from '../controllers/productController';
+import { create, createFamily, list, getById, renameFamily, search, remove, removeFamily, deactivateFamily, reactivateFamily, update, listFamilies, listFamiliesPage, listFamilyProducts, nextSku } from '../controllers/productController';
 import { authenticate, authorize } from '../middleware/auth';
 
 const router = Router();
@@ -8,6 +8,7 @@ router.post('/', authorize('ADMIN'), create);
 router.post('/family', authorize('ADMIN'), createFamily);
 router.put('/family', authorize('ADMIN'), renameFamily);
 router.get('/families', listFamilies);
+router.get('/families/page', listFamiliesPage);
 router.get('/families/:name/products', listFamilyProducts);
 router.get('/next-sku', nextSku);
 router.get('/', list);

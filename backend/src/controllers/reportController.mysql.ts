@@ -20,8 +20,7 @@ export async function summary(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const dv = divisionWhere(req);
   const [products] = await query<RowDataPacket[]>(
-    `SELECT COUNT(*) AS count, COALESCE(SUM(quantity), 0) AS qty,
-            COALESCE(SUM(quantity * price), 0) AS value
+    `SELECT COUNT(*) AS count, COALESCE(SUM(quantity), 0) AS qty
      FROM products WHERE tenant_id = ?${dv.sql}`,
     [tenantId, ...dv.params]
   );
@@ -206,7 +205,7 @@ export async function inventory(req: Request, res: Response): Promise<void> {
   const rows = await query<RowDataPacket[]>(
     `SELECT p.id, p.name, p.sku, p.description, p.grade, p.purity, p.cas_number,
             p.physical_state, p.hsn_code, p.manufacturer, p.storage_conditions,
-            p.price, p.quantity,
+            p.quantity,
             COALESCE(SUM(b.quantity), 0) AS batch_quantity,
             COUNT(b.id) AS batch_count,
             COALESCE(SUM(CASE WHEN b.status = 'QC_PASSED' THEN b.quantity ELSE 0 END), 0) AS qc_passed_quantity,
@@ -220,7 +219,6 @@ export async function inventory(req: Request, res: Response): Promise<void> {
   );
   res.json(rows.map(row => ({
     ...row,
-    stock_value: Number(row.quantity) * Number(row.price),
   })));
 }
 

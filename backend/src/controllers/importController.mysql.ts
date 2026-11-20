@@ -194,7 +194,7 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
     }
     insertOps.push({
       row,
-      args: [tenantId, row.resolved.divisionId, row.product, row.description || null, sku, 0, 0, row.grade, row.resolved.manufacturer, row.resolved.bagQuantityId],
+      args: [tenantId, row.resolved.divisionId, row.product, row.description || null, sku, 0, row.grade, row.resolved.manufacturer, row.resolved.bagQuantityId],
     });
   }
 
@@ -209,7 +209,7 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
       await withTransaction(async (conn) => {
         for (const op of chunk) {
           await conn.query(
-            'INSERT INTO products (tenant_id, division_id, name, description, sku, price, quantity, grade, manufacturer, bag_quantity_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO products (tenant_id, division_id, name, description, sku, quantity, grade, manufacturer, bag_quantity_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             op.args
           );
         }

@@ -19,6 +19,7 @@ const Settings = lazy(() => import('./pages/Settings'));
 const ShelfLocations = lazy(() => import('./pages/ShelfLocations'));
 const Users = lazy(() => import('./pages/Users'));
 const DispatchWorkspaceOrders = lazy(() => import('./pages/DispatchWorkspaceOrders'));
+const DispatchOrdersHistory = lazy(() => import('./pages/DispatchOrdersHistory'));
 const PackingList = lazy(() => import('./pages/PackingList'));
 const QRLabels = lazy(() => import('./pages/QRLabels'));
 const Vendors = lazy(() => import('./pages/Vendors'));
@@ -90,6 +91,7 @@ export default function App() {
         <Route path="/dispatch/qr-labels" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><QRLabels /></ProtectedRoute>} />
         {/* One shared screen for both roles: the dispatch workspace. */}
         <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchWorkspaceOrders /></ProtectedRoute>} />
+        <Route path="/dispatch-orders/history" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchOrdersHistory /></ProtectedRoute>} />
         <Route path="/packing-list" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><PackingList /></ProtectedRoute>} />
 
         {/* Storage locations, warehouse details, and rack details */}

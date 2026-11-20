@@ -11,32 +11,30 @@ async function enrichBatches(ctx: DbContext, batches: Record<string, any>[], ten
     tenantId,
     divisionScope
   );
+  const grades = await mapByIds<Record<string, any>>(
+    ctx,
+    'grades',
+    batches.map((batch) => batch.grade_id).filter(Boolean),
+    tenantId,
+    divisionScope
+  );
   return batches.map((batch) => {
     const product = products.get(idKey(batch.product_id));
     return {
       ...batch,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      grade_name: grades.get(idKey(batch.grade_id))?.name ?? product?.grade ?? null,
     };
   });
 }
 
-async function inventoryTotals(ctx: DbContext, tenantId: string | number, divisionScope?: Record<string, any>): Promise<{ qty: number; value: number }> {
+async function inventoryTotals(ctx: DbContext, tenantId: string | number, divisionScope?: Record<string, any>): Promise<{ qty: number }> {
   const rows = await ctx.aggregate('products', [
     { $match: { tenant_id: tenantId, is_active: 1, ...(divisionScope ?? {}) } },
-    {
-      $group: {
-        _id: null,
-        qty: { $sum: { $ifNull: ['$quantity', 0] } },
-        value: {
-          $sum: {
-            $multiply: [{ $ifNull: ['$quantity', 0] }, { $ifNull: ['$price', 0] }],
-          },
-        },
-      },
-    },
+    { $group: { _id: null, qty: { $sum: { $ifNull: ['$quantity', 0] } } } },
   ]);
-  return { qty: Number(rows[0]?.qty || 0), value: Number(rows[0]?.value || 0) };
+  return { qty: Number(rows[0]?.qty || 0) };
 }
 
 export async function stats(req: Request, res: Response): Promise<void> {
@@ -89,7 +87,6 @@ export async function stats(req: Request, res: Response): Promise<void> {
     qcFailed,
     dispatchedToday,
     currentInventory: inventory.qty,
-    inventoryValue: inventory.value,
     pendingDispatchOrders,
     activeClients,
     totalLocations,
@@ -167,8 +164,7 @@ export async function adminStats(req: Request, res: Response): Promise<void> {
     stats: {
       totalProducts: await ctx.count('products', { tenant_id: tenantId, is_active: 1, ...division }),
       inventoryQty: inventory.qty,
-      inventoryValue: inventory.value,
-      totalBatches,
+        totalBatches,
       pendingQc,
       qcTotal,
       qcPassed,
@@ -201,6 +197,13 @@ async function enrichQc(ctx: DbContext, records: Record<string, any>[], tenantId
     tenantId,
     divisionScope
   );
+  const grades = await mapByIds<Record<string, any>>(
+    ctx,
+    'grades',
+    [...batches.values()].map((batch) => idKey(batch.grade_id)).filter(Boolean),
+    tenantId,
+    divisionScope
+  );
   return records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
     const product = batch ? products.get(idKey(batch.product_id)) : undefined;
@@ -212,6 +215,7 @@ async function enrichQc(ctx: DbContext, records: Record<string, any>[], tenantId
       batch_number: batch?.batch_number ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      grade_name: batch ? (grades.get(idKey(batch.grade_id))?.name ?? product?.grade ?? null) : null,
     };
   });
 }
@@ -225,6 +229,13 @@ async function enrichDispatches(ctx: DbContext, records: Record<string, any>[], 
     tenantId,
     divisionScope
   );
+  const grades = await mapByIds<Record<string, any>>(
+    ctx,
+    'grades',
+    [...batches.values()].map((batch) => idKey(batch.grade_id)).filter(Boolean),
+    tenantId,
+    divisionScope
+  );
   return records.map((record) => {
     const batch = batches.get(idKey(record.batch_id));
     const product = batch ? products.get(idKey(batch.product_id)) : undefined;
@@ -235,6 +246,7 @@ async function enrichDispatches(ctx: DbContext, records: Record<string, any>[], 
       batch_number: batch?.batch_number ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      grade_name: batch ? (grades.get(idKey(batch.grade_id))?.name ?? product?.grade ?? null) : null,
     };
   });
 }
@@ -245,6 +257,13 @@ async function enrichPendingRequests(ctx: DbContext, orders: Record<string, any>
     ctx,
     'products',
     [...batches.values()].map((batch) => idKey(batch.product_id)),
+    tenantId,
+    divisionScope
+  );
+  const grades = await mapByIds<Record<string, any>>(
+    ctx,
+    'grades',
+    [...batches.values()].map((batch) => idKey(batch.grade_id)).filter(Boolean),
     tenantId,
     divisionScope
   );
@@ -266,6 +285,7 @@ async function enrichPendingRequests(ctx: DbContext, orders: Record<string, any>
       uom: batch?.uom ?? null,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      grade_name: batch ? (grades.get(idKey(batch.grade_id))?.name ?? product?.grade ?? null) : null,
       raised_by_name: raisedBy.get(idKey(order.raised_by))?.name ?? 'Unknown',
     };
   });

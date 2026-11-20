@@ -1,0 +1,34 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css";
+
+@import "nativewind/theme";
+
+@theme {
+  --font-sans: "LexendDeca_400Regular";
+  --font-lexend: "LexendDeca_400Regular";
+  --font-lexend-medium: "LexendDeca_500Medium";
+  --font-lexend-semibold: "LexendDeca_600SemiBold";
+  --font-lexend-bold: "LexendDeca_700Bold";
+
+  /* Dark blue used by the login title and primary button. */
+  --color-brand: #0b218c;
+  --color-brand-deep: #07196f;
+  --color-brand-pressed: #051252;
+  --color-ink: #14204b;
+  --color-muted: #65718c;
+  --color-placeholder: #8e96ac;
+
+  --color-canvas: #ffffff;
+  --color-surface: #ffffff;
+  /* Pale grey-blue input fill from the reference screen. */
+  --color-input: #e7e9f1;
+  --color-line: #dfe3ee;
+
+  --color-danger: #d33b4a;
+  --color-success: #16855a;
+
+  --color-nav-active: #0b8c6f;
+  --color-nav-inactive: #5b6b8c;
+  --color-nav-pill: #e1f3ed;
+}

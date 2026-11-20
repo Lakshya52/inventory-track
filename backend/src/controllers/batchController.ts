@@ -7,6 +7,7 @@ const implementation = useMongo ? mongoImpl : mysqlImpl;
 export const create = implementation.create;
 export const finishGoods = implementation.finishGoods;
 export const list = implementation.list;
+export const listGroups = implementation.listGroups;
 export const getByBarcode = implementation.getByBarcode;
 export const search = implementation.search;
 export const update = implementation.update;

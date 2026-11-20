@@ -388,7 +388,7 @@ export default function Dashboard() {
                   <div className="flex items-start justify-between">
                     <div>
                       <div className="text-base font-bold text-slate-900">
-                        {session.product_name || 'Product'}
+                        {session.grade_name || session.product_name || 'Grade'}
                       </div>
                       <div className="text-sm text-slate-600 mt-0.5">
                         Batch No: <span className="font-mono font-bold text-slate-800">{session.batch_number}</span>
@@ -458,7 +458,7 @@ export default function Dashboard() {
                     >
                       <div>
                         <div className="text-base font-bold text-slate-900">
-                          {order.product_name}
+                          {order.grade_name || order.product_name}
                         </div>
                         <div className="text-sm text-slate-500 flex items-center gap-2 mt-0.5">
                           <span>Batch: <span className="font-mono font-semibold text-slate-700">{order.batch_number}</span></span>

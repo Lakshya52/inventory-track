@@ -240,13 +240,14 @@ export async function approvedOrders(req: Request, res: Response): Promise<void>
   const tenantId = req.user!.tenantId;
   const ctx = await getContext();
   const divisionScope = divisionFilter(req);
-  const approvedBatches = await ctx.find('batches', { status: 'DISPATCH_APPROVED', tenant_id: tenantId, ...divisionScope }, { projection: { id: 1 } });
+  // An APPROVED order always owns DISPATCH_APPROVED batches (loading cancels
+  // the order), so filtering the small orders table directly avoids scanning
+  // every batch in a large workspace.
   const filter: Record<string, any> = {
     tenant_id: tenantId,
     ...divisionScope,
     status: 'APPROVED',
     dispatched_at: null,
-    batch_id: { $in: approvedBatches.map((batch) => idKey(batch.id)) },
   };
   if (personalOnly(req)) filter.raised_by = req.user!.userId;
 
@@ -300,40 +301,31 @@ export async function stats(req: Request, res: Response): Promise<void> {
     ...recordFilter,
     created_at: { $gte: startOfWeek() },
   });
-  const qcPassedBatches = await ctx.find('batches', { status: 'QC_PASSED', tenant_id: tenantId, ...divisionScope }, {
-    sort: { updated_at: 1 },
-    projection: { _id: 0 },
-  });
-  const qcPassedBatchIds = qcPassedBatches.map((batch) => idKey(batch.id));
-  const labels = qcPassedBatchIds.length > 0
-    ? await ctx.find('qr_labels', { tenant_id: tenantId, ...divisionScope, batch_id: { $in: qcPassedBatchIds } }, {
-      projection: { _id: 0, batch_id: 1 },
-    })
-    : [];
-  const qrCounts = new Map<string, number>();
-  labels.forEach((label) => {
-    const batchId = idKey(label.batch_id);
-    qrCounts.set(batchId, (qrCounts.get(batchId) || 0) + 1);
-  });
-  const dispatchReadyBatches = qcPassedBatches.filter(
-    (batch) => (qrCounts.get(idKey(batch.id)) || 0) === Number(batch.quantity)
-  );
-  const readyToDispatch = dispatchReadyBatches.length;
+  // Count "ready to dispatch" inside MongoDB. Loading 100k+ batches and their
+  // labels into Node blocked the whole API on every dashboard refresh.
+  const [readyFacet] = await ctx.aggregate('batches', [
+    { $match: { tenant_id: tenantId, ...divisionScope, status: 'QC_PASSED' } },
+    { $lookup: { from: 'qr_labels', localField: '_id', foreignField: 'batch_id', as: 'labels' } },
+    { $match: { $expr: { $eq: [{ $size: '$labels' }, { $ifNull: ['$quantity', 0] }] } } },
+    { $facet: {
+      count: [{ $count: 'count' }],
+      sample: [{ $sort: { _id: -1 } }, { $limit: 10 }, { $project: { labels: 0 } }],
+    } },
+  ]);
+  const readyToDispatch = Number(readyFacet?.count?.[0]?.count || 0);
 
   const orderFilter: Record<string, any> = { tenant_id: tenantId, ...divisionScope, ...(personal ? { raised_by: user.userId } : {}) };
   // Orders need no approval, so nothing sits in a pending queue any more.
   const cancelledOrdersCount = await ctx.count('dispatch_orders', { ...orderFilter, status: 'CANCELLED' });
 
-  const approvedBatches = await ctx.find('batches', { status: 'DISPATCH_APPROVED', tenant_id: tenantId, ...divisionScope }, { projection: { id: 1 } });
   const approvedFilter: Record<string, any> = {
     ...orderFilter,
     status: 'APPROVED',
     dispatched_at: null,
-    batch_id: { $in: approvedBatches.map((batch) => idKey(batch.id)) },
   };
   const approvedOrdersCount = await ctx.count('dispatch_orders', approvedFilter);
 
-  const readyBatchesRaw = dispatchReadyBatches.slice(0, 10);
+  const readyBatchesRaw = readyFacet?.sample || [];
   const cancelledOrdersRaw = await ctx.find('dispatch_orders', { ...orderFilter, status: 'CANCELLED' }, {
     sort: { created_at: -1 },
     limit: 10,

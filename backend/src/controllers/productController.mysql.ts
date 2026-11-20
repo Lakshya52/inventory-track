@@ -77,7 +77,7 @@ function parseFamilyGrades(raw: unknown): { grades: FamilyGradeInput[]; error?: 
 
 export async function create(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
-  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
+  const { name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
@@ -95,12 +95,12 @@ export async function create(req: Request, res: Response): Promise<void> {
   }
   try {
     const result = await execute(
-      'INSERT INTO products (name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, description || null, sku, price || 0, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, bag_quantity_id || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null, tenantId, divisionStamp(req)]
+      'INSERT INTO products (name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, description || null, sku, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, bag_quantity_id || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null, tenantId, divisionStamp(req)]
     );
     await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?)',
       [req.user?.name || 'System', req.user?.role || 'ADMIN', 'PRODUCT_CREATED', `Product "${name}" (${sku}) created`, tenantId, divisionStamp(req)]);
-    res.status(201).json({ id: result.insertId, name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id: bag_quantity_id || null, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
+    res.status(201).json({ id: result.insertId, name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id: bag_quantity_id || null, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
   } catch (err: any) {
     if (err.code === 'ER_DUP_ENTRY') {
       res.status(400).json({ error: 'SKU already exists' });
@@ -124,6 +124,32 @@ export async function listFamilies(req: Request, res: Response): Promise<void> {
   // Natural (numeric-aware) sort so "P9" < "P89" < "P90" — MySQL has no natural collation.
   const families = naturalSortBy(grouped, (row) => String(row.name ?? ''));
   res.json(families);
+}
+
+/** Page-sized variant for the product groups table (the full list above stays for pickers). */
+export async function listFamiliesPage(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const dv = divisionWhere(req);
+  const includeInactive = String(req.query.include || '').trim().toLowerCase() === 'inactive';
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.limit) || 25));
+  const grouped = await query<RowDataPacket[]>(
+    `SELECT name, MAX(description) AS description, MAX(manufacturer) AS manufacturer, COUNT(*) AS count, COUNT(*) AS totalCount
+     FROM products
+     WHERE tenant_id = ?${dv.sql} AND is_active = ?
+     GROUP BY name`,
+    [tenantId, ...dv.params, includeInactive ? 0 : 1]
+  );
+  const families = naturalSortBy(grouped, (row) => String(row.name ?? ''));
+  const start = (page - 1) * pageSize;
+  const total = families.length;
+  res.json({
+    items: families.slice(start, start + pageSize),
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / pageSize)),
+    pageSize,
+  });
 }
 
 export async function listFamilyProducts(req: Request, res: Response): Promise<void> {
@@ -228,7 +254,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const { id } = req.params;
   const dv = divisionWhere(req);
-  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
+  const { name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
@@ -253,8 +279,8 @@ export async function update(req: Request, res: Response): Promise<void> {
     return;
   }
   const result = await execute(
-    `UPDATE products SET name = ?, description = ?, sku = ?, price = ?, quantity = ?, cas_number = ?, molecular_formula = ?, purity = ?, grade = ?, bag_quantity_id = ?, storage_conditions = ?, hazard_classification = ?, physical_state = ?, hsn_code = ?, manufacturer = ? WHERE id = ? AND tenant_id = ?${dv.sql}`,
-    [name, description || null, sku, price || 0, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, bag_quantity_id || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null, id, tenantId, ...dv.params]
+    `UPDATE products SET name = ?, description = ?, sku = ?, quantity = ?, cas_number = ?, molecular_formula = ?, purity = ?, grade = ?, bag_quantity_id = ?, storage_conditions = ?, hazard_classification = ?, physical_state = ?, hsn_code = ?, manufacturer = ? WHERE id = ? AND tenant_id = ?${dv.sql}`,
+    [name, description || null, sku, quantity || 0, cas_number || null, molecular_formula || null, purity || null, grade || null, bag_quantity_id || null, storage_conditions || null, hazard_classification || null, physical_state || null, hsn_code || null, manufacturer || null, id, tenantId, ...dv.params]
   );
   if (result.affectedRows === 0) {
     res.status(404).json({ error: 'Product not found' });
@@ -332,12 +358,11 @@ export async function createFamily(req: Request, res: Response): Promise<void> {
       const rows: Record<string, unknown>[] = [];
       for (const grade of grades) {
         const [result] = await conn.execute<ResultSetHeader>(
-          'INSERT INTO products (name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO products (name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer, tenant_id, division_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             name,
             grade.description || description,
             grade.sku,
-            0,
             grade.quantity,
             null,
             null,
@@ -358,7 +383,6 @@ export async function createFamily(req: Request, res: Response): Promise<void> {
           name,
           description: grade.description || description,
           sku: grade.sku,
-          price: 0,
           quantity: grade.quantity,
           grade: grade.grade,
           bag_quantity_id: grade.bag_quantity_id,

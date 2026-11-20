@@ -88,7 +88,6 @@ export interface Product {
   name: string;
   description: string | null;
   sku: string;
-  price: number;
   quantity: number;
   cas_number: string | null;
   molecular_formula: string | null;
@@ -114,7 +113,6 @@ export interface Batch {
   /** Internal-only approximate average quantity. Never rendered in the UI. */
   avg_standard_quantity?: number | null;
   package_quantity?: number | null;
-  unit_price: number;
   manufacturing_date: string | null;
   expiry_date: string | null;
   storage_location: string | null;
@@ -159,7 +157,6 @@ export interface DashboardStats {
   qcFailed: number;
   dispatchedToday: number;
   currentInventory: number;
-  inventoryValue: number;
   pendingDispatchOrders: number;
   activeClients: number;
   totalLocations: number;
@@ -235,7 +232,6 @@ export interface Vendor {
 export interface AdminStats {
   totalProducts: number;
   inventoryQty: number;
-  inventoryValue: number;
   totalBatches: number;
   pendingQc: number;
   qcTotal: number;

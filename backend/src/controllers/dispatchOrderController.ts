@@ -7,6 +7,7 @@ const implementation = useMongo ? mongoImpl : mysqlImpl;
 export const raise = implementation.raise;
 export const listAll = implementation.listAll;
 export const listMine = implementation.listMine;
+export const listHistory = implementation.listHistory;
 export const cancel = implementation.cancel;
 export const recallQr = implementation.recallQr;
 export const getPackingList = implementation.getPackingList;

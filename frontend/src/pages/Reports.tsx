@@ -22,7 +22,6 @@ import {
 	CheckCircle,
 	Eye,
 	X,
-	IndianRupee,
 	AlertCircle,
 } from "lucide-react";
 
@@ -494,11 +493,9 @@ export default function Reports() {
 				"Grade",
 				"Purity",
 				"CAS",
-				"Price",
 				"Stock Qty",
 				"Batch Qty",
 				"QC Passed Qty",
-				"Stock Value",
 				"Batches",
 			];
 			rows = filteredInventory.map((r) => [
@@ -507,11 +504,9 @@ export default function Reports() {
 				r.grade || "",
 				r.purity || "",
 				r.cas_number || "",
-				r.price,
 				r.quantity,
 				r.batch_quantity,
 				r.qc_passed_quantity,
-				r.stock_value,
 				r.batch_count,
 			]);
 		} else if (tab === "batches") {
@@ -605,13 +600,6 @@ export default function Reports() {
 					icon: <Boxes size={22} />,
 					color: "text-violet-600",
 					bg: "bg-violet-50",
-				},
-				{
-					label: "Inventory Value",
-					value: `₹${Number(summary.inventoryValue).toLocaleString("en-IN")}`,
-					icon: <IndianRupee size={22} />,
-					color: "text-teal-600",
-					bg: "bg-teal-50",
 				},
 			]
 		: [];
@@ -1522,7 +1510,6 @@ export default function Reports() {
 									{[
 										"Product",
 										"Grade / Purity",
-										"Price",
 										"Stock Qty",
 										"Batch Qty",
 										"QC Passed Qty",
@@ -1559,11 +1546,6 @@ export default function Reports() {
 											{r.grade || "-"}
 											{r.purity ? ` · ${r.purity}` : ""}
 										</td>
-										<td className="px-5 py-4 text-base text-slate-700">
-											{Number(r.price) > 0
-												? `₹${Number(r.price).toLocaleString("en-IN")}`
-												: "-"}
-										</td>
 										<td className="px-5 py-4 text-base font-semibold text-slate-900">
 											{Number(r.quantity).toLocaleString(
 												"en-IN",
@@ -1577,12 +1559,6 @@ export default function Reports() {
 										<td className="px-5 py-4 text-base font-semibold text-emerald-600">
 											{Number(
 												r.qc_passed_quantity,
-											).toLocaleString("en-IN")}
-										</td>
-										<td className="px-5 py-4 text-base font-semibold text-slate-900">
-											₹
-											{Number(
-												r.stock_value,
 											).toLocaleString("en-IN")}
 										</td>
 										<td className="px-5 py-4 text-base text-slate-700">

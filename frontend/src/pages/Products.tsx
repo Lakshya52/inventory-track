@@ -8,6 +8,7 @@ import FamilyGradesPanel from "../components/FamilyGradesPanel";
 import ImportWizard from "../components/ImportWizard";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Factory,
   Info,
@@ -25,6 +26,7 @@ import {
   X,
   EyeOff,
   Eye,
+  LoaderCircle
 } from "lucide-react";
 
 type MasterOption = {
@@ -99,6 +101,12 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
   const canManage = user?.role === "ADMIN";
 
   const [families, setFamilies] = useState<FamilySummary[]>([]);
+  // The full list above powers pickers/typeahead; the table shows one page.
+  const [pagedFamilies, setPagedFamilies] = useState<FamilySummary[]>([]);
+  const [familyPage, setFamilyPage] = useState(1);
+  const [familyPageSize, setFamilyPageSize] = useState(25);
+  const [familyTotal, setFamilyTotal] = useState(0);
+  const [familyPages, setFamilyPages] = useState(1);
   const [totalProducts, setTotalProducts] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [refreshKey, setRefreshKey] = useState(0);
@@ -146,6 +154,43 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
 
   const searchResults = useMemo(() => [] as Product[], []);
 
+  const loadFamiliesPage = async (page = familyPage, pageSize = familyPageSize) => {
+    let result = await api.products.familiesPaged(page, pageSize);
+    // A delete can empty the last page — step back instead of showing nothing.
+    if (result.page > result.pages && result.pages > 0) {
+      setFamilyPage(result.pages);
+      result = await api.products.familiesPaged(result.pages, pageSize);
+    }
+    setPagedFamilies(result.items || []);
+    setFamilyTotal(result.total);
+    setFamilyPages(result.pages);
+    setFamilyPage(result.page);
+  };
+
+  const changePage = (page: number) => {
+    if (page < 1 || page > familyPages || page === familyPage) return;
+    setFamilyPage(page);
+    void loadFamiliesPage(page, familyPageSize).catch(() => {});
+  };
+
+  const changePageSize = (size: number) => {
+    setFamilyPageSize(size);
+    setFamilyPage(1);
+    void loadFamiliesPage(1, size).catch(() => {});
+  };
+
+  const pageButtons = useMemo<(number | string)[]>(() => {
+    if (familyPages <= 7) return Array.from({ length: familyPages }, (_, i) => i + 1);
+    const start = Math.max(2, Math.min(familyPage - 2, familyPages - 5));
+    const end = Math.min(familyPages - 1, start + 4);
+    const buttons: (number | string)[] = [1];
+    if (start > 2) buttons.push("…");
+    for (let page = start; page <= end; page += 1) buttons.push(page);
+    if (end < familyPages - 1) buttons.push("…");
+    buttons.push(familyPages);
+    return buttons;
+  }, [familyPage, familyPages]);
+
   const load = async () => {
     setLoading(true);
     setError("");
@@ -157,6 +202,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
         api.vendors.list({ status: "active" }),
       ]);
       setFamilies(familyRows || []);
+      await loadFamiliesPage();
       setTotalProducts((familyRows || []).reduce((sum: number, f: any) => sum + Number(f.count || 0), 0));
       // Keep families the user has expanded — only drop ones that no longer exist (renamed/deleted for good)
       const familyNames = new Set((familyRows || []).map((f: any) => String(f.name || "").trim().toLowerCase()));
@@ -208,7 +254,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     });
   };
 
-  const filteredFamilies = useMemo(() => families, [families]);
+  const filteredFamilies = useMemo(() => pagedFamilies, [pagedFamilies]);
 
   // Typeahead: existing products (families) matching the current input, best first
   const familyQuery = familyForm.name.trim().toLowerCase();
@@ -553,7 +599,6 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
             name,
             description: familyForm.description.trim() || null,
             sku: grade.sku,
-            price: 0,
             quantity: 0,
             grade: grade.grade,
             bag_quantity_id: grade.bag_quantity_id || null,
@@ -674,7 +719,6 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
         name: editGrade.name,
         description: editGrade.description || null,
         sku,
-        price: editGrade.price || 0,
         quantity: editGrade.quantity || 0,
         grade,
         bag_quantity_id: gradeForm.bag_quantity_id || null,
@@ -759,21 +803,27 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
       )}
 
       <div className="flex flex-col gap-4 rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-xs sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900">Product catalogue</h2>
-          <p className="mt-0.5 text-sm text-slate-500">
-            One product can have many grades. Batches and sales use the grade.
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
+            <Package size={22} />
+          </div>
+          <div className="flex flex-col gap-1 max-w-xl">
+            <h2 className="text-xl font-bold text-slate-900">Product catalogue</h2>
+            <p className="mt-0.5 text-sm text-slate-500">
+            One product can have many grades. </p> 
+            {/* Batches and sales use the grade.
             {isSearching
               ? ` Showing up to 100 matches for “${debouncedSearch.trim()}”.`
               : ` ${totalProducts.toLocaleString()} products across ${families.length.toLocaleString()} families.`}
-          </p>
+            */}
+          </div>
         </div>
         {canManage && (
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => void openDeactivated()}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-bold text-amber-900 transition-colors hover:bg-amber-100 sm:text-sm"
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-100"
               title="View and restore deactivated families"
             >
               <EyeOff size={16} /> Deactivated{deactivatedFamilies !== null && deactivatedFamilies.length > 0 ? ` (${deactivatedFamilies.length})` : ""}
@@ -781,15 +831,15 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
             <button
               type="button"
               onClick={() => setShowImportWizard(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 sm:text-sm"
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50"
               title="Download the template, fill it in, validate and import"
             >
               <Upload size={16} /> Import products
             </button>
-            <button type="button" onClick={() => void load()} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200 sm:text-sm">
+            <button type="button" onClick={() => void load()} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50">
               <RefreshCw size={16} className={loading ? "animate-spin" : ""} /> Refresh
             </button>
-            <button onClick={openCreateProduct} className="btn-primary">
+            <button onClick={openCreateProduct} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-bold text-white shadow-sm transition-colors hover:bg-brand-700">
               <Plus size={16} /> Add product
             </button>
           </div>
@@ -822,9 +872,12 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
         </div>
       )}
 
-      {loading && families.length === 0 ? (
-        <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center text-sm font-semibold text-slate-500">
+      {loading && familyTotal === 0 ? (
+        <div className="rounded-2xl flex flex-col items-center gap-4 border-2 border-slate-200 bg-white p-12 text-center text-sm font-semibold text-slate-500">
+          <LoaderCircle size={28} className="animate-spin"/>
+          <span>
           Loading products...
+          </span>
         </div>
       ) : isSearching ? (
         searchLoading ? (
@@ -867,7 +920,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
             </table>
           </div>
         )
-      ) : families.length === 0 ? (
+      ) : familyTotal === 0 ? (
         <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
             <Package size={24} />
@@ -959,6 +1012,68 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
               </section>
             );
           })}
+        </div>
+      )}
+
+      {!isSearching && familyTotal > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+            <span>Show</span>
+            <select
+              aria-label="Product groups per page"
+              value={familyPageSize}
+              onChange={(event) => changePageSize(Number(event.target.value))}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-800"
+            >
+              {[10, 25, 50, 100].map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+            <span>per page · {familyTotal.toLocaleString()} groups total</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              aria-label="Previous page"
+              disabled={familyPage <= 1}
+              onClick={() => changePage(familyPage - 1)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronLeft size={15} />
+            </button>
+            {pageButtons.map((page, index) =>
+              typeof page === "number" ? (
+                <button
+                  key={`${page}-${index}`}
+                  type="button"
+                  aria-label={`Page ${page}`}
+                  aria-current={page === familyPage ? "page" : undefined}
+                  onClick={() => changePage(page)}
+                  className={`inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-2 text-xs font-bold transition-colors ${
+                    page === familyPage
+                      ? "bg-brand-600 text-white"
+                      : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {page}
+                </button>
+              ) : (
+                <span key={`gap-${index}`} className="px-1 text-xs text-slate-400">{page}</span>
+              ),
+            )}
+            <button
+              type="button"
+              aria-label="Next page"
+              disabled={familyPage >= familyPages}
+              onClick={() => changePage(familyPage + 1)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronRight size={15} />
+            </button>
+            <span className="ml-2 text-xs font-bold text-slate-500">
+              Page {familyPage} of {familyPages}
+            </span>
+          </div>
         </div>
       )}
 

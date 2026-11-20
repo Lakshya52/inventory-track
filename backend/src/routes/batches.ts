@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { finishGoods, list, getByBarcode, getById, search, update } from '../controllers/batchController';
+import { finishGoods, list, listGroups, getByBarcode, getById, search, update } from '../controllers/batchController';
 import { authenticate, authorize } from '../middleware/auth';
 import { createGroup } from '../controllers/batchGroupController';
 
@@ -18,6 +18,7 @@ router.post('/', authorize('ADMIN', 'DISPATCH'), retiredCreate);
 router.post('/group', authorize('ADMIN', 'DISPATCH'), createGroup);
 router.post('/:id/finish-goods', authorize('ADMIN', 'QC'), finishGoods);
 router.get('/', list);
+router.get('/groups', listGroups);
 router.get('/search', search);
 router.get('/barcode/:barcode', getByBarcode);
 router.get('/:id', getById);

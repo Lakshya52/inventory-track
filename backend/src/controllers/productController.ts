@@ -16,5 +16,6 @@ export const deactivateFamily = implementation.deactivateFamily;
 export const reactivateFamily = implementation.reactivateFamily;
 export const update = implementation.update;
 export const listFamilies = implementation.listFamilies;
+export const listFamiliesPage = implementation.listFamiliesPage;
 export const listFamilyProducts = implementation.listFamilyProducts;
 export const nextSku = implementation.nextSku;

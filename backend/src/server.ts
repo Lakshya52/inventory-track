@@ -72,6 +72,35 @@ app.use(cors({
   exposedHeaders: ['RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset', 'X-Request-Id'],
 }));
 app.use(express.json({ limit: '2mb' }));
+
+/**
+ * Final safety net: no internal database/auth structure ever reaches the
+ * browser, even if a controller forgets a projection. Strips Mongo `_id`,
+ * password/token hashes and raw logo bytes from every JSON response.
+ */
+const INTERNAL_RESPONSE_FIELDS = new Set([
+  '_id', 'password_hash', 'token_hash', 'refresh_token_hash', 'logo_data', 'email_key',
+]);
+function stripInternal(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripInternal);
+  if (value instanceof Date || Buffer.isBuffer(value)) return value;
+  if (value && typeof value === 'object') {
+    const clean: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (INTERNAL_RESPONSE_FIELDS.has(key)) continue;
+      clean[key] = stripInternal(item);
+    }
+    return clean;
+  }
+  return value;
+}
+app.use((req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = ((body: unknown) => json(stripInternal(body))) as typeof res.json;
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
 app.use((req, res, next) => {
   const requestId = String(req.headers['x-request-id'] || randomUUID());
   res.setHeader('X-Request-Id', requestId);

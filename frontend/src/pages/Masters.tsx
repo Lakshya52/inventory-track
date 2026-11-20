@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import QRCode from 'qrcode';
 import { api } from '../services/api';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import type { EntityId } from '../types';
@@ -41,22 +42,33 @@ function isActive(item: MasterItem): boolean {
 }
 
 const TABS: { id: MasterTab; label: string; icon: any }[] = [
-  { id: 'clients', label: 'Customer', icon: Building2 },
-  { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
   { id: 'products', label: 'Products', icon: Package },
   { id: 'uoms', label: 'Units of Measure (UOM)', icon: Scale },
   { id: 'printer-label', label: 'Printer Label Size', icon: Printer },
+  { id: 'clients', label: 'Customer', icon: Building2 },
+  { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
   { id: 'divisions', label: 'Divisions', icon: LayoutGrid },
 ];
 
 function normalizeTab(value: string | null): MasterTab {
   if (value === 'grades') return 'products';
-  return TABS.some((tab) => tab.id === value) ? (value as MasterTab) : 'clients';
+  return TABS.some((tab) => tab.id === value) ? (value as MasterTab) : 'products';
 }
+
+/** Sample label content — the preview shows what QC will actually print. */
+const SAMPLE_QR_VALUE = 'QRJ-20261120-A1B2C3-0001';
+const SAMPLE_LABEL = {
+  product: 'XLPE BK 9406',
+  batch: 'KLJXLPE-20261120-A1B2C3-01-0001',
+  package: 'Package: 25 kg × 1 bags',
+  godown: 'Godown: Main · A-01-01',
+  bag: 'Bag 0001',
+};
 
 function PrinterLabelSettings() {
   const [widthMm, setWidthMm] = useState('60');
   const [heightMm, setHeightMm] = useState('64');
+  const [previewQr, setPreviewQr] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -89,12 +101,34 @@ function PrinterLabelSettings() {
     }
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(SAMPLE_QR_VALUE, {
+      width: 320,
+      margin: 1,
+      errorCorrectionLevel: 'M',
+    })
+      .then((url) => { if (!cancelled) setPreviewQr(url); })
+      .catch(() => { if (!cancelled) setPreviewQr(''); });
+    return () => { cancelled = true; };
+  }, []);
+
   const previewScale = Math.min(2.5, 220 / Number(widthMm || 60), 150 / Number(heightMm || 64));
+  const previewWidth = Number(widthMm || 60) * previewScale;
+  const previewHeight = Number(heightMm || 64) * previewScale;
+  const rawFontSize = Math.max(6, Math.min(11, previewWidth * 0.072));
+  const detailFontSize = Math.max(5, Math.min(8, previewWidth * 0.044));
+  const qrSide = Math.max(36, Math.min(previewWidth * 0.55, previewHeight * 0.45));
   return (
     <section className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs">
-      <div className="border-b border-slate-100 px-5 py-4 sm:px-6">
-        <h2 className="text-xl font-bold text-slate-900">QR printer label size</h2>
-        <p className="mt-1 text-sm text-slate-500">Set the physical width and height used when QC prints labels after creating a batch.</p>
+      <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-4 sm:px-6">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
+          <Printer size={22} />
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">QR printer label size</h2>
+          <p className="mt-1 text-sm text-slate-500">Set the physical width and height used when QC prints labels after creating a batch.</p>
+        </div>
       </div>
       <form onSubmit={save} className="grid gap-6 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_280px]">
         <div className="space-y-5">
@@ -123,13 +157,47 @@ function PrinterLabelSettings() {
         </div>
         <div className="flex min-h-48 flex-col items-center justify-center rounded-2xl bg-slate-50 p-4">
           <span className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Print preview</span>
-          <div className="flex flex-col items-center justify-center overflow-hidden rounded-md border border-dashed border-slate-400 bg-white p-2 text-center shadow-sm" style={{ width: `${Number(widthMm || 60) * previewScale}px`, height: `${Number(heightMm || 64) * previewScale}px`, maxWidth: '100%' }}>
-            <div className="mb-1 text-[9px] font-bold text-slate-800">Product name</div>
-            <div className="mb-1 text-[7px] text-slate-500">Batch · unit number</div>
-            <div className="flex aspect-square w-1/2 items-center justify-center bg-slate-900 text-[9px] font-black text-white">QR</div>
-            <div className="mt-1 text-[6px] text-slate-400">QR label code</div>
+          <div className="flex flex-col items-center overflow-hidden rounded-md border border-dashed border-slate-400 bg-white px-1.5 py-2 text-center shadow-sm" style={{ width: `${previewWidth}px`, height: `${previewHeight}px`, maxWidth: '100%' }}>
+            {previewQr ? (
+              <img
+                src={previewQr}
+                alt="Sample QR code"
+                className="shrink-0"
+                style={{ width: `${qrSide}px`, height: `${qrSide}px`, imageRendering: 'pixelated' }}
+              />
+            ) : (
+              <div
+                className="flex shrink-0 items-center justify-center bg-slate-900 text-white"
+                style={{ width: `${qrSide}px`, height: `${qrSide}px`, fontSize: `${detailFontSize}px` }}
+              >
+                QR
+              </div>
+            )}
+            <div
+              className="mt-1 w-full truncate font-mono font-bold text-slate-900"
+              style={{ fontSize: `${rawFontSize}px` }}
+              title={SAMPLE_QR_VALUE}
+            >
+              {SAMPLE_QR_VALUE}
+            </div>
+            <div className="mt-1 w-full truncate font-bold text-slate-800" style={{ fontSize: `${detailFontSize + 1}px` }}>
+              {SAMPLE_LABEL.product}
+            </div>
+            <div className="w-full truncate text-slate-600" style={{ fontSize: `${detailFontSize}px` }}>
+              Batch: {SAMPLE_LABEL.batch}
+            </div>
+            <div className="w-full truncate text-slate-600" style={{ fontSize: `${detailFontSize}px` }}>
+              {SAMPLE_LABEL.package}
+            </div>
+            <div className="w-full truncate text-slate-500" style={{ fontSize: `${detailFontSize}px` }}>
+              {SAMPLE_LABEL.godown}
+            </div>
+            <div className="mt-auto w-full truncate text-slate-400" style={{ fontSize: `${Math.max(4, detailFontSize - 1)}px` }}>
+              {SAMPLE_LABEL.bag}
+            </div>
           </div>
           <span className="mt-2 text-xs font-semibold text-slate-600">{widthMm || '—'} × {heightMm || '—'} mm</span>
+          <span className="mt-0.5 text-[10px] text-slate-400">Preview shows sample label data</span>
         </div>
       </form>
     </section>
@@ -316,26 +384,26 @@ export default function Masters() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      {/* 1. TOP HEADER */}
-      <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 sm:p-6 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-brand-100 text-brand-700 flex items-center justify-center shrink-0">
-            <SlidersHorizontal size={24} />
-          </div>
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+      {/* 1. TOP HEADER — same treatment as Reports & Audit Logs */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="mb-1 flex items-center gap-3">
+            {/* <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-100">
+              <SlidersHorizontal size={20} className="text-brand-600" />
+            </div> */}
+            <h1 className="text-2xl font-bold text-slate-900">
               Masters Management
             </h1>
-            <p className="text-sm sm:text-base text-slate-500 mt-0.5">
-              Manage customers, vendors, products and their grades, units of measure, printer labels and divisions.
-            </p>
           </div>
+          <p className="text-base text-slate-500">
+            Manage customers, vendors, products and their grades, units of measure, printer labels and divisions.
+          </p>
         </div>
       </div>
 
-      {/* 2. MASTER TABS SWITCHER */}
-      <div className="bg-white rounded-2xl border-2 border-slate-200 p-2 shadow-xs">
-        <nav className="flex flex-wrap gap-1 sm:gap-2" aria-label="Master sections">
+      {/* 2. MASTER TABS SWITCHER — underline tabs like Reports */}
+      <div className="border-b-2 border-slate-200">
+        <nav className="-mb-0.5 flex flex-wrap gap-1 sm:gap-2" aria-label="Master sections">
           {TABS.map((tab) => {
             const Icon = tab.icon;
             const isCurrent = activeTab === tab.id;
@@ -344,14 +412,14 @@ export default function Masters() {
                 key={tab.id}
                 type="button"
                 onClick={() => switchTab(tab.id)}
-                className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${
+                className={`cursor-pointer inline-flex items-center gap-2 border-b-2 px-4 py-3 text-base font-semibold transition-colors ${
                   isCurrent
-                    ? 'bg-brand-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    ? 'border-brand-600 text-brand-600'
+                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                 }`}
               >
                 <Icon size={18} />
-                <span>{tab.label}</span>
+                {tab.label}
               </button>
             );
           })}
@@ -368,11 +436,16 @@ export default function Masters() {
       {isSimpleMaster && (
         <div className="space-y-6">
           <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">{itemTitle} Master Register</h2>
-              <p className="text-sm text-slate-500 mt-0.5">
-                Manage reusable {itemTitle.toLowerCase()} available in product and batch creation ({items.length} total)
-              </p>
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
+                <Scale size={22} />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">{itemTitle} Master Register</h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Manage reusable {itemTitle.toLowerCase()} available in product and batch creation ({items.length} total)
+                </p>
+              </div>
             </div>
             <button
               onClick={openCreateForm}

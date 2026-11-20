@@ -63,8 +63,6 @@ const NUMERIC_FIELDS = new Set([
   'serial_no',
   'print_count',
   'quantity',
-  'unit_price',
-  'price',
   'is_active',
 ]);
 

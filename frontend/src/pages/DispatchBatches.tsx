@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import {
 	Boxes,
 	ChevronDown,
+	ChevronLeft,
+	ChevronRight,
 	Minus,
 	Plus,
 	Send,
@@ -171,7 +173,7 @@ function ProductPicker({
 }: {
 	products: any[];
 	value: string;
-	onChange: (productId: string) => void;
+	onChange: (productId: string, product?: any) => void;
 	onPick: (product: any) => void;
 }) {
 	const [open, setOpen] = useState(false);
@@ -274,8 +276,11 @@ function ProductPicker({
 	);
 
 	const choose = (product: any) => {
-		onChange(String(product.id));
+		// Hand the picked product to the parent too — React state updates are
+		// async, so reading it back from the products map here would be stale
+		// and the default package quantity would never be filled in.
 		onPick(product);
+		onChange(String(product.id), product);
 		setOpen(false);
 		setQuery("");
 	};
@@ -400,9 +405,15 @@ export default function DispatchBatches() {
 	const [uoms, setUoms] = useState<any[]>([]);
 	const [bagQuantities, setBagQuantities] = useState<any[]>([]);
 	const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-	const [batches, setBatches] = useState<any[]>([]);
+	const [batchGroups, setBatchGroups] = useState<any[]>([]);
+	const [groupPage, setGroupPage] = useState(1);
+	const [groupPageSize, setGroupPageSize] = useState(10);
+	const [groupTotal, setGroupTotal] = useState(0);
+	const [groupPages, setGroupPages] = useState(1);
 	const [lines, setLines] = useState<Line[]>([newLine()]);
 	const [showCreateForm, setShowCreateForm] = useState(false);
+	// A dispatch group may hold dozens of grades — keep its table cell compact.
+	const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 	const [useSameLocation, setUseSameLocation] = useState(false);
 	const [useSameDates, setUseSameDates] = useState(false);
 	const [search, setSearch] = useState("");
@@ -417,12 +428,16 @@ export default function DispatchBatches() {
 		setProducts((current) => ({ ...current, [String(product.id)]: product }));
 	};
 
-	const loadBatches = async (query: string) => {
-		const rows = await api.batches.recent({
-			limit: 50,
+	const loadBatches = async (query: string, page = groupPage, pageSize = groupPageSize) => {
+		const result = await api.batches.groups({
 			q: query.trim() || undefined,
+			page,
+			limit: pageSize,
 		});
-		setBatches(Array.isArray(rows) ? rows : []);
+		setBatchGroups(result.items || []);
+		setGroupTotal(result.total);
+		setGroupPages(result.pages);
+		if (result.page > result.pages && result.pages > 0) setGroupPage(result.pages);
 		setLoaded(true);
 	};
 	const loadMasters = async () => {
@@ -456,18 +471,18 @@ export default function DispatchBatches() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 	useEffect(() => {
-		void loadBatches(debouncedSearch).catch((err) => {
+		void loadBatches(debouncedSearch, groupPage, groupPageSize).catch((err) => {
 			setError(err.message || "Could not load batches");
 			setLoaded(true);
 		});
 		const unsubscribe = subscribe((event) => {
 			if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status') {
-				void loadBatches(debouncedSearch).catch(() => {});
+				void loadBatches(debouncedSearch, groupPage, groupPageSize).catch(() => {});
 			}
 		});
 		return () => unsubscribe();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [debouncedSearch]);
+	}, [debouncedSearch, groupPage, groupPageSize]);
 
 	const getPackageMaster = (product: any) =>
 		bagQuantities.find(
@@ -547,10 +562,11 @@ export default function DispatchBatches() {
 		setUseSameDates(next);
 		if (!next) return;
 		setLines((currentLines) => {
-			const sharedLine =
-				currentLines.find(
-					(line) => line.manufacturingDate && line.expiryDate,
-				) || currentLines[0];
+			// Only copy a COMPLETE pair. Falling back to the first row (whose
+			// expiry is usually empty) used to wipe dates typed on other rows.
+			const sharedLine = currentLines.find(
+				(line) => line.manufacturingDate && line.expiryDate,
+			);
 			if (!sharedLine) return currentLines;
 			return currentLines.map((line) => ({
 				...line,
@@ -565,8 +581,7 @@ export default function DispatchBatches() {
 				? current.find((line) => line.warehouseId && line.shelfLocationId)
 				: undefined;
 			const sharedDates = useSameDates
-				? current.find((line) => line.manufacturingDate && line.expiryDate) ||
-					current[0]
+				? current.find((line) => line.manufacturingDate && line.expiryDate)
 				: undefined;
 			return [
 				...current,
@@ -686,7 +701,6 @@ export default function DispatchBatches() {
 						warehouse_id: line.warehouseId,
 						manufacturing_date: line.manufacturingDate,
 						expiry_date: line.expiryDate,
-						unit_price: Number(product?.price || 0),
 					};
 				}),
 				// The same key is reused for a retry of this exact submission, so
@@ -718,48 +732,37 @@ export default function DispatchBatches() {
 				: 0)
 		);
 	}, 0);
-	const groupedBatches = useMemo(() => {
-		const groups = new Map<string, any>();
-		for (const batch of batches) {
-			const key = String(
-				batch.parent_batch_number ? batch.batch_group_id : batch.id,
-			);
-			const group = groups.get(key) || {
-				...batch,
-				id: key,
-				batch_number: batch.parent_batch_number || batch.batch_number,
-				product_lines: new Map<string, any>(),
-				quantity_total: 0,
-				qr_count_total: 0,
-			};
+	const groupedBatches = useMemo(() => batchGroups.map((group: any) => {
+		const lines = new Map<string, any>();
+		let quantityTotal = 0;
+		let qrTotal = 0;
+		for (const batch of group.batches || []) {
 			const productKey = String(batch.product_id);
-			const productLine = group.product_lines.get(productKey) || {
+			const line = lines.get(productKey) || {
 				...batch,
 				product_name: batch.product_name || "Product",
 				quantity: 0,
 				locations: new Set<string>(),
 			};
-			productLine.quantity += Number(batch.quantity || 0);
+			line.quantity += Number(batch.quantity || 0);
 			if (batch.location_code || batch.storage_location) {
-				productLine.locations.add(
-					String(batch.location_code || batch.storage_location),
-				);
+				line.locations.add(String(batch.location_code || batch.storage_location));
 			}
-			group.product_lines.set(productKey, productLine);
-			group.quantity_total += Number(batch.quantity || 0);
-			group.qr_count_total += Number(batch.qr_count || 0);
-			groups.set(key, group);
+			lines.set(productKey, line);
+			quantityTotal += Number(batch.quantity || 0);
+			qrTotal += Number(batch.qr_count || 0);
 		}
-		return [...groups.values()].map((group) => ({
+		return {
 			...group,
-			product_lines: [...group.product_lines.values()].map(
-				(line: any) => ({
-					...line,
-					locations: [...line.locations],
-				}),
-			),
-		}));
-	}, [batches]);
+			id: String(group.group_key ?? group.id),
+			product_lines: [...lines.values()].map((line: any) => ({
+				...line,
+				locations: [...line.locations],
+			})),
+			quantity_total: quantityTotal,
+			qr_count_total: qrTotal,
+		};
+	}), [batchGroups]);
 
 
 	return (
@@ -833,21 +836,22 @@ export default function DispatchBatches() {
 							<input
 								className="input pl-9"
 								value={search}
-								onChange={(event) =>
-									setSearch(event.target.value)
-								}
+								onChange={(event) => {
+									setSearch(event.target.value);
+									setGroupPage(1);
+								}}
 								placeholder="Search batch or product"
 								aria-label="Search batches"
 							/>
 						</label>
 						<span className="inline-flex h-10 min-w-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-sm font-extrabold text-slate-700">
-							{groupedBatches.length}
+							{groupTotal}
 						</span>
 					</div>
 				</div>
-				<div className="table-wrap">
+				<div className="table-wrap max-h-[520px] overflow-y-auto">
 					<table>
-						<thead>
+						<thead className="sticky top-0 z-10 bg-slate-50">
 							<tr>
 								<th>Batch</th>
 								<th>Products in batch</th>
@@ -864,7 +868,14 @@ export default function DispatchBatches() {
 									</td>
 									<td className="font-semibold text-slate-800">
 										<div className="space-y-1.5">
-											{batch.product_lines.map(
+											{batch.product_lines
+												.slice(
+													0,
+													expandedGroups.has(batch.id)
+														? undefined
+														: 3,
+												)
+												.map(
 												(line: any) => (
 													<div
 														key={line.id}
@@ -891,6 +902,24 @@ export default function DispatchBatches() {
 														</span>
 													</div>
 												),
+											)}
+											{batch.product_lines.length > 3 && (
+												<button
+													type="button"
+													className="text-xs font-bold text-brand-600 hover:underline"
+													onClick={() =>
+														setExpandedGroups((current) => {
+															const next = new Set(current);
+															if (next.has(batch.id)) next.delete(batch.id);
+															else next.add(batch.id);
+															return next;
+														})
+													}
+												>
+													{expandedGroups.has(batch.id)
+														? "Show less"
+														: `+${batch.product_lines.length - 3} more products`}
+												</button>
 											)}
 										</div>
 									</td>
@@ -941,6 +970,48 @@ export default function DispatchBatches() {
 							)}
 						</tbody>
 					</table>
+				</div>
+				<div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-100 px-5 py-3">
+					<div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+						<span>Show</span>
+						<select
+							aria-label="Batches per page"
+							className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold"
+							value={groupPageSize}
+							onChange={(event) => {
+								setGroupPageSize(Number(event.target.value));
+								setGroupPage(1);
+							}}
+						>
+							{[10, 25, 50, 100].map((size) => (
+								<option key={size} value={size}>{size}</option>
+							))}
+						</select>
+						<span>groups · {groupTotal.toLocaleString()} total</span>
+					</div>
+					<div className="flex items-center gap-1">
+						<button
+							type="button"
+							aria-label="Previous page"
+							disabled={groupPage <= 1}
+							onClick={() => setGroupPage((page) => page - 1)}
+							className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40"
+						>
+							<ChevronLeft size={15} />
+						</button>
+						<span className="px-2 text-xs font-bold text-slate-700">
+							Page {groupPage} of {groupPages}
+						</span>
+						<button
+							type="button"
+							aria-label="Next page"
+							disabled={groupPage >= groupPages}
+							onClick={() => setGroupPage((page) => page + 1)}
+							className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40"
+						>
+							<ChevronRight size={15} />
+						</button>
+					</div>
 				</div>
 			</section>
 
@@ -1107,8 +1178,14 @@ export default function DispatchBatches() {
 									<tbody className="block sm:table-row-group">
 										{lines.map((line, index) => {
 											const product = line.productId ? products[line.productId] : undefined;
+											// Match the footer counter: no product selected
+											// means no labels are reserved for this line.
 											const lineLabels =
-												Number(line.quantity) || 0;
+												line.productId &&
+												Number.isInteger(Number(line.quantity)) &&
+												Number(line.quantity) > 0
+													? Number(line.quantity)
+													: 0;
 											const positionsNeeded = lines
 												.filter(
 													(row) =>
@@ -1144,11 +1221,14 @@ export default function DispatchBatches() {
 																products={Object.values(products)}
 																value={line.productId}
 																onPick={pickProduct}
-																onChange={(productId) =>
+																onChange={(productId, pickedProduct) =>
 																	updateLine(index, {
 																		productId,
 																		packageQuantity: getPackageDefault(
-																			productId ? products[productId] : undefined,
+																			pickedProduct ??
+																				(productId
+																					? products[productId]
+																					: undefined),
 																		),
 																	})
 																}
@@ -1444,13 +1524,9 @@ export default function DispatchBatches() {
 															</button>
 														</div>
 														<span className="text-[11px] font-medium text-slate-500">
-															{lineLabels.toLocaleString()}{" "}
-															QR{" "}
-															{lineLabels === 1
-																? "label"
-																: "labels"}{" "}
-															will be reserved for
-															this line.
+															{lineLabels > 0
+																? `${lineLabels.toLocaleString()} QR ${lineLabels === 1 ? "label" : "labels"} will be reserved for this line.`
+																: "Select a product to reserve QR labels for this line."}
 														</span>
 													</td>
 													{(!useSameDates || index === 0) && (

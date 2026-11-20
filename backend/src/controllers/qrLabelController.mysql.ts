@@ -166,9 +166,16 @@ export async function list(req: Request, res: Response): Promise<void> {
      LEFT JOIN admins a ON j.created_by = a.id AND j.created_by_role = 'ADMIN'
      ${where}${dv.sql}
      ORDER BY j.created_at DESC
-     LIMIT 100`;
-  const items = await query<RowDataPacket[]>(listSql, [...listQuery.divParams, ...params, ...dv.params] as any[]);
-  res.json({ items: items.map(decorateJob), total: items.length });
+     LIMIT ? OFFSET ?`;
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+  const [countRows] = await query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS count FROM qr_print_jobs j ${where}${dv.sql}`,
+    [...params, ...dv.params] as any[]
+  );
+  const items = await query<RowDataPacket[]>(listSql, [...listQuery.divParams, ...params, ...dv.params, limit, (page - 1) * limit] as any[]);
+  const total = Number(countRows[0]?.count || 0);
+  res.json({ items: items.map(decorateJob), total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) });
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {

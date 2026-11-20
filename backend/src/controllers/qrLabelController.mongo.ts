@@ -12,35 +12,6 @@ const QC_PASSED_STATUSES = new Set([
   'DISPATCHED',
 ]);
 
-async function jobStats(
-  ctx: DbContext,
-  jobIds: EntityId[],
-  tenantId?: EntityId,
-  divisionScope?: Record<string, any>
-): Promise<Map<string, { total_prints: number; label_count: number; last_printed_at: Date | null }>> {
-  if (jobIds.length === 0) return new Map();
-  const tenantFilter = tenantId === undefined || tenantId === null ? {} : { tenant_id: tenantId };
-  const rows = await ctx.aggregate('qr_labels', [
-    { $match: { print_job_id: { $in: jobIds }, ...tenantFilter, ...(divisionScope ?? {}) } },
-    {
-      $group: {
-        _id: '$print_job_id',
-        total_prints: { $sum: { $ifNull: ['$print_count', 0] } },
-        label_count: { $sum: 1 },
-        last_printed_at: { $max: '$last_printed_at' },
-      },
-    },
-  ]);
-  return new Map(rows.map((row) => [
-    idKey(row._id),
-    {
-      total_prints: Number(row.total_prints || 0),
-      label_count: Number(row.label_count || 0),
-      last_printed_at: row.last_printed_at || null,
-    },
-  ]));
-}
-
 async function enrichJobs(
   ctx: DbContext,
   jobs: Record<string, any>[],
@@ -66,7 +37,6 @@ async function enrichJobs(
     jobs.filter((job) => job.created_by_role === 'ADMIN').map((job) => job.created_by),
     tenantId
   );
-  const stats = await jobStats(ctx, jobs.map((job) => job.id), tenantId, divisionScope);
   const tenantFilter = tenantId === undefined || tenantId === null ? {} : { tenant_id: tenantId };
 
   const jobIds = jobs.map((job) => job.id);
@@ -75,12 +45,17 @@ async function enrichJobs(
         { $match: { print_job_id: { $in: jobIds }, ...tenantFilter, ...(divisionScope ?? {}) } },
         { $sort: { serial_no: 1 } },
         {
+          // One pass computes every per-job figure the list needs. Doing this
+          // twice (stats + first label) doubled the scan over millions of labels.
           $group: {
             _id: '$print_job_id',
             batch_id: { $first: '$batch_id' },
             printed_count: {
               $sum: { $cond: [{ $gt: [{ $ifNull: ['$print_count', 0] }, 0] }, 1, 0] },
             },
+            label_count: { $sum: 1 },
+            total_prints: { $sum: { $ifNull: ['$print_count', 0] } },
+            last_printed_at: { $max: '$last_printed_at' },
           },
         },
       ])
@@ -110,8 +85,8 @@ async function enrichJobs(
     const creator = job.created_by_role === 'ADMIN'
       ? adminCreators.get(idKey(job.created_by))
       : qcCreators.get(idKey(job.created_by));
-    const jobStat = stats.get(idKey(job.id));
-    const labelInfo = labelInfoByJob.get(idKey(job.id));
+    const jobStat = labelInfoByJob.get(idKey(job.id));
+    const labelInfo = jobStat;
     const batch = labelInfo ? batches.get(idKey(labelInfo.batch_id)) : undefined;
     const group = batch?.batch_group_id ? groupsByKey.get(String(batch.batch_group_id)) : undefined;
     const batchStatus = String(group?.status || batch?.status || '').toUpperCase();
@@ -350,13 +325,17 @@ export async function list(req: Request, res: Response): Promise<void> {
     ];
   }
 
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+  const total = await ctx.count('qr_print_jobs', filter);
   const jobs = await ctx.find('qr_print_jobs', filter, {
     sort: { created_at: -1 },
-    limit: 100,
+    skip: (page - 1) * limit,
+    limit,
     projection: { _id: 0 },
   });
   const items = await enrichJobs(ctx, jobs, req.user!.tenantId, divisionScope);
-  res.json({ items, total: items.length });
+  res.json({ items, total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) });
 }
 
 export async function getById(req: Request, res: Response): Promise<void> {

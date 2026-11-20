@@ -179,6 +179,12 @@ async function ensureIndexes(ctx: DbContext): Promise<void> {
     ctx.collection('refresh_tokens').createIndex({ token_hash: 1 }, unique),
     ctx.collection('refresh_tokens').createIndex({ user_role: 1, user_id: 1 }),
     ctx.collection('refresh_tokens').createIndex({ expires_at: 1 }),
+
+    // Large-workspace read paths (180k batches / labels per factory-month).
+    ctx.collection('qr_labels').createIndex({ tenant_id: 1, dispatch_order_id: 1 }),
+    ctx.collection('batches').createIndex({ tenant_id: 1, shelf_location_id: 1, status: 1 }),
+    ctx.collection('batches').createIndex({ tenant_id: 1, status: 1, created_at: -1 }),
+    ctx.collection('dispatch_orders').createIndex({ tenant_id: 1, status: 1, dispatched_at: 1 }),
   ]);
 }
 

@@ -97,8 +97,8 @@ async function main(): Promise<void> {
   const trpShelfId = trpRack.json?.cells?.[0]?.shelf_location_id;
   report(Boolean(trpShelfId), 'rack cells expose a shelf_location_id');
 
-  const xcleProduct = await api(admin, 'POST', '/products', { name: `E2EXCLEProduct ${stamp}`, sku: `E2E-XCLE-${stamp}`, price: 11, quantity: 5 }, xcleId);
-  const trpProduct = await api(admin, 'POST', '/products', { name: `E2ETRPProduct ${stamp}`, sku: `E2E-TRP-${stamp}`, price: 11, quantity: 5 }, trpId);
+  const xcleProduct = await api(admin, 'POST', '/products', { name: `E2EXCLEProduct ${stamp}`, sku: `E2E-XCLE-${stamp}`, quantity: 5 }, xcleId);
+  const trpProduct = await api(admin, 'POST', '/products', { name: `E2ETRPProduct ${stamp}`, sku: `E2E-TRP-${stamp}`, quantity: 5 }, trpId);
   report(trpProduct.status === 201, 'admin creates TRP product');
   report(xcleProduct.status === 201, 'admin creates XCLE product');
   const trpProductId = trpProduct.json?.id ?? trpProduct.json?.products?.[0]?.id;

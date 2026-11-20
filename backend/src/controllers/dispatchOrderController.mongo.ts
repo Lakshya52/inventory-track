@@ -332,6 +332,37 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   res.json(await enrichOrders(ctx, orders, tenantId, divisionScope));
 }
 
+/** Paginated order history for the dedicated history screen. */
+export async function listHistory(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const q = String(req.query.q || '').trim();
+  const status = String(req.query.status || '').toUpperCase();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  const ctx = await getContext();
+  const divisionScope = divisionFilter(req);
+  const base: Record<string, any> = { tenant_id: tenantId, ...divisionScope };
+  if (req.user!.role === 'DISPATCH') base.raised_by = req.user!.userId;
+  if (ORDER_STATUS_FILTERS.includes(status)) base.status = status;
+  const filter = await orderFilterForSearch(ctx, q, base, tenantId, divisionScope);
+  const [total, orders] = await Promise.all([
+    ctx.count('dispatch_orders', filter),
+    ctx.find('dispatch_orders', filter, {
+      sort: { created_at: -1 },
+      skip: (page - 1) * limit,
+      limit,
+      projection: { _id: 0 },
+    }),
+  ]);
+  res.json({
+    items: await enrichOrders(ctx, orders, tenantId, divisionScope),
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / limit)),
+    limit,
+  });
+}
+
 /**
  * Puts units back into the product stock. The units were taken out of the
  * stock when the dispatch order was created, so they have to go back when the

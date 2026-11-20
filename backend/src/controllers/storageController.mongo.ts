@@ -17,21 +17,62 @@ async function warehouseSnapshot(req: Request, warehouseId: string) {
   if (!warehouse) return null;
   const racks = await ctx.find('storage_racks', { tenant_id: tenantId, warehouse_id: warehouseId, ...df }, { sort: { rack_code: 1 } });
   const locationIds = racks.flatMap((rack: any) => rack.cells || []).map((cell: any) => cell.shelf_location_id).filter(Boolean);
-  const batches = locationIds.length ? await ctx.find('batches', { tenant_id: tenantId, shelf_location_id: { $in: locationIds }, status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] }, ...df }) : [];
-  const productIds = [...new Set(batches.map((batch: any) => batch.product_id).filter(Boolean))];
+  // Load-test data puts thousands of bags in each position. Aggregate counts
+  // and a bounded sample inside MongoDB instead of shipping every batch here.
+  const batchMatch: Record<string, any> = {
+    tenant_id: tenantId,
+    shelf_location_id: { $in: locationIds },
+    status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
+    ...df,
+  };
+  const [usageRows, detailRows] = locationIds.length ? await Promise.all([
+    ctx.aggregate('batches', [
+      { $match: batchMatch },
+      { $group: {
+        _id: '$shelf_location_id',
+        used: { $sum: { $max: [
+          { $subtract: [
+            { $subtract: [
+              { $ifNull: ['$quantity', 0] },
+              { $ifNull: ['$dispatched_quantity', 0] },
+            ] },
+            { $ifNull: ['$recalled_quantity', 0] },
+          ] },
+          0,
+        ] } },
+      } },
+    ]),
+    ctx.aggregate('batches', [
+      { $match: batchMatch },
+      { $sort: { _id: -1 } },
+      { $group: { _id: '$shelf_location_id', batches: { $push: {
+        id: '$_id',
+        product_id: '$product_id',
+        batch_number: { $ifNull: ['$parent_batch_number', '$batch_number'] },
+        product_name: '$product_name',
+        product_sku: '$product_sku',
+        quantity: '$quantity',
+        dispatched_quantity: '$dispatched_quantity',
+        recalled_quantity: '$recalled_quantity',
+        uom: '$uom',
+        manufacturing_date: '$manufacturing_date',
+        expiry_date: '$expiry_date',
+        status: '$status',
+      } } } },
+      { $project: { batches: { $slice: ['$batches', 10] } } },
+    ]),
+  ]) : [[], []];
+  const usedByLocation = new Map(usageRows.map((row: any) => [String(row._id), Number(row.used || 0)]));
+  const locationToBatches = new Map(detailRows.map((row: any) => [String(row._id), row.batches || []]));
+  const productIds = [...new Set(detailRows.flatMap((row: any) => (row.batches || []).map((batch: any) => batch.product_id)).filter(Boolean))];
   const products = productIds.length ? await ctx.find('products', { tenant_id: tenantId, id: { $in: productIds }, ...df }) : [];
   const productsById = new Map(products.map((product: any) => [String(product.id), product]));
-  const locationToBatches = new Map<string, any[]>();
-  for (const batch of batches) {
-    const key = String(batch.shelf_location_id);
-    locationToBatches.set(key, [...(locationToBatches.get(key) || []), batch]);
-  }
   const locations = locationIds.length ? await ctx.find('shelf_locations', { tenant_id: tenantId, id: { $in: locationIds }, ...df }) : [];
   const locationCodes = new Map(locations.map((row: any) => [String(row.id), row.location_code]));
   const enrichedRacks = await Promise.all(racks.map(async (rack: any) => {
     const cells = await Promise.all((rack.cells || []).map(async (cell: any) => {
       const stored = locationToBatches.get(String(cell.shelf_location_id)) || [];
-      const used = stored.reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity || 0) - Number(batch.dispatched_quantity || 0) - Number(batch.recalled_quantity || 0)), 0);
+      const used = usedByLocation.get(String(cell.shelf_location_id)) || 0;
       const shelf = `S${cell.row}`;
       const position = `P${cell.column}`;
       const locationCode = locationCodeFor(warehouse.name, rack.rack_code, cell.row, cell.column);
@@ -85,11 +126,24 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
   const tenantId = req.user!.tenantId;
   const df = divisionFilter(req);
   const ctx = await getContext();
+  // A factory month holds >100k unit batches. Never ship the whole table —
+  // the UI only renders a slice, and an unbounded find would block the API.
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 2000) : 500;
   const batches = await ctx.find('batches', {
     tenant_id: tenantId,
     status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
     ...df,
-  }, { sort: { created_at: -1 } });
+  }, {
+    sort: { _id: -1 }, // natural index order — no blocking in-memory sort
+    limit,
+    projection: {
+      _id: 1, product_id: 1, grade_id: 1, batch_number: 1, parent_batch_number: 1,
+      product_name: 1, product_sku: 1, bag_quantity_id: 1, quantity: 1,
+      dispatched_quantity: 1, recalled_quantity: 1, uom: 1, status: 1,
+      shelf_location_id: 1, storage_location: 1, created_at: 1,
+    },
+  });
   const [products, grades, bagQuantities, locations, racks, warehouses] = await Promise.all([
     ctx.find('products', { tenant_id: tenantId, ...df }),
     ctx.find('grades', { ...df }),

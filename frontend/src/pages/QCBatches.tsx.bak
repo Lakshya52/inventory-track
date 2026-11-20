@@ -353,7 +353,6 @@ export default function QCBatches() {
 								: Number(line.avgStandardQuantity),
 						uom: getUom(product),
 						shelf_location_id: line.shelfLocationId,
-						unit_price: Number(product?.price || 0),
 					};
 				}),
 			});

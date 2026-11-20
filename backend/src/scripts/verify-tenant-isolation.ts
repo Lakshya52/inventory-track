@@ -77,7 +77,7 @@ async function main(): Promise<void> {
 
   console.log('\n[2] Tenant A creates data');
   const productA = await api(tokenA, 'POST', '/products', {
-    name: 'IsoTenantA Product', sku: 'ISO-PROD-A-001', price: 10, quantity: 100,
+    name: 'IsoTenantA Product', sku: 'ISO-PROD-A-001', quantity: 100,
   });
   report(productA.status === 201, 'A creates product', `status ${productA.status} ${JSON.stringify(productA.json)}`);
   const productAId = productA.json?.id ?? productA.json?.products?.[0]?.id;
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
   }
 
   console.log('\n[4] Tenant B can reuse tenant A identifiers (composite uniqueness)');
-  const dupSku = await api(tokenB, 'POST', '/products', { name: 'IsoTenantB Product', sku: 'ISO-PROD-A-001', price: 12, quantity: 5 });
+  const dupSku = await api(tokenB, 'POST', '/products', { name: 'IsoTenantB Product', sku: 'ISO-PROD-A-001', quantity: 5 });
   report(dupSku.status === 201, 'B creates product with same SKU as A', `status ${dupSku.status} ${JSON.stringify(dupSku.json)}`);
   const dupShelf = await api(tokenB, 'POST', '/shelf-locations', { location_code: 'ISO-RACK-A-01', warehouse: 'IsoWarehouseB' });
   report(dupShelf.status === 201 || dupShelf.status === 200, 'B creates shelf location with same code as A', `status ${dupShelf.status}`);

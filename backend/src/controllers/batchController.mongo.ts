@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { ObjectId } from 'mongodb';
 import { randomBytes, randomUUID } from 'crypto';
 import { getContext, idKey, isValidId, now, parseDateValue, withTransaction } from '../config/database';
 import { batchPrintStats, batchQrStats, prefix, EntityId, mapByIds } from '../services/queryService';
@@ -15,7 +16,7 @@ type StoredQrLabel = {
 
 export async function create(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
-  const { product_id, batch_number, quantity, batch_count = 1, uom, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
+  const { product_id, batch_number, quantity, batch_count = 1, uom, manufacturing_date, expiry_date, shelf_location_id, storage_location, notes } = req.body;
   if (!product_id) {
     res.status(400).json({ error: 'Product ID is required' });
     return;
@@ -41,7 +42,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   }
   const ctx = await getContext();
   const product = await ctx.findOne('products', { id: productId, tenant_id: tenantId, is_active: 1, ...divisionFilter(req) }, {
-    projection: { _id: 0, id: 1, name: 1, sku: 1, price: 1 },
+    projection: { _id: 0, id: 1, name: 1, sku: 1 },
   });
   if (!product) { res.status(404).json({ error: 'Product not found' }); return; }
 
@@ -106,7 +107,6 @@ export async function create(req: Request, res: Response): Promise<void> {
         batch_group_id: batchGroupId,
         quantity: bagCount,
         uom: String(uom || 'pcs').trim().slice(0, 40) || 'pcs',
-        unit_price: Number(unit_price) || 0,
         manufacturing_date: parseDateValue(manufacturing_date),
         expiry_date: parseDateValue(expiry_date),
         shelf_location_id: shelf_location_id || null,
@@ -337,6 +337,99 @@ export async function finishGoods(req: Request, res: Response): Promise<void> {
   });
 }
 
+/**
+ * Group-level page for the Dispatch "Batches sent to QC" table. The old
+ * approach fetched 50 child batches and grouped them in the browser, which
+ * could only ever show a handful of groups in a factory-sized workspace.
+ */
+export async function listGroups(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const ctx = await getContext();
+  const df = divisionFilter(req);
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 10));
+  const q = String(req.query.q || '').trim();
+  const status = String(req.query.status || '').trim().toUpperCase();
+
+  const filter: Record<string, any> = { tenant_id: tenantId, ...df };
+  if (/^[A-Z_]{2,40}$/.test(status)) filter.status = status;
+  if (q) {
+    const pattern = prefix(q);
+    const products = await ctx.find('products', {
+      tenant_id: tenantId, ...df,
+      $or: [{ name: pattern }, { sku: pattern }, { grade: pattern }],
+    }, { projection: { id: 1 }, limit: 200 });
+    const matchingGroups = products.length
+      ? await ctx.find('batches', {
+          tenant_id: tenantId, ...df,
+          product_id: { $in: products.map((product: any) => idKey(product.id)) },
+        }, { projection: { batch_group_id: 1 }, limit: 2000 })
+      : [];
+    const groupKeys = [...new Set(matchingGroups
+      .map((batch: any) => batch.batch_group_id)
+      .filter((value: unknown) => value !== undefined && value !== null)
+      .map((value: unknown) => idKey(value)))];
+    filter.$or = [{ batch_number: pattern }, { group_key: { $in: groupKeys } }];
+  }
+
+  const [total, groups] = await Promise.all([
+    ctx.count('batch_groups', filter),
+    ctx.find('batch_groups', filter, {
+      sort: { created_at: -1 },
+      skip: (page - 1) * limit,
+      limit,
+      projection: { _id: 0 },
+    }),
+  ]);
+  const keys = [...new Set(groups.map((group: any) => idKey(group.group_key ?? group.id)))];
+  // group_key may be a UUID (normal batches) or a 24-hex ObjectId string
+  // (older test data); accept both storage forms when fetching children.
+  const keyCandidates = keys.flatMap((key) =>
+    /^[0-9a-fA-F]{24}$/.test(key) ? [new ObjectId(key), key] : [key]
+  );
+  const children = keys.length
+    ? await ctx.find('batches', { tenant_id: tenantId, ...df, batch_group_id: { $in: keyCandidates } }, { projection: { _id: 0, avg_standard_quantity: 0 } })
+    : [];
+  const byGroup = new Map<string, any[]>();
+  for (const batch of children) {
+    const key = idKey(batch.batch_group_id);
+    byGroup.set(key, [...(byGroup.get(key) || []), batch]);
+  }
+  const productIds = [...new Set(children.map((batch: any) => batch.product_id).filter(Boolean))];
+  const products = await mapByIds<Record<string, any>>(ctx, 'products', productIds, tenantId, df);
+  const locationIds = [...new Set(children.map((batch: any) => batch.shelf_location_id).filter(Boolean))];
+  const locations = await mapByIds<Record<string, any>>(ctx, 'shelf_locations', locationIds, tenantId, df);
+  const enrichedChildren = children.map((batch: any) => {
+    const product = products.get(idKey(batch.product_id));
+    const location = locations.get(idKey(batch.shelf_location_id));
+    return {
+      ...batch,
+      product_name: product?.name ?? batch.product_name ?? null,
+      product_sku: product?.sku ?? skuFromBatchNumber(batch.batch_number),
+      grade_name: product?.grade ?? null,
+      warehouse_name: location?.warehouse ?? null,
+      location_code: location?.location_code ?? batch.storage_location ?? null,
+    };
+  });
+
+  const enrichedByGroup = new Map<string, any[]>();
+  for (const batch of enrichedChildren) {
+    const key = idKey(batch.batch_group_id);
+    enrichedByGroup.set(key, [...(enrichedByGroup.get(key) || []), batch]);
+  }
+  res.json({
+    items: groups.map((group: any) => ({
+      ...group,
+      batches: enrichedByGroup.get(idKey(group.group_key ?? group.id)) || [],
+    })),
+    children: enrichedChildren,
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / limit)),
+    limit,
+  });
+}
+
 export async function list(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const ctx = await getContext();
@@ -549,7 +642,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid batch id' }); return; }
-  const { shelf_location_id, storage_location, notes, quantity, unit_price, manufacturing_date, expiry_date } = req.body;
+  const { shelf_location_id, storage_location, notes, quantity, manufacturing_date, expiry_date } = req.body;
   const ctx = await getContext();
   const batch = await ctx.findOne('batches', { id, tenant_id: tenantId, ...divisionFilter(req) }, { projection: { _id: 0, id: 1, quantity: 1 } });
   if (!batch) {
@@ -579,7 +672,6 @@ export async function update(req: Request, res: Response): Promise<void> {
       shelf_location_id: locationId,
       storage_location: storage_location || null,
       notes: notes || null,
-      unit_price: unit_price || 0,
       manufacturing_date: parseDateValue(manufacturing_date),
       expiry_date: parseDateValue(expiry_date),
     },

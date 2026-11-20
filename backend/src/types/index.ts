@@ -31,7 +31,6 @@ export interface Product {
   name: string;
   description: string | null;
   sku: string;
-  price: number;
   quantity: number;
   cas_number: string | null;
   molecular_formula: string | null;
@@ -58,7 +57,6 @@ export interface Batch {
   /** Approximate average quantity per unit, captured at QC batch creation. Internal only. */
   avg_standard_quantity?: number | null;
   package_quantity?: number | null;
-  unit_price: number;
   manufacturing_date: string | null;
   expiry_date: string | null;
   storage_location: string | null;

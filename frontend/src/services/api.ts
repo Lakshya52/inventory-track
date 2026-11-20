@@ -385,6 +385,14 @@ export const api = {
       request<{ name: string; description: string | null; manufacturer: string | null; count: number; totalCount: number }[]>(
         `/products/families${include === 'inactive' ? '?include=inactive' : ''}`
       ),
+    familiesPaged: (page: number, limit: number) =>
+      request<{
+        items: Array<{ name: string; description: string | null; manufacturer: string | null; count: number; totalCount: number }>;
+        total: number;
+        page: number;
+        pages: number;
+        pageSize: number;
+      }>(`/products/families/page?page=${page}&limit=${limit}`),
     familyProducts: (name: string, page = 1, limit = 100, q = '') =>
       request<{ products: any[]; total: number; page: number; limit: number; totalPages: number }>(`/products/families/${encodeURIComponent(name)}/products?page=${page}&limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
     nextSku: (name: string) => request<{ sku: string }>(`/products/next-sku?name=${encodeURIComponent(name)}`),
@@ -440,7 +448,7 @@ export const api = {
       batch_count?: number;
       uom?: string;
       shelf_location_id?: EntityId;
-      unit_price?: number;
+
       manufacturing_date?: string;
       expiry_date?: string;
       notes?: string;
@@ -457,7 +465,7 @@ export const api = {
       message: string;
     }> =>
       request('/batches', { method: 'POST', body: JSON.stringify(data) }),
-    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string }>; client_operation_id?: string }) =>
+    createGroup: (data: { items: Array<{ product_id: EntityId; quantity: number; package_quantity: number; uom: string; shelf_location_id: EntityId; warehouse_id: EntityId; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string }>; client_operation_id?: string }) =>
       request<{ id: string; batch_group_id: string; batch_number: string; product_count: number; total_quantity: number; batches: Array<any>; labels: Array<QrLabel>; status: string; message: string; duplicate?: boolean }>('/batches/group', { method: 'POST', body: JSON.stringify(data) }),
     finishGoods: (id: EntityId, data: { vendor_id: EntityId; grade_id: EntityId; bag_quantity_id: EntityId; shelf_location_id?: EntityId }) =>
       request<any>(`/batches/${idPath(id)}/finish-goods`, { method: 'POST', body: JSON.stringify(data) }),
@@ -466,6 +474,16 @@ export const api = {
     getById: (id: EntityId) => request<any>(`/batches/${idPath(id)}`),
     update: (id: EntityId, data: any) => request<any>(`/batches/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     search: (q: string) => request<any[]>(`/batches/search?q=${encodeURIComponent(q)}`),
+    groups: (params?: { q?: string; status?: string; page?: number; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.status) qs.set('status', params.status);
+      if (params?.page) qs.set('page', String(params.page));
+      if (params?.limit) qs.set('limit', String(params.limit));
+      return request<{ items: any[]; children: any[]; total: number; page: number; pages: number; limit: number }>(
+        `/batches/groups${qs.toString() ? `?${qs}` : ''}`
+      );
+    },
   },
   qc: {
     decideBatchGroup: (groupId: EntityId, data: { result: 'PASS' | 'FAIL'; remarks?: string }) =>
@@ -479,7 +497,15 @@ export const api = {
         { method: 'POST', body: JSON.stringify({ group_ids: groupIds, remarks }) }
       ),
     qrJobs: {
-      list: (q?: string) => request<{ items: any[]; total: number }>(`/qc/qr-jobs${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+      list: (params?: { q?: string; page?: number; limit?: number }) => {
+        const qs = new URLSearchParams();
+        if (params?.q) qs.set('q', params.q);
+        if (params?.page) qs.set('page', String(params.page));
+        if (params?.limit) qs.set('limit', String(params.limit));
+        return request<{ items: any[]; total: number; page: number; limit: number; pages: number }>(
+          `/qc/qr-jobs${qs.toString() ? `?${qs}` : ''}`
+        );
+      },
       create: (data: { product_id: EntityId; quantity: number }) =>
         request<any>('/qc/qr-jobs', { method: 'POST', body: JSON.stringify(data) }),
       get: (id: EntityId) => request<any>(`/qc/qr-jobs/${idPath(id)}`),
@@ -561,6 +587,16 @@ export const api = {
       if (params?.q) qs.set('q', params.q);
       if (params?.status) qs.set('status', params.status);
       return request<any[]>(`/dispatch-orders/mine${qs.toString() ? `?${qs}` : ''}`);
+    },
+    history: (params?: { q?: string; status?: string; page?: number; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.status) qs.set('status', params.status);
+      if (params?.page) qs.set('page', String(params.page));
+      if (params?.limit) qs.set('limit', String(params.limit));
+      return request<{ items: any[]; total: number; page: number; pages: number; limit: number }>(
+        `/dispatch-orders/history${qs.toString() ? `?${qs}` : ''}`
+      );
     },
     // Dispatch orders need no approval. A raised order can still be cancelled
     // by the dispatcher who raised it while loading has not started.

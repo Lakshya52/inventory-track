@@ -145,8 +145,8 @@ export default function Vendors({ embedded = false }: { embedded?: boolean }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import vendors</button>
-            <button onClick={openCreate} className="btn-primary"><Plus size={16} /> Add Vendor</button>
+            <button onClick={() => setShowImportWizard(true)} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50"><Upload size={16} /> Import vendors</button>
+            <button onClick={openCreate} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-bold text-white shadow-sm transition-colors hover:bg-brand-700"><Plus size={16} /> Add Vendor</button>
           </div>
         </div>
       ) : (
@@ -161,8 +161,8 @@ export default function Vendors({ embedded = false }: { embedded?: boolean }) {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <button onClick={() => setShowImportWizard(true)} className="btn-secondary"><Upload size={16} /> Import vendors</button>
-            <button onClick={openCreate} className="btn-primary">
+            <button onClick={() => setShowImportWizard(true)} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50"><Upload size={16} /> Import vendors</button>
+            <button onClick={openCreate} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-bold text-white shadow-sm transition-colors hover:bg-brand-700">
               <Plus size={16} /> Add Vendor
             </button>
           </div>

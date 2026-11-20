@@ -1,14 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle, ChevronDown, Download, History, Loader2, Package,
-  Printer, QrCode, RefreshCw, Search, X,
+  AlertTriangle, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, Download,
+  History, Loader2, Package, Printer, QrCode, RefreshCw, Search, X,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { downloadQrPdf, QrJob, QrLabel } from '../utils/qrPdf';
 import { prepareDirectQrPrinter, printQrLabelsDirect } from '../utils/directQrPrinter';
 import type { EntityId } from '../types';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   formatDate as formatIsoDate,
   formatDateTime as formatIsoDateTime,
@@ -71,9 +70,40 @@ export default function QRLabels() {
   // Only Dispatch raises reprint requests; an administrator approves them.
   const canRequestReprint = isDispatch;
   const [jobs, setJobs] = useState<QrJobRow[]>([]);
+  const [jobTotal, setJobTotal] = useState(0);
+  const [jobPages, setJobPages] = useState(1);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'READY' | 'PRINTED' | 'AWAITING_QC'>('ALL');
+  const [groupPage, setGroupPage] = useState(1);
+  const [groupPageSize, setGroupPageSize] = useState(10);
   const [search, setSearch] = useState('');
-  const debouncedSearch = useDebouncedValue(search, 300);
+  // Single source of truth: `appliedSearch` is the only value that drives the
+  // query. A cancellable timer lets typing auto-search after a short debounce,
+  // while Search applies immediately and Clear cancels anything pending. Keeping
+  // one writer avoids a stale debounce overwriting an explicit button action.
+  const [appliedSearch, setAppliedSearch] = useState('');
+  const searchTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(searchTimer.current), []);
+
+  const applySearch = (value: string, immediate: boolean) => {
+    window.clearTimeout(searchTimer.current);
+    const next = value.trim();
+    if (immediate) {
+      setAppliedSearch(next);
+    } else {
+      searchTimer.current = window.setTimeout(() => setAppliedSearch(next), 300);
+    }
+    setGroupPage(1);
+  };
+
+  const runSearch = () => applySearch(search, true);
+  const clearSearch = () => {
+    window.clearTimeout(searchTimer.current);
+    setSearch('');
+    setAppliedSearch('');
+    setGroupPage(1);
+  };
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -84,7 +114,12 @@ export default function QRLabels() {
   const [reprintQty, setReprintQty] = useState('1');
   const [reprintLoading, setReprintLoading] = useState(false);
   const [reprinting, setReprinting] = useState(false);
-  const [initialPrintingId, setInitialPrintingId] = useState<EntityId | null>(null);
+  const [batchPrintingKey, setBatchPrintingKey] = useState<string | null>(null);
+  const [reprintMode, setReprintMode] = useState<'LABELS' | 'SKU'>('LABELS');
+  const [skuQuery, setSkuQuery] = useState('');
+  const [skuCount, setSkuCount] = useState('1');
+  const [skuResults, setSkuResults] = useState<Array<{ jobId: EntityId; jobCode: string; labels: QrLabel[] }>>([]);
+  const [skuLoading, setSkuLoading] = useState(false);
   const [reprintRequests, setReprintRequests] = useState<any[]>([]);
   const [fulfillingRequestId, setFulfillingRequestId] = useState<EntityId | null>(null);
   const [reviewingRequestId, setReviewingRequestId] = useState<EntityId | null>(null);
@@ -96,8 +131,16 @@ export default function QRLabels() {
     if (showSpinner) setRefreshing(true);
     if (requestId === listRequest.current) setError('');
     try {
-      const jobRows = await api.qc.qrJobs.list(debouncedSearch || undefined);
-      if (requestId === listRequest.current) setJobs(jobRows.items || []);
+      const jobRows = await api.qc.qrJobs.list({
+        q: appliedSearch || undefined,
+        page: groupPage,
+        limit: groupPageSize,
+      });
+      if (requestId === listRequest.current) {
+        setJobs(jobRows.items || []);
+        setJobTotal(jobRows.total);
+        setJobPages(jobRows.pages);
+      }
       if (requestId === listRequest.current) setReprintRequests(await api.qc.qrJobs.reprintRequests('ALL'));
     } catch (err: any) {
       if (requestId === listRequest.current) setError(err.message || 'Could not load QR labels');
@@ -107,7 +150,7 @@ export default function QRLabels() {
         setRefreshing(false);
       }
     }
-  }, [debouncedSearch, user?.role]);
+  }, [appliedSearch, user?.role, groupPage, groupPageSize]);
 
   useEffect(() => {
     const timer = setTimeout(() => { void load(); }, 0);
@@ -134,6 +177,10 @@ export default function QRLabels() {
     setReprintLabels([]);
     setSelectedIds([]);
     setReprintQty('1');
+    setReprintMode('LABELS');
+    setSkuQuery('');
+    setSkuResults([]);
+    setSkuCount('1');
     setReprintLoading(true);
     try {
       const detail = await api.qc.qrJobs.get(job.id);
@@ -206,27 +253,100 @@ export default function QRLabels() {
     }
   };
 
-  const printInitialLabels = async (job: QrJobRow, mode: 'pdf' | 'print') => {
+  /**
+   * Print every unprinted job of a batch in a single run. Reuses the exact
+   * printInitial endpoint the printer already uses, so print accounting is
+   * identical — only the UI sends them together to one printer/PDF job.
+   */
+  const printBatch = async (group: BatchGroup, mode: 'pdf' | 'print') => {
+    const pendingJobs = group.jobs.filter((job) =>
+      job.can_print_initial && !job.labels_printed && Number(job.printed_count ?? 0) === 0
+    );
+    if (pendingJobs.length === 0) {
+      setError('Every job in this batch has already been printed. Use reprint for another copy.');
+      return;
+    }
     setError('');
     setSuccess('');
-    setInitialPrintingId(job.id);
+    setBatchPrintingKey(group.key);
     try {
       const printerName = mode === 'print' ? await prepareDirectQrPrinter() : undefined;
-      const result = await api.qc.qrJobs.printInitial(job.id);
+      const allLabels: QrLabel[] = [];
+      let firstJob: QrJob | null = null;
+      for (const job of pendingJobs) {
+        const result = await api.qc.qrJobs.printInitial(job.id);
+        allLabels.push(...(result.labels || []));
+        if (!firstJob) firstJob = result.job;
+      }
+      if (!firstJob || allLabels.length === 0) throw new Error('No labels were available for this batch');
       if (mode === 'pdf') {
-        await downloadQrPdf(result.labels, result.job);
-        setSuccess(`${result.labels.length} QR label${result.labels.length === 1 ? '' : 's'} downloaded to PDF.`);
+        await downloadQrPdf(allLabels, firstJob);
+        setSuccess(`${allLabels.length} QR labels from ${group.batchNumber} downloaded to one PDF.`);
       } else {
         let labelSize = { widthMm: 60, heightMm: 64 };
-        try { labelSize = await api.auth.printerLabelSize(); } catch { /* Use the default label size if settings cannot load. */ }
-        await printQrLabelsDirect(result.labels, result.job, labelSize, printerName!, (sent, total, status) => setSuccess(status || `Sending labels to ${printerName}: ${sent} / ${total} queued…`));
-        setSuccess(`${result.labels.length} QR label${result.labels.length === 1 ? '' : 's'} sent to the ${printerName} print queue.`);
+        try { labelSize = await api.auth.printerLabelSize(); } catch { /* default size */ }
+        await printQrLabelsDirect(allLabels, firstJob, labelSize, printerName!, (sent, total, status) =>
+          setSuccess(status || `Sending ${group.batchNumber}: ${sent} / ${total} queued…`));
+        setSuccess(`${allLabels.length} QR labels from ${group.batchNumber} sent to the ${printerName} print queue.`);
       }
       await load();
     } catch (err: any) {
-      setError(err.message || 'Could not print QR labels');
+      setError(err.message || 'Could not print this batch');
     } finally {
-      setInitialPrintingId(null);
+      setBatchPrintingKey(null);
+    }
+  };
+
+  const findSkuLabels = async () => {
+    const query = skuQuery.trim().toLowerCase();
+    if (!query || !reprintJob) return;
+    setSkuLoading(true);
+    setError('');
+    try {
+      const batchKey = String(reprintJob.batch_group_id || reprintJob.batch_number);
+      const batchJobs = jobs.filter((job) =>
+        String(job.batch_group_id || job.batch_number) === batchKey
+      );
+      const details = await Promise.all(batchJobs.map((job) => api.qc.qrJobs.get(job.id)));
+      const results = details.map((detail) => ({
+        jobId: detail.job.id,
+        jobCode: detail.job.job_code,
+        labels: (detail.labels || []).filter((label: QrLabel) =>
+          String(label.product_sku || '').toLowerCase().includes(query)
+        ),
+      })).filter((result) => result.labels.length > 0);
+      setSkuResults(results);
+      const wanted = Math.max(1, Math.min(1000, Number(skuCount) || 1));
+      const all = results.flatMap((result) => result.labels);
+      setSelectedIds(all.slice(0, wanted).map((label) => label.id));
+    } catch (err: any) {
+      setError(err.message || 'Could not look up labels for that SKU');
+    } finally {
+      setSkuLoading(false);
+    }
+  };
+
+  const requestReprintBySku = async () => {
+    if (selectedIds.length === 0) { setError('Find a SKU with at least one label first.'); return; }
+    setReprinting(true);
+    setError('');
+    try {
+      let requests = 0;
+      let labels = 0;
+      for (const result of skuResults) {
+        const ids = result.labels.filter((label) => selectedIds.includes(label.id)).map((label) => label.id);
+        if (!ids.length) continue;
+        await api.qc.qrJobs.requestReprint(result.jobId, ids);
+        requests += 1;
+        labels += ids.length;
+      }
+      setReprintJob(null);
+      setSuccess(`Reprint requested for ${labels} label(s) of ${skuQuery.trim()} across ${requests} print job(s).`);
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'Could not send the SKU reprint request');
+    } finally {
+      setReprinting(false);
     }
   };
 
@@ -284,7 +404,7 @@ export default function QRLabels() {
   };
 
   // KPI values
-  const totalJobs = jobs.length;
+  const totalJobs = jobTotal;
   const totalLabels = jobs.reduce((sum, j) => sum + (j.label_count ?? j.quantity ?? 0), 0);
   const totalPrints = jobs.reduce((sum, j) => sum + (j.total_prints ?? j.quantity ?? 0), 0);
   const lastPrinted = jobs.reduce<string | null>((latest, j) => {
@@ -331,6 +451,23 @@ export default function QRLabels() {
         : Object.fromEntries(groupedJobs.map((group) => [group.key, true])),
     );
 
+  const isReadyGroup = (group: BatchGroup) => {
+    const label = groupStatusBadge(group).label;
+    return label === 'QC passed' || label === 'Partially printed';
+  };
+  const readyCount = groupedJobs.filter(isReadyGroup).length;
+  const unprintedLabels = Math.max(0, totalLabels - totalPrints);
+  const printProgress = totalLabels > 0 ? Math.min(100, Math.round((totalPrints / totalLabels) * 100)) : 0;
+
+  const filteredGroups = groupedJobs.filter((group) => {
+    if (statusFilter === 'READY') return isReadyGroup(group);
+    if (statusFilter === 'PRINTED') return groupStatusBadge(group).label === 'Printed';
+    if (statusFilter === 'AWAITING_QC') return groupStatusBadge(group).label === 'Awaiting QC';
+    return true;
+  });
+  const groupPages = jobPages;
+  const pageGroups = filteredGroups;
+
   const renderJobRow = (job: QrJobRow) => {
     const status = batchStatusBadge(job);
     return (
@@ -360,18 +497,6 @@ export default function QRLabels() {
         <td className="text-xs text-surface-400">{formatIsoDateTime(job.created_at)}</td>
         <td>
           <div className="flex flex-wrap gap-1.5">
-            {canPrintInitial && job.can_print_initial && (
-              <>
-                <button className="btn-primary btn-sm" disabled={initialPrintingId !== null} onClick={() => void printInitialLabels(job, 'print')}>
-                  {initialPrintingId === job.id ? <Loader2 size={13} className="animate-spin" /> : <Printer size={13} />} Print labels
-                </button>
-                {isAdmin && (
-                  <button className="btn-secondary btn-sm" disabled={initialPrintingId !== null} onClick={() => void printInitialLabels(job, 'pdf')}>
-                    <Download size={13} /> PDF
-                  </button>
-                )}
-              </>
-            )}
             {isAdmin && job.labels_printed && (
               <>
                 <button className="btn-secondary btn-sm" onClick={() => downloadJob(job)}>
@@ -385,8 +510,10 @@ export default function QRLabels() {
                 <Printer size={13} /> Request reprint
               </button>
             )}
-            {!job.labels_printed && (!job.can_print_initial || !canPrintInitial) && (
-              <span className="text-xs text-surface-400">{job.qc_ready ? 'Waiting for dispatch to print' : 'Awaiting QC pass'}</span>
+            {!job.labels_printed && (
+              <span className="text-xs text-surface-400">
+                {job.qc_ready ? 'Use Print batch above' : 'Awaiting QC pass'}
+              </span>
             )}
           </div>
         </td>
@@ -439,145 +566,255 @@ export default function QRLabels() {
       )}
 
       {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-        {/* Total Jobs */}
-        <div className="stat-card">
-          <div className="stat-label">Total Print Jobs</div>
-          <div className="stat-value">{totalJobs}</div>
-          <div className="stat-icon bg-brand-50">
-            <History size={20} className="text-brand-600" />
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <button
+          type="button"
+          onClick={() => { setStatusFilter('READY'); setGroupPage(1); }}
+          className={`rounded-2xl border-2 bg-white p-5 text-left shadow-sm transition-colors hover:border-brand-300 ${statusFilter === 'READY' ? 'border-brand-500' : 'border-slate-200'}`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Ready to print</div>
+              <div className="mt-1 text-3xl font-extrabold tabular-nums text-slate-900">{readyCount}</div>
+              <div className="mt-1 text-xs text-slate-500">batches with QC passed</div>
+            </div>
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand-600"><Printer size={20} /></span>
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => { setStatusFilter('ALL'); setGroupPage(1); }}
+          className="rounded-2xl border-2 border-slate-200 bg-white p-5 text-left shadow-sm transition-colors hover:border-brand-300"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Labels printed</div>
+              <div className="mt-1 text-3xl font-extrabold tabular-nums text-slate-900">
+                {totalPrints.toLocaleString()}
+                <span className="ml-1 text-base font-semibold text-slate-400">/ {totalLabels.toLocaleString()}</span>
+              </div>
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${printProgress}%` }} />
+              </div>
+              <div className="mt-1 text-xs text-slate-500">{printProgress}% · {unprintedLabels.toLocaleString()} unprinted on this page</div>
+            </div>
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600"><QrCode size={20} /></span>
+          </div>
+        </button>
+        <div className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Print jobs</div>
+              <div className="mt-1 text-3xl font-extrabold tabular-nums text-slate-900">{totalJobs}</div>
+              <div className="mt-1 text-xs text-slate-500">{groupedJobs.length} batches on page {groupPage} of {groupPages}</div>
+            </div>
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-600"><History size={20} /></span>
           </div>
         </div>
-        {/* Labels Generated */}
-        <div className="stat-card">
-          <div className="stat-label">Labels Generated</div>
-          <div className="stat-value">{totalLabels}</div>
-          <div className="stat-icon bg-emerald-50">
-            <QrCode size={20} className="text-emerald-600" />
-          </div>
-        </div>
-        {/* Total Prints */}
-        <div className="stat-card">
-          <div className="stat-label">Total Prints</div>
-          <div className="stat-value">{totalPrints}</div>
-          <div className="stat-icon bg-sky-50">
-            <Printer size={20} className="text-sky-600" />
-          </div>
-        </div>
-        {/* Last Printed */}
-        <div className="stat-card">
-          <div className="stat-label">Last Printed</div>
-          <div className="stat-value text-lg">
-            {lastPrinted
-              ? formatIsoDate(lastPrinted)
-              : '—'}
-          </div>
-          <div className="stat-icon bg-amber-50">
-            <Download size={20} className="text-amber-600" />
+        <div className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Last printed</div>
+              <div className="mt-2 text-xl font-extrabold text-slate-900">{lastPrinted ? formatIsoDate(lastPrinted) : '—'}</div>
+              <div className="mt-1 text-xs text-slate-500">most recent print run</div>
+            </div>
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600"><Download size={20} /></span>
           </div>
         </div>
       </div>
 
-      {/* ── Print Jobs Table ────────────────────────────────────────────────── */}
-      <div className="card">
-        <div className="card-header flex flex-wrap items-center justify-between gap-3">
-          <h3 className="section-title flex items-center gap-2">
-            <History size={16} className="text-surface-400" /> QR Print Jobs
-          </h3>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="badge badge-neutral">{groupedJobs.length} batch{groupedJobs.length === 1 ? '' : 'es'}</span>
-            <button
-              type="button"
-              className="btn-secondary btn-sm"
-              onClick={toggleAllGroups}
-              disabled={groupedJobs.length === 0}
-            >
-              {allGroupsExpanded ? 'Collapse all' : 'Expand all'}
-            </button>
-            <div className="relative w-64 max-w-full">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
-              <input
-                className="input pl-9 py-1.5 text-sm"
-                placeholder="Search job code, batch number, or QR code…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+      {/* ── Print Jobs ──────────────────────────────────────────────────────── */}
+      <section className="rounded-2xl border-2 border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-slate-100 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
+                <QrCode size={20} />
+              </div>
+              <div>
+                <h2 className="text-lg font-extrabold text-slate-900">Print jobs</h2>
+                <p className="mt-0.5 text-xs text-slate-500">One card per batch — expand to see its QR jobs and print actions.</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Batches per page"
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700"
+                value={groupPageSize}
+                onChange={(event) => { setGroupPageSize(Number(event.target.value)); setGroupPage(1); }}
+              >
+                {[10, 25, 50, 100].map((size) => <option key={size} value={size}>{size} / page</option>)}
+              </select>
+              <button type="button" className="btn-secondary btn-sm" onClick={toggleAllGroups} disabled={groupedJobs.length === 0}>
+                <ChevronDown size={14} /> {allGroupsExpanded ? 'Collapse all' : 'Expand all'}
+              </button>
+              <span className="badge badge-neutral">{filteredGroups.length} batches</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-1 border-b border-slate-200">
+              {([
+                ['ALL', 'All'],
+                ['READY', 'Ready to print'],
+                ['PRINTED', 'Printed'],
+                ['AWAITING_QC', 'Awaiting QC'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => { setStatusFilter(value); setGroupPage(1); }}
+                  className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-bold transition-colors ${statusFilter === value ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+                >
+                  {label}
+                  <span className={`rounded-md px-1.5 py-0.5 text-[10px] ${statusFilter === value ? 'bg-brand-50 text-brand-700' : 'bg-slate-100 text-slate-500'}`}>
+                    {value === 'ALL' ? groupedJobs.length : value === 'READY' ? readyCount : value === 'PRINTED' ? groupedJobs.filter((g) => groupStatusBadge(g).label === 'Printed').length : groupedJobs.filter((g) => groupStatusBadge(g).label === 'Awaiting QC').length}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+              <label className="relative block w-full sm:w-72">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
+                <input
+                  className="input pl-9 py-2 text-sm"
+                  placeholder="Search job code, batch number, or QR code…"
+                  value={search}
+                  onChange={(event) => { setSearch(event.target.value); applySearch(event.target.value, false); }}
+                  onKeyDown={(event) => { if (event.key === 'Enter') runSearch(); }}
+                />
+              </label>
+              <button type="button" className="btn-primary btn-sm h-10" onClick={runSearch}>
+                <Search size={14} /> Search
+              </button>
+              <button
+                type="button"
+                className="btn-ghost btn-sm h-10"
+                onClick={clearSearch}
+                disabled={!search && !appliedSearch}
+              >
+                <X size={14} /> Clear
+              </button>
             </div>
           </div>
         </div>
 
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Job Code</th>
-                <th>Product</th>
-                <th>Batch / Status</th>
-                <th>Labels</th>
-                <th>Prints</th>
-                <th>Created</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {groupedJobs.map((group) => {
-                const expanded = expandedGroups[group.key] ?? Boolean(search);
-                const status = groupStatusBadge(group);
-                return (
-                  <Fragment key={group.key}>
-                    <tr
-                      className="cursor-pointer bg-surface-50 transition-colors hover:bg-surface-100"
-                      onClick={() => toggleGroup(group.key)}
-                      role="button"
-                      tabIndex={0}
-                      aria-expanded={expanded}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          toggleGroup(group.key);
-                        }
-                      }}
-                    >
-                      <td colSpan={7}>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <ChevronDown
-                            size={16}
-                            className={`text-surface-500 transition-transform ${expanded ? '' : '-rotate-90'}`}
-                          />
-                          <span className="text-[11px] font-bold uppercase tracking-wide text-surface-500">Batch</span>
-                          <span className="font-mono text-xs font-semibold text-surface-800">{group.batchNumber}</span>
-                          <span className={`badge ${status.className}`}>{status.label}</span>
-                          <span className="badge badge-neutral">{group.jobs.length} product{group.jobs.length === 1 ? '' : 's'}</span>
-                          <span className="badge badge-neutral">{group.printedCount}/{group.labelCount} labels printed</span>
-                          <span className="ml-auto text-xs text-surface-400">{formatIsoDateTime(group.createdAt)}</span>
-                        </div>
-                      </td>
-                    </tr>
-                    {expanded && group.jobs.map((job) => renderJobRow(job))}
-                  </Fragment>
-                );
-              })}
-              {jobs.length === 0 && (
-                <tr>
-                  <td colSpan={7}>
-                    <div className="empty-state">
-                      <div className="empty-icon"><Package size={24} className="text-surface-400" /></div>
-                      <div className="empty-title">
-                        {search ? 'No QR jobs match your search' : 'No QR labels generated yet'}
+        <div className="divide-y divide-slate-100">
+          {pageGroups.map((group) => {
+            const expanded = expandedGroups[group.key] ?? Boolean(appliedSearch);
+            const status = groupStatusBadge(group);
+            const pct = group.labelCount > 0 ? Math.min(100, Math.round((group.printedCount / group.labelCount) * 100)) : 0;
+            return (
+              <article key={group.key} className="px-5 py-4">
+                <div className="flex w-full items-start gap-3">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                    onClick={() => toggleGroup(group.key)}
+                    aria-expanded={expanded}
+                  >
+                    <ChevronDown size={18} className={`mt-0.5 shrink-0 text-slate-500 transition-transform ${expanded ? '' : '-rotate-90'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-sm font-extrabold text-slate-900">{group.batchNumber}</span>
+                        <span className={`badge ${status.className}`}>{status.label}</span>
+                        <span className="badge badge-neutral">{group.jobs.length} product{group.jobs.length === 1 ? '' : 's'}</span>
+                        <span className="ml-auto text-xs text-surface-400">{formatIsoDateTime(group.createdAt)}</span>
                       </div>
-                      <div className="empty-desc">
-                        {search
-                          ? 'Try another job code, batch number, or scan the QR code again.'
-                          : 'Initial labels are generated automatically when QC creates a batch.'}
+                      <div className="mt-2 flex flex-wrap items-center gap-3">
+                        <div className="h-2 w-40 overflow-hidden rounded-full bg-slate-100">
+                          <div className={`h-full rounded-full ${pct >= 100 ? 'bg-emerald-500' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-xs font-semibold text-slate-600">{group.printedCount}/{group.labelCount} labels printed</span>
                       </div>
                     </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                  </button>
+                  {canPrintInitial && group.jobs.some((job) => job.can_print_initial) && (() => {
+                    const hasPending = group.jobs.some((job) =>
+                      job.can_print_initial && !job.labels_printed && Number(job.printed_count ?? 0) === 0);
+                    if (!hasPending) return <span className="badge badge-success">All printed</span>;
+                    return (
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="btn-primary btn-sm"
+                          disabled={batchPrintingKey !== null}
+                          onClick={() => void printBatch(group, 'print')}
+                          title="Print every unprinted QR label of this batch in one job"
+                        >
+                          {batchPrintingKey === group.key ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />}
+                          Print batch
+                        </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            className="btn-secondary btn-sm"
+                            disabled={batchPrintingKey !== null}
+                            onClick={() => void printBatch(group, 'pdf')}
+                            title="Download all unprinted labels of this batch as one PDF"
+                          >
+                            <Download size={14} /> Batch PDF
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+                {expanded && (
+                  <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2">Job Code</th>
+                          <th className="px-3 py-2">Product</th>
+                          <th className="px-3 py-2">Batch / Status</th>
+                          <th className="px-3 py-2">Labels</th>
+                          <th className="px-3 py-2">Prints</th>
+                          <th className="px-3 py-2">Created</th>
+                          <th className="px-3 py-2">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {group.jobs.map((job) => renderJobRow(job))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+          {filteredGroups.length === 0 && (
+            <div className="px-6 py-14 text-center">
+              <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600"><Package size={24} /></span>
+              <p className="mt-3 text-base font-bold text-slate-800">{appliedSearch ? 'No QR jobs match your search' : 'No batches in this view'}</p>
+              <p className="mt-1 text-sm text-slate-500">{appliedSearch ? 'Try another job code, batch number, or QR value.' : 'Switch the filter above to see other batches.'}</p>
+            </div>
+          )}
         </div>
-      </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3">
+          <span className="text-xs font-semibold text-slate-500">Page {groupPage} of {groupPages} · {filteredGroups.length} batches</span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="Previous page"
+              disabled={groupPage <= 1}
+              onClick={() => setGroupPage((page) => page - 1)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40"
+            >
+              <ChevronLeft size={15} />
+            </button>
+            <button
+              type="button"
+              aria-label="Next page"
+              disabled={groupPage >= groupPages}
+              onClick={() => setGroupPage((page) => page + 1)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 disabled:opacity-40"
+            >
+              <ChevronRight size={15} />
+            </button>
+          </div>
+        </div>
+      </section>
 
       {isAdmin && <section className="card mt-6">
         <div className="card-header flex flex-wrap items-center justify-between gap-3">
@@ -633,6 +870,78 @@ export default function QRLabels() {
             </div>
 
             <div className="modal-body space-y-4">
+              {canRequestReprint && !fulfillingRequestId && (
+                <div className="flex gap-2 border-b border-slate-100 pb-3">
+                  <button
+                    type="button"
+                    onClick={() => setReprintMode('LABELS')}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-bold ${reprintMode === 'LABELS' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'}`}
+                  >
+                    By label
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReprintMode('SKU')}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-bold ${reprintMode === 'SKU' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'}`}
+                  >
+                    By SKU
+                  </button>
+                </div>
+              )}
+              {canRequestReprint && reprintMode === 'SKU' && !fulfillingRequestId ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="space-y-1.5">
+                      <label className="input-label">SKU</label>
+                      <input
+                        className="input w-56"
+                        placeholder="e.g. KLJ-ASDFAS-001"
+                        value={skuQuery}
+                        onChange={(event) => setSkuQuery(event.target.value)}
+                        onKeyDown={(event) => { if (event.key === 'Enter') void findSkuLabels(); }}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="input-label">Copies</label>
+                      <input
+                        className="input w-24"
+                        type="number"
+                        min="1"
+                        value={skuCount}
+                        onChange={(event) => setSkuCount(event.target.value)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      disabled={skuLoading || !skuQuery.trim()}
+                      onClick={() => void findSkuLabels()}
+                    >
+                      {skuLoading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />} Find labels
+                    </button>
+                  </div>
+                  {skuResults.length > 0 && (
+                    <div className="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
+                      {skuResults.map((result) => (
+                        <div key={String(result.jobId)} className="px-3 py-2.5">
+                          <div className="text-xs font-bold text-slate-800">
+                            {result.jobCode} · {result.labels.length} matching label{result.labels.length === 1 ? '' : 's'}
+                          </div>
+                          <div className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
+                            {result.labels.slice(0, 3).map((label) => label.qr_value).join(', ')}
+                            {result.labels.length > 3 ? ` +${result.labels.length - 3} more` : ''}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-surface-500">
+                    {selectedIds.length} label(s) selected across{" "}
+                    {skuResults.filter((result) => result.labels.some((label) => selectedIds.includes(label.id))).length} print job(s). One request is raised per job.
+                  </p>
+                </div>
+              ) : (
+              <>
               {/* Quantity controls */}
               {!fulfillingRequestId && <div className="flex flex-wrap items-end gap-3 rounded-xl bg-surface-50 border border-surface-100 p-3">
                 <div className="space-y-1.5">
@@ -688,6 +997,8 @@ export default function QRLabels() {
               </div>
 
               <p className="text-xs text-surface-400">{fulfillingRequestId ? 'Only the labels included in the approved request will be printed.' : !isAdmin ? 'The selected label list will be sent to an administrator for reprinting.' : 'Only selected labels are included in the reprint.'}</p>
+              </>
+              )}
             </div>
 
             <div className="modal-footer">
@@ -710,7 +1021,7 @@ export default function QRLabels() {
                 {reprinting ? 'Preparing…' : 'Download Reprint PDF'}
               </button>}
               {canRequestReprint && fulfillingRequestId !== null && <button className="btn-primary" onClick={() => void runReprint('print')} disabled={reprinting || reprintLoading || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} Print approved labels</button>}
-              {canRequestReprint && fulfillingRequestId === null && <button className="btn-primary" onClick={() => void requestReprint()} disabled={reprinting || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} Send reprint request</button>}
+              {canRequestReprint && fulfillingRequestId === null && <button className="btn-primary" onClick={() => void (reprintMode === 'SKU' ? requestReprintBySku() : requestReprint())} disabled={reprinting || selectedIds.length === 0}>{reprinting ? <Loader2 size={15} className="animate-spin" /> : <Printer size={15} />} {reprintMode === 'SKU' ? 'Send SKU reprint requests' : 'Send reprint request'}</button>}
             </div>
           </div>
         </div>

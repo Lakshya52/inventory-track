@@ -120,7 +120,7 @@ async function main(): Promise<void> {
   report(Boolean(qcToken), 'QC user can log in');
 
   // Pre-existing catalogue row with a SKU we will try to re-import
-  const existing = await api(admin, 'POST', '/products', { name: 'IMP-TEST EXISTING', sku: 'IMP-EXISTING-001', price: 1, quantity: 1 }, trpId);
+  const existing = await api(admin, 'POST', '/products', { name: 'IMP-TEST EXISTING', sku: 'IMP-EXISTING-001', quantity: 1 }, trpId);
   report(existing.status === 201, 'pre-existing product created', `status ${existing.status} ${JSON.stringify(existing.json)}`);
 
   const kg = await api(admin, 'POST', '/masters/uoms', { name: `IMP-KG ${stamp}` });
@@ -298,7 +298,7 @@ async function main(): Promise<void> {
     [`ORD-A P90-${stamp}`, `ORD-A-P90-${stamp}`],
   ];
   for (const [name, sku] of orderCases) {
-    const created = await api(admin, 'POST', '/products', { name, sku, price: 1, quantity: 1 }, trpId);
+    const created = await api(admin, 'POST', '/products', { name, sku, quantity: 1 }, trpId);
     if (created.status !== 201) report(false, `seed family ${name}`, `status ${created.status} ${JSON.stringify(created.json)}`);
   }
   const familiesRes = await api(admin, 'GET', '/products/families');

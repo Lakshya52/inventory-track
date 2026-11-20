@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
 	ArrowLeft,
 	ArrowRight,
@@ -1421,10 +1421,13 @@ export default function DispatchWorkspaceOrders() {
 							orders
 						</h2>
 						<p className="mt-1 text-sm text-surface-500">
-							Download packing lists, start loading, and cancel an order
-							before it goes on the truck.
+							Your 10 most recent orders. Download packing lists, start
+							loading, and cancel an order before it goes on the truck.
 						</p>
 					</div>
+					<Link to="/dispatch-orders/history" className="btn-secondary btn-sm">
+						View full history →
+					</Link>
 				</div>
 				{orders.length === 0 ? (
 					<div className="px-6 py-12 text-center">
@@ -1438,7 +1441,7 @@ export default function DispatchWorkspaceOrders() {
 					</div>
 				) : (
 					<ul className="divide-y divide-surface-100">
-						{orders.map((order: any) => {
+						{orders.slice(0, 10).map((order: any) => {
 							const status = orderStatus(order);
 							const approved = String(order.status || "").toUpperCase() === "APPROVED";
 							const closed = ["CLOSED_DISPATCHED", "CLOSED_NOT_DISPATCHED"].includes(String(order.status || "").toUpperCase());
@@ -1572,6 +1575,14 @@ export default function DispatchWorkspaceOrders() {
 							);
 						})}
 					</ul>
+				)}
+				{orders.length > 10 && (
+					<div className="border-t border-surface-100 px-5 py-3 text-center text-xs font-semibold text-surface-500">
+						Showing the 10 newest of {orders.length.toLocaleString()} orders ·{" "}
+						<Link to="/dispatch-orders/history" className="font-bold text-brand-600 hover:underline">
+							View full history
+						</Link>
+					</div>
 				)}
 			</section>
 

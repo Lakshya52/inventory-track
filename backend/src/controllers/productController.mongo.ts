@@ -98,7 +98,7 @@ async function deleteProductCascade(ctx: DbContext, productId: EntityId, tenantI
 
 export async function create(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
-  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
+  const { name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
@@ -123,7 +123,6 @@ export async function create(req: Request, res: Response): Promise<void> {
       name,
       description: description || null,
       sku,
-      price: price || 0,
       quantity: quantity || 0,
       cas_number: cas_number || null,
       molecular_formula: molecular_formula || null,
@@ -144,7 +143,7 @@ export async function create(req: Request, res: Response): Promise<void> {
       action: 'PRODUCT_CREATED',
       description: `Product "${name}" (${sku}) created`,
     });
-    res.status(201).json({ id, name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id: bag_quantity_id || null, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
+    res.status(201).json({ id, name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id: bag_quantity_id || null, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer });
   } catch (err: any) {
     if (isDuplicateKey(err)) {
       res.status(400).json({ error: 'SKU already exists' });
@@ -177,6 +176,42 @@ export async function listFamilies(req: Request, res: Response): Promise<void> {
     { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count' } },
   ], { collation: NATURAL_COLLATION } as any);
   res.json(families);
+}
+
+/** Page-sized variant for the product groups table (the full list above stays for pickers). */
+export async function listFamiliesPage(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const ctx = await getContext();
+  const dv = divisionFilter(req);
+  const includeInactive = String(req.query.include || '').trim().toLowerCase() === 'inactive';
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.limit) || 25));
+  const NATURAL_COLLATION = { locale: 'en', numericOrdering: true } as const;
+  const match = {
+    $match: { tenant_id: tenantId, ...(includeInactive ? { is_active: 0 } : { is_active: 1 }), ...dv },
+  };
+  const group = {
+    $group: {
+      _id: { $toLower: '$name' },
+      name: { $first: '$name' },
+      description: { $max: '$description' },
+      manufacturer: { $max: '$manufacturer' },
+      count: { $sum: 1 },
+    },
+  };
+  const [countRows, items] = await Promise.all([
+    ctx.aggregate('products', [match, group, { $count: 'total' }], { collation: NATURAL_COLLATION } as any),
+    ctx.aggregate('products', [
+      match,
+      group,
+      { $sort: { name: 1 } },
+      { $skip: (page - 1) * pageSize },
+      { $limit: pageSize },
+      { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count' } },
+    ], { collation: NATURAL_COLLATION } as any),
+  ]);
+  const total = Number(countRows[0]?.total ?? 0);
+  res.json({ items, total, page, pages: Math.max(1, Math.ceil(total / pageSize)), pageSize });
 }
 
 export async function listFamilyProducts(req: Request, res: Response): Promise<void> {
@@ -294,7 +329,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const id = req.params.id;
   if (!isValidId(id)) { res.status(400).json({ error: 'Invalid product id' }); return; }
-  const { name, description, sku, price, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
+  const { name, description, sku, quantity, cas_number, molecular_formula, purity, grade, bag_quantity_id, storage_conditions, hazard_classification, physical_state, hsn_code, manufacturer } = req.body;
   if (!name || !sku) {
     res.status(400).json({ error: 'Name and SKU are required' });
     return;
@@ -327,7 +362,6 @@ export async function update(req: Request, res: Response): Promise<void> {
       name,
       description: description || null,
       sku,
-      price: price || 0,
       quantity: quantity || 0,
       cas_number: cas_number || null,
       molecular_formula: molecular_formula || null,
@@ -428,7 +462,6 @@ export async function createFamily(req: Request, res: Response): Promise<void> {
           name,
           description: grade.description || description,
           sku: grade.sku,
-          price: 0,
           quantity: grade.quantity,
           cas_number: null,
           molecular_formula: null,
@@ -446,7 +479,6 @@ export async function createFamily(req: Request, res: Response): Promise<void> {
           name,
           description: grade.description || description,
           sku: grade.sku,
-          price: 0,
           quantity: grade.quantity,
           grade: grade.grade,
           bag_quantity_id: grade.bag_quantity_id,

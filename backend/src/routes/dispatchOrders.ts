@@ -4,6 +4,7 @@ import {
   getPackingListPdf,
   listAll,
   listMine,
+  listHistory,
   cancel,
   raise,
   recallQr,
@@ -18,6 +19,7 @@ router.post('/', authorize('ADMIN', 'DISPATCH'), raise);
 // orders.
 router.get('/all', authorize('ADMIN'), listAll);
 router.get('/mine', authorize('ADMIN', 'DISPATCH'), listMine);
+router.get('/history', authorize('ADMIN', 'DISPATCH'), listHistory);
 // QR labels available to put on a dispatch order, for the chip picker.
 router.get('/available-qr-labels', authorize('ADMIN', 'DISPATCH'), availableQrLabels);
 // There is no approval step: a raised order is released straight away. The

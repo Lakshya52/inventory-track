@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
+import { ObjectId } from 'mongodb';
 import { DbContext, daysAgo, getContext, idKey, startOfDay, startOfWeek, withTransaction } from '../config/database';
-import { batchIdsForSearch, contains, EntityId, mapByIds, mapNames } from '../services/queryService';
+import { batchIdsForSearch, contains, EntityId, mapByIds, mapNames, prefix } from '../services/queryService';
 import { divisionFilter, divisionWhere, divisionStamp } from '../utils/division';
 import { publish } from '../realtime/hub';
 
@@ -393,19 +394,46 @@ export async function pending(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
   const ctx = await getContext();
 
-  const filter: Record<string, any> = { status: 'PENDING_QC', tenant_id: tenantId, ...divisionFilter(req) };
+  // Paginate GROUPS, not child batches. Paging children split a single batch
+  // across pages, so QC only saw part of what Dispatch created.
+  const groupFilter: Record<string, any> = { status: 'PENDING_QC', tenant_id: tenantId, ...divisionFilter(req) };
   if (q) {
-    const batchIds = await batchIdsForSearch(ctx, q, {}, tenantId, divisionFilter(req));
-    filter.$or = [{ id: { $in: batchIds } }, { batch_number: contains(q) }];
+    const pattern = prefix(q);
+    const products = await ctx.find('products', {
+      tenant_id: tenantId, ...divisionFilter(req),
+      $or: [{ name: pattern }, { sku: pattern }, { grade: pattern }],
+    }, { projection: { id: 1 }, limit: 200 });
+    const matching = products.length
+      ? await ctx.find('batches', {
+          tenant_id: tenantId, ...divisionFilter(req),
+          product_id: { $in: products.map((product: any) => idKey(product.id)) },
+        }, { projection: { batch_group_id: 1 }, limit: 2000 })
+      : [];
+    const keys = [...new Set(matching
+      .map((batch: any) => batch.batch_group_id)
+      .filter(Boolean)
+      .map((value: unknown) => idKey(value)))];
+    groupFilter.$or = [{ batch_number: pattern }, { group_key: { $in: keys } }];
   }
 
-  const total = await ctx.count('batches', filter);
-  const rows = await ctx.find('batches', filter, {
+  const total = await ctx.count('batch_groups', groupFilter);
+  const groups = await ctx.find('batch_groups', groupFilter, {
     sort: { created_at: 1 },
     skip: offset,
     limit,
-    projection: { _id: 0 },
+    projection: { _id: 0, group_key: 1, created_by: 1, batch_number: 1 },
   });
+  const keys = [...new Set(groups.map((group: any) => idKey(group.group_key ?? group.id)))];
+  const keyCandidates = keys.flatMap((key) =>
+    /^[0-9a-fA-F]{24}$/.test(key) ? [new ObjectId(key), key] : [key]
+  );
+  const rows = keys.length
+    ? await ctx.find('batches', {
+        tenant_id: tenantId, ...divisionFilter(req),
+        batch_group_id: { $in: keyCandidates },
+        status: 'PENDING_QC',
+      }, { sort: { created_at: 1 }, projection: { _id: 0 } })
+    : [];
   const products = await mapByIds<Record<string, any>>(
     ctx,
     'products',
@@ -415,11 +443,7 @@ export async function pending(req: Request, res: Response): Promise<void> {
   );
   // Show who raised each batch so QC knows who to ask about it. The creator
   // is recorded on the batch group, not on each unit batch.
-  const groupRows = await ctx.find('batch_groups', {
-    group_key: { $in: [...new Set(rows.map((batch) => batch.batch_group_id).filter(Boolean))] },
-    tenant_id: tenantId,
-    ...divisionFilter(req),
-  }, { projection: { _id: 0, group_key: 1, created_by: 1 } });
+  const groupRows = groups;
   const groupsByKey = new Map(groupRows.map((group) => [String(group.group_key), group]));
   const creatorIds = [...new Set(groupRows.map((group) => group.created_by).filter(Boolean))];
   const creators = await mapNames(ctx, 'dispatch_users', creatorIds, tenantId);
@@ -430,6 +454,7 @@ export async function pending(req: Request, res: Response): Promise<void> {
       ...batch,
       product_name: product?.name ?? null,
       product_sku: product?.sku ?? null,
+      grade_name: product?.grade ?? batch.grade_name ?? null,
       created_by_name: group ? creators.get(idKey(group.created_by)) ?? null : null,
     };
   });

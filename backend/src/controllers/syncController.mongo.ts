@@ -92,7 +92,6 @@ async function enrichBatches(ctx: DbContext, batches: Record<string, any>[], ten
       manufacturer: product?.manufacturer ?? null,
       physical_state: product?.physical_state ?? null,
       hsn_code: product?.hsn_code ?? null,
-      product_price: product?.price ?? null,
       location_code: location?.location_code ?? null,
       unit_qr_codes: qrValues.get(idKey(batch.id)) || [],
     };

@@ -84,6 +84,23 @@
     overflow-x: hidden;
   }
 
+  /* Everything clickable gets a pointer cursor, including tab links and custom
+     role-based controls that Tailwind's preflight leaves with the default arrow. */
+  a,
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="menuitem"],
+  label[for] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-surface-300 rounded-full hover:bg-surface-400; }

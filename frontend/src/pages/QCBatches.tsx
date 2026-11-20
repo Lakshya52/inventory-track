@@ -19,6 +19,7 @@ import { formatDateTime } from "../utils/dateFormat";
 type BatchLine = {
   key: string;
   product_name: string;
+  grade_name: string | null;
   product_sku: string;
   package_quantity: number | string | null;
   uom: string;
@@ -98,6 +99,7 @@ function groupBatches(batches: any[]): ReviewGroup[] {
       {
         key: productKey,
         product_name: batch.product_name || "Product",
+        grade_name: batch.grade_name || batch.product_grade || null,
         product_sku: batch.product_sku || "",
         package_quantity: batch.package_quantity ?? null,
         uom: batch.uom || "",
@@ -578,6 +580,10 @@ export default function QCBatches() {
                         {group.batch_number}
                       </span>
                       <span className={status.className}>{status.label}</span>
+                      <span className="badge badge-neutral">
+                        {group.product_lines.length} product
+                        {group.product_lines.length === 1 ? "" : "s"}
+                      </span>
                       {group.created_by_name && (
                         <span className="text-xs font-medium text-slate-500">
                           by {group.created_by_name}
@@ -590,40 +596,59 @@ export default function QCBatches() {
                       </span>
                     </div>
 
-                    <div className="mt-3 grid gap-2">
-                      {group.product_lines.map((line) => (
-                        <div
-                          key={line.key}
-                          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl bg-slate-50 px-3 py-2 text-sm"
-                        >
-                          <span className="font-bold text-slate-900">
-                            {line.product_name}
-                          </span>
-                          <span className="font-mono text-xs text-slate-500">
-                            {line.product_sku}
-                          </span>
-                          <span className="font-semibold text-slate-600">
-                            {line.package_quantity
-                              ? `${line.package_quantity} ${line.uom} × `
-                              : ""}
-                            {line.quantity}{" "}
-                            {line.quantity === 1 ? "unit" : "units"}
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            {line.warehouse_name || "Godown not set"}
-                            {line.locations.length > 0
-                              ? ` · ${line.locations.join(", ")}`
-                              : ""}
-                          </span>
-                        </div>
-                      ))}
+                    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
+                      <div className="max-h-[280px] overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="sticky top-0 z-10 bg-slate-100 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            <tr>
+                              <th className="px-3 py-2">Product / Grade</th>
+                              <th className="px-3 py-2">SKU</th>
+                              <th className="px-3 py-2">Package</th>
+                              <th className="px-3 py-2 text-right">Bags</th>
+                              <th className="px-3 py-2">Storage</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {group.product_lines.map((line) => (
+                              <tr key={line.key} className="hover:bg-slate-50/70">
+                                <td className="px-3 py-2">
+                                  <div className="font-bold text-slate-900">{line.product_name}</div>
+                                  {line.grade_name && (
+                                    <div className="text-[11px] font-medium text-brand-700">{line.grade_name}</div>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 font-mono text-[11px] text-slate-500">
+                                  {line.product_sku || "-"}
+                                </td>
+                                <td className="px-3 py-2 font-semibold text-slate-600">
+                                  {line.package_quantity
+                                    ? `${line.package_quantity} ${line.uom}`
+                                    : line.uom || "-"}
+                                </td>
+                                <td className="px-3 py-2 text-right font-extrabold tabular-nums text-slate-800">
+                                  {line.quantity}
+                                </td>
+                                <td className="px-3 py-2 text-[11px] text-slate-500">
+                                  <div>{line.warehouse_name || "Godown not set"}</div>
+                                  {line.locations.length > 0 && (
+                                    <div className="truncate" title={line.locations.join(", ")}>
+                                      {line.locations.slice(0, 2).join(", ")}
+                                      {line.locations.length > 2 ? ` +${line.locations.length - 2}` : ""}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
 
                   <div className="flex flex-col items-start gap-3 xl:items-end">
                     <div className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-extrabold text-slate-800">
                       {group.units.toLocaleString()}{" "}
-                      {group.units === 1 ? "unit" : "units"} in batch
+                      {group.units === 1 ? "bag" : "bags"} in batch
                     </div>
                     {pending ? (
                       <div className="flex gap-2">

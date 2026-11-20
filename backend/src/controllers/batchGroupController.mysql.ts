@@ -5,7 +5,7 @@ import { query, withTransaction } from '../config/database.mysql';
 import { divisionStamp, divisionWhere } from '../utils/division';
 import { publish } from '../realtime/hub';
 
-type InputLine = { product_id: number; quantity: number; package_quantity: number; uom: string; shelf_location_id: number; warehouse_id: number; unit_price?: number; avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
+type InputLine = { product_id: number; quantity: number; package_quantity: number; uom: string; shelf_location_id: number; warehouse_id: number;  avg_standard_quantity?: number | null; manufacturing_date: string; expiry_date: string };
 
 export async function createGroup(req: Request, res: Response): Promise<void> {
   const dv = divisionWhere(req);
@@ -19,7 +19,6 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     uom: String(item?.uom || '').trim().slice(0, 40),
     shelf_location_id: Number(item?.shelf_location_id),
     warehouse_id: Number(item?.warehouse_id),
-    unit_price: Number(item?.unit_price) || 0,
     avg_standard_quantity: item?.avg_standard_quantity === undefined || item?.avg_standard_quantity === null || item?.avg_standard_quantity === ''
       ? null
       : Number(item.avg_standard_quantity),
@@ -27,7 +26,16 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     expiry_date: String(item?.expiry_date || '').trim().slice(0, 10),
   }));
   if (items.some((item) => !Number.isInteger(item.product_id) || item.product_id < 1 || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000 || !Number.isFinite(item.package_quantity) || item.package_quantity <= 0 || item.package_quantity > 1_000_000 || !item.uom || !Number.isInteger(item.shelf_location_id) || item.shelf_location_id < 1 || !Number.isInteger(item.warehouse_id) || item.warehouse_id < 1)) { res.status(400).json({ error: 'Each product needs a valid package quantity, bag count, UOM, and active godown location' }); return; }
-  const isValidDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+  // Date.parse rolls over impossible dates (2026-02-31 -> 3 March), so check
+  // the round-trip explicitly instead of relying on it for validation.
+  const isValidDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year
+      && date.getUTCMonth() === month - 1
+      && date.getUTCDate() === day;
+  };
   if (items.some((item) => !isValidDate(item.manufacturing_date) || !isValidDate(item.expiry_date) || item.expiry_date < item.manufacturing_date)) { res.status(400).json({ error: 'Each product needs a valid manufacturing date and an expiry date on or after it' }); return; }
   if (items.some((item) => item.avg_standard_quantity !== null && item.avg_standard_quantity !== undefined && (!Number.isFinite(item.avg_standard_quantity) || item.avg_standard_quantity < 0 || item.avg_standard_quantity > 1_000_000))) { res.status(400).json({ error: 'Average standard quantity must be a number between 0 and 1,000,000' }); return; }
   if (items.reduce((sum, item) => sum + item.quantity, 0) > 10_000) { res.status(400).json({ error: 'A single batch can contain no more than 10,000 QR-labelled units' }); return; }
@@ -62,7 +70,7 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
     }
   }
   for (const item of items) {
-    const rows = await query<RowDataPacket[]>(`SELECT id, name, sku, price FROM products WHERE id = ? AND tenant_id = ?${dv.sql} AND is_active = 1`, [item.product_id, req.user!.tenantId, ...dv.params]);
+    const rows = await query<RowDataPacket[]>(`SELECT id, name, sku FROM products WHERE id = ? AND tenant_id = ?${dv.sql} AND is_active = 1`, [item.product_id, req.user!.tenantId, ...dv.params]);
     if (!rows[0]) { res.status(404).json({ error: `Product ${item.product_id} was not found` }); return; }
     const warehouses = await query<RowDataPacket[]>(`SELECT id, name, capacity FROM warehouses WHERE id = ? AND tenant_id = ?${dv.sql} AND is_active = 1`, [item.warehouse_id, req.user!.tenantId, ...dv.params]);
     if (!warehouses[0]) { res.status(400).json({ error: `Select an active godown for ${rows[0].name}` }); return; }
@@ -153,9 +161,9 @@ export async function createGroup(req: Request, res: Response): Promise<void> {
         const labels: any[] = [];
         for (const [serial, location] of (locationsByProduct.get(item.product_id) || []).entries()) {
           const [batchInsert] = await conn.execute<any>(
-            `INSERT INTO batches (product_id, batch_number, batch_group_id, parent_batch_number, tenant_id, quantity, package_quantity, uom, avg_standard_quantity, unit_price, manufacturing_date, expiry_date, shelf_location_id, storage_location, status, barcode_value, division_id)
+            `INSERT INTO batches (product_id, batch_number, batch_group_id, parent_batch_number, tenant_id, quantity, package_quantity, uom, avg_standard_quantity, manufacturing_date, expiry_date, shelf_location_id, storage_location, status, barcode_value, division_id)
              VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_QC', ?, ?)`,
-            [item.product_id, childNumbers[serial], groupId, batchNumber, req.user!.tenantId, item.package_quantity, item.uom, item.avg_standard_quantity ?? null, item.unit_price || Number(product.price) || 0, item.manufacturing_date, item.expiry_date, location.shelf_location_id, location.location_code, `QC:${randomUUID()}`, stamp],
+            [item.product_id, childNumbers[serial], groupId, batchNumber, req.user!.tenantId, item.package_quantity, item.uom, item.avg_standard_quantity ?? null, item.manufacturing_date, item.expiry_date, location.shelf_location_id, location.location_code, `QC:${randomUUID()}`, stamp],
           );
           const batchId = Number(batchInsert.insertId);
           labels.push({

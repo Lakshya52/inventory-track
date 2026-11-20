@@ -160,6 +160,12 @@ const navSections: { title: string; items: NavItem[] }[] = [
             roles: ["ADMIN"],
           },
           {
+            label: "Order History",
+            path: "/dispatch-orders/history",
+            icon: <FileText size={18} />,
+            roles: ["ADMIN"],
+          },
+          {
             label: "Packaging Lists",
             path: "/packing-list",
             icon: <FileText size={18} />,
@@ -223,6 +229,12 @@ const navSections: { title: string; items: NavItem[] }[] = [
         label: "Dispatch Orders",
         path: "/dispatch-orders",
         icon: <ClipboardList size={20} />,
+        roles: ["DISPATCH"],
+      },
+      {
+        label: "Order History",
+        path: "/dispatch-orders/history",
+        icon: <FileText size={20} />,
         roles: ["DISPATCH"],
       },
       {
@@ -326,7 +338,9 @@ export function AppLayout() {
 
   const isPathActive = (path?: string) => {
     if (!path) return false;
-    if (path === "/" || path === "/qc" || path === "/dispatch") {
+    // These paths have sibling nav items nested underneath them (e.g.
+    // /dispatch-orders/history), so only an exact match should light them up.
+    if (path === "/" || path === "/qc" || path === "/dispatch" || path === "/dispatch-orders") {
       return location.pathname === path && !location.search;
     }
     return (
@@ -335,7 +349,7 @@ export function AppLayout() {
   };
 
   const isSubActive = (subPath: string) => {
-    if (subPath === "/" || subPath === "/qc" || subPath === "/dispatch") {
+    if (subPath === "/" || subPath === "/qc" || subPath === "/dispatch" || subPath === "/dispatch-orders") {
       return location.pathname === subPath && !location.search;
     }
     if (subPath.includes("?")) {

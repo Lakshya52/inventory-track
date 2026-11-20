@@ -77,7 +77,6 @@ export async function summary(req: Request, res: Response): Promise<void> {
         $group: {
           _id: null,
           qty: { $sum: { $ifNull: ['$quantity', 0] } },
-          value: { $sum: { $multiply: [{ $ifNull: ['$quantity', 0] }, { $ifNull: ['$price', 0] }] } },
         },
       },
     ]),
@@ -355,13 +354,11 @@ export async function inventory(req: Request, res: Response): Promise<void> {
       hsn_code: product.hsn_code,
       manufacturer: product.manufacturer,
       storage_conditions: product.storage_conditions,
-      price: product.price,
       quantity: product.quantity,
       batch_quantity: Number(stats?.batch_quantity || 0),
       batch_count: Number(stats?.batch_count || 0),
       qc_passed_quantity: Number(stats?.qc_passed_quantity || 0),
       dispatched_quantity: Number(stats?.dispatched_quantity || 0),
-      stock_value: Number(product.quantity || 0) * Number(product.price || 0),
     };
   }));
 }
