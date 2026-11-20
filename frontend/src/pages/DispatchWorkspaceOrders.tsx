@@ -29,6 +29,10 @@ import {
 import { api } from "../services/api";
 import { subscribe } from "../services/realtime";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import {
+	RECALL_CONDITIONS,
+	recallConditionHint,
+} from "../utils/recallConditions";
 import type { EntityId } from "../types";
 import {
 	availableFor,
@@ -1691,10 +1695,15 @@ export default function DispatchWorkspaceOrders() {
 									onChange={(event) => setRecallCondition(event.target.value as typeof recallCondition)}
 									aria-label="Recall condition"
 								>
-									<option value="DAMAGED">Damaged</option>
-									<option value="HOLD">Hold for review</option>
-									<option value="RETURN_TO_STOCK">Return to stock</option>
+									{RECALL_CONDITIONS.map((condition) => (
+										<option key={condition.value} value={condition.value}>
+											{condition.label}
+										</option>
+									))}
 								</select>
+								<p className="sm:col-span-2 text-[11px] leading-snug text-surface-500">
+									{recallConditionHint(recallCondition)}
+								</p>
 								<input
 									className="input sm:col-span-2"
 									value={recallReason}

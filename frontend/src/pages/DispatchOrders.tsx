@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import type { EntityId } from '../types';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { formatDate } from '../utils/dateFormat';
+import { RECALL_CONDITIONS } from '../utils/recallConditions';
 import {
   ClipboardList,
   CheckCircle,
@@ -845,9 +846,11 @@ export default function DispatchOrders() {
                   onChange={(event) => setRecallCondition(event.target.value as typeof recallCondition)}
                   aria-label="Recall condition"
                 >
-                  <option value="DAMAGED">Damaged</option>
-                  <option value="HOLD">Hold for review</option>
-                  <option value="RETURN_TO_STOCK">Return to stock</option>
+                  {RECALL_CONDITIONS.map((condition) => (
+                    <option key={condition.value} value={condition.value}>
+                      {condition.label}
+                    </option>
+                  ))}
                 </select>
                 <input
                   className="input sm:col-span-2"

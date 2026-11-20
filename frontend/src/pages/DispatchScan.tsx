@@ -3,6 +3,11 @@ import { Link, useSearchParams } from "react-router-dom";
 import { BrowserMultiFormatReader } from "@zxing/library";
 import { api } from "../services/api";
 import { orderNumber } from "../utils/orderNumber";
+import {
+	RECALL_CONDITIONS,
+	recallConditionHint,
+	recallConditionLabel,
+} from "../utils/recallConditions";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { formatDateTime as formatIsoDateTime } from "../utils/dateFormat";
 import {
@@ -839,9 +844,9 @@ export default function DispatchScan() {
 			setMessage(
 				Number(result?.recalled_units ?? 0) > 0
 					? Number(result?.unfilled_units ?? 0) > 0
-						? `Loaded QR recalled (${recallCondition.toLowerCase()}). No spare printed label was available — the order and load target were reduced.`
-						: `Loaded QR recalled (${recallCondition.toLowerCase()}). The unit was removed from the load — scan the replacement unit before sealing.`
-					: `QR recalled (${recallCondition.toLowerCase()}) and excluded from this loading order.`,
+						? `Loaded QR recalled (${recallConditionLabel(recallCondition)}). No spare printed label was available — the order and load target were reduced.`
+						: `Loaded QR recalled (${recallConditionLabel(recallCondition)}). The unit was removed from the load — scan the replacement unit before sealing.`
+					: `QR recalled (${recallConditionLabel(recallCondition)}) and excluded from this loading order.`,
 			);
 			setLastSyncedAt(Date.now());
 		} catch (err: any) {
@@ -881,7 +886,7 @@ export default function DispatchScan() {
 			setSealedRecallReason("");
 			setMessageKind("success");
 			setMessage(
-				`Sealed unit recalled (${sealedRecallCondition.toLowerCase()}). ${Number(result?.reload_pending ?? 1)} replacement unit(s) pending — use "Reload new product" to reopen this order.`,
+				`Sealed unit recalled (${recallConditionLabel(sealedRecallCondition)}). ${Number(result?.reload_pending ?? 1)} replacement unit(s) pending — use "Reload new product" to reopen this order.`,
 			);
 		} catch (err: any) {
 			setMessageKind("error");
@@ -1514,12 +1519,18 @@ export default function DispatchScan() {
 														}
 														aria-label="Recall condition"
 													>
-														<option value="DAMAGED">Damaged</option>
-														<option value="HOLD">Hold for review</option>
-														<option value="RETURN_TO_STOCK">
-															Return to stock
-														</option>
+														{RECALL_CONDITIONS.map((condition) => (
+															<option
+																key={condition.value}
+																value={condition.value}
+															>
+																{condition.label}
+															</option>
+														))}
 													</select>
+													<p className="sm:col-span-2 text-[11px] leading-snug text-surface-500">
+														{recallConditionHint(sealedRecallCondition)}
+													</p>
 													<input
 														className="input sm:col-span-2"
 														value={sealedRecallReason}
@@ -2492,16 +2503,18 @@ export default function DispatchScan() {
 													)
 												}
 											>
-												<option value="DAMAGED">
-													Damaged
-												</option>
-												<option value="HOLD">
-													Hold for review
-												</option>
-												<option value="RETURN_TO_STOCK">
-													Return to stock
-												</option>
+												{RECALL_CONDITIONS.map((condition) => (
+													<option
+														key={condition.value}
+														value={condition.value}
+													>
+														{condition.label}
+													</option>
+												))}
 											</select>
+											<p className="mt-1 text-[11px] leading-snug text-surface-500">
+												{recallConditionHint(recallCondition)}
+											</p>
 										</div>
 										<div className="sm:col-span-2">
 											<label
