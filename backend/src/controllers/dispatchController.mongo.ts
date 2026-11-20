@@ -187,14 +187,14 @@ async function enrichReadyBatches(ctx: DbContext, batches: Record<string, any>[]
 export async function submit(_req: Request, res: Response): Promise<void> {
   // SRS v2 completes dispatch through a loading session with a seal number.
   res.status(410).json({
-    error: 'Direct dispatch submission is retired. Start a loading session and finalise with a seal number.',
+    error: 'Direct dispatch submission is retired. Start a loading session and finalise the dispatch.',
   });
 }
 
 export async function submitBulk(_req: Request, res: Response): Promise<void> {
   // SRS v2 completes dispatch through a loading session with a seal number.
   res.status(410).json({
-    error: 'Bulk dispatch submission is retired. Start a loading session and finalise with a seal number.',
+    error: 'Bulk dispatch submission is retired. Start a loading session and finalise the dispatch.',
   });
 }
 

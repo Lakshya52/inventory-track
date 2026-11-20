@@ -5,7 +5,7 @@
  * whenever the server pushes a relevant event, rather than re-deriving partial
  * state client-side. This keeps a single source of truth in the DB.
  *
- * Events: qc.decision · batch.created · batch.printed · dispatch.order-status · dispatch.loading-opened · dispatch.loading-closed · dispatch.loading-recalled · dispatch.loading-reopened
+ * Events: qc.decision · batch.created · batch.printed · dispatch.order-status · dispatch.loading-opened · dispatch.loading-closed · dispatch.loading-recalled · dispatch.loading-reopened · dispatch.loading-seal-updated
  * Connection is /api/ws?token=<access token>&division=<division id or 'all'> — same auth as REST.
  */
 export type RealtimeEventType =
@@ -16,7 +16,8 @@ export type RealtimeEventType =
   | 'dispatch.loading-opened'
   | 'dispatch.loading-closed'
   | 'dispatch.loading-recalled'
-  | 'dispatch.loading-reopened';
+  | 'dispatch.loading-reopened'
+  | 'dispatch.loading-seal-updated';
 
 export type RealtimeEvent = {
   type: RealtimeEventType;

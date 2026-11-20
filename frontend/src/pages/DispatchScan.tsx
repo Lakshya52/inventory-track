@@ -325,6 +325,10 @@ export default function DispatchScan() {
 	const [remarks, setRemarks] = useState("");
 	const [finalising, setFinalising] = useState(false);
 	const [finaliseResult, setFinaliseResult] = useState<any>(null);
+	// Seal tag numbers are often known only after the truck is physically sealed.
+	const [sealEditOpen, setSealEditOpen] = useState(false);
+	const [sealEditValue, setSealEditValue] = useState("");
+	const [savingSeal, setSavingSeal] = useState(false);
 	const [sealedRecallQr, setSealedRecallQr] = useState("");
 	const [sealedRecallReason, setSealedRecallReason] = useState("");
 	const [sealedRecallCondition, setSealedRecallCondition] = useState<
@@ -1254,6 +1258,41 @@ export default function DispatchScan() {
 		}
 	};
 
+	const saveSealNumber = async () => {
+		const sessionId = finaliseResult?.session?.id;
+		if (!sessionId || savingSeal) return;
+		setSavingSeal(true);
+		try {
+			const result = await api.loadingSessions.setSeal(
+				sessionId,
+				sealEditValue.trim(),
+			);
+			setFinaliseResult((current: any) =>
+				current
+					? {
+							...current,
+							session: {
+								...current.session,
+								seal_number: result.seal_number,
+							},
+						}
+					: current,
+			);
+			setSealEditOpen(false);
+			setMessageKind("success");
+			setMessage(
+				result.seal_number
+					? `Seal number saved: ${result.seal_number}`
+					: "Seal number cleared.",
+			);
+		} catch (err: any) {
+			setMessageKind("error");
+			setMessage(err?.message || "Could not save the seal number.");
+		} finally {
+			setSavingSeal(false);
+		}
+	};
+
 	const scannedCount = session?.scanned ?? 0;
 	const totalCount = session?.total ?? 0;
 	const progress = percent(scannedCount, totalCount);
@@ -1341,8 +1380,10 @@ export default function DispatchScan() {
 										Loading session finalised
 									</h2>
 									<p className="mt-1 text-xs text-surface-500">
-										The seal and outcome were saved. Loaded
-										units have been deducted from inventory.
+										The outcome was saved. The seal number can
+										be added here later, once the container is
+										physically sealed. Loaded units have been
+										deducted from inventory.
 									</p>
 									<div className="mt-4 grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
 										<div>
@@ -1383,8 +1424,56 @@ export default function DispatchScan() {
 											</div>
 											<div className="font-mono font-medium text-surface-800">
 												{finaliseResult?.session
-													?.seal_number ?? "-"}
+													?.seal_number ?? "Not recorded"}
 											</div>
+											<button
+												type="button"
+												className="btn-ghost btn-sm mt-1"
+												onClick={() => {
+													setSealEditValue(
+														finaliseResult?.session?.seal_number ?? "",
+													);
+													setSealEditOpen((open) => !open);
+												}}
+											>
+												<ShieldCheck size={12} />
+												{finaliseResult?.session?.seal_number
+													? "Edit seal number"
+													: "Add seal number"}
+											</button>
+											{sealEditOpen && (
+												<div className="mt-2 flex items-center gap-1.5">
+													<input
+														className="input h-9 min-w-0 flex-1 font-mono text-xs"
+														placeholder="Seal tag number"
+														aria-label="Seal number"
+														value={sealEditValue}
+														onChange={(event) =>
+															setSealEditValue(event.target.value)
+														}
+														onKeyDown={(event) => {
+															if (event.key === "Enter")
+																void saveSealNumber();
+														}}
+													/>
+													<button
+														type="button"
+														className="btn-primary btn-sm shrink-0"
+														disabled={savingSeal}
+														onClick={() => void saveSealNumber()}
+													>
+														{savingSeal ? (
+															<Loader2
+																size={12}
+																className="animate-spin"
+															/>
+														) : (
+															<CheckCircle size={12} />
+														)}
+														Save
+													</button>
+												</div>
+											)}
 										</div>
 									</div>
 									<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-4">

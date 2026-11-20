@@ -19,6 +19,7 @@ import {
 	RotateCcw,
 	ScanLine,
 	Search,
+	ShieldCheck,
 	ShoppingCart,
 	Truck,
 	Users,
@@ -109,6 +110,12 @@ export default function DispatchWorkspaceOrders() {
 	const [recallCondition, setRecallCondition] = useState<"DAMAGED" | "HOLD" | "RETURN_TO_STOCK">("DAMAGED");
 	const [recallBusy, setRecallBusy] = useState(false);
 	const [recallReloadBusy, setRecallReloadBusy] = useState(false);
+	// Post-finalise seal number: often only known once the truck is sealed.
+	const [sealOrder, setSealOrder] = useState<any>(null);
+	const [sealSessionId, setSealSessionId] = useState<EntityId | null>(null);
+	const [sealValue, setSealValue] = useState("");
+	const [sealLoading, setSealLoading] = useState(false);
+	const [sealSaving, setSealSaving] = useState(false);
 	// Transporter details travel with the order and end up on the packing list.
 	const [transporterName, setTransporterName] = useState("");
 	const [transporterMobile, setTransporterMobile] = useState("");
@@ -177,7 +184,7 @@ export default function DispatchWorkspaceOrders() {
 	useEffect(() => {
 		void load();
 		const unsubscribe = subscribe((event) => {
-			if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed' || event.type === 'dispatch.loading-recalled' || event.type === 'dispatch.loading-reopened') {
+			if (event.type === 'qc.decision' || event.type === 'batch.created' || event.type === 'batch.printed' || event.type === 'dispatch.order-status' || event.type === 'dispatch.loading-opened' || event.type === 'dispatch.loading-closed' || event.type === 'dispatch.loading-recalled' || event.type === 'dispatch.loading-reopened' || event.type === 'dispatch.loading-seal-updated') {
 				void load();
 			}
 		});
@@ -475,6 +482,56 @@ export default function DispatchWorkspaceOrders() {
 			setRecallOrder(null);
 		} finally {
 			setRecallBusy(false);
+		}
+	};
+
+	/** Record or correct the seal tag number after the order was finalised. */
+	const openSealModal = async (order: any) => {
+		setSealOrder(order);
+		setSealSessionId(null);
+		setSealValue(order.seal_number ?? "");
+		setSealSaving(false);
+		setError("");
+		setMessage("");
+		setSealLoading(true);
+		try {
+			const info = await api.loadingSessions.byOrder(order.id);
+			setSealSessionId(info.session_id ?? null);
+			setSealValue(info.seal_number ?? order.seal_number ?? "");
+			if (!info.session_id) {
+				setError("No sealed loading session found for this order.");
+			}
+		} catch (err: any) {
+			setError(err.message || "Could not look up the sealed session for this order");
+			setSealOrder(null);
+		} finally {
+			setSealLoading(false);
+		}
+	};
+
+	const saveSealNumber = async () => {
+		if (!sealOrder || !sealSessionId || sealSaving) return;
+		setSealSaving(true);
+		setError("");
+		try {
+			const result = await api.loadingSessions.setSeal(sealSessionId, sealValue.trim());
+			setOrders((current) =>
+				current.map((order) =>
+					String(order.id) === String(sealOrder.id)
+						? { ...order, seal_number: result.seal_number }
+						: order,
+				),
+			);
+			setMessage(
+				result.seal_number
+					? `Seal number saved for order #${sealOrder.order_number || sealOrder.id}.`
+					: "Seal number cleared.",
+			);
+			setSealOrder(null);
+		} catch (err: any) {
+			setError(err.message || "Could not save the seal number.");
+		} finally {
+			setSealSaving(false);
 		}
 	};
 
@@ -1458,13 +1515,23 @@ export default function DispatchWorkspaceOrders() {
 											</>
 										)}
 										{closed && (
-											<button
-												type="button"
-												className="btn-secondary btn-sm text-amber-700"
-												onClick={() => void openRecallModal(order)}
-											>
-												<RotateCcw size={13} /> Recall Unit
-											</button>
+											<>
+												<button
+													type="button"
+													className="btn-secondary btn-sm"
+													onClick={() => void openSealModal(order)}
+												>
+													<ShieldCheck size={13} />
+													{order.seal_number ? "Edit seal" : "Add seal number"}
+												</button>
+												<button
+													type="button"
+													className="btn-secondary btn-sm text-amber-700"
+													onClick={() => void openRecallModal(order)}
+												>
+													<RotateCcw size={13} /> Recall Unit
+												</button>
+											</>
 										)}
 									</div>
 									{cancellingId === String(order.id) && (
@@ -1503,6 +1570,78 @@ export default function DispatchWorkspaceOrders() {
 					</ul>
 				)}
 			</section>
+
+			{/* SEAL NUMBER MODAL */}
+			{sealOrder && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+					<section
+						className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl"
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="seal-modal-title"
+					>
+						<div className="modal-header">
+							<div className="min-w-0">
+								<h2 id="seal-modal-title" className="text-base font-semibold text-surface-900">
+									Seal number
+								</h2>
+								<p className="mt-1 text-xs text-surface-500">
+									Order #{sealOrder.order_number || sealOrder.id}
+									{sealLoading ? " · loading…" : ""}
+								</p>
+							</div>
+							<button
+								type="button"
+								className="btn-ghost btn-sm"
+								aria-label="Close seal number dialog"
+								onClick={() => setSealOrder(null)}
+							>
+								<X size={16} />
+							</button>
+						</div>
+						<div className="modal-body space-y-3 text-sm text-surface-600">
+							<p>
+								Record the physical seal tag number now, even though the order
+								was already finalised. Leave it blank to clear the number.
+							</p>
+							<div>
+								<label className="mb-1.5 block text-sm font-semibold text-surface-700" htmlFor="seal-number-input">
+									Seal number
+								</label>
+								<input
+									id="seal-number-input"
+									className="input font-mono"
+									placeholder="e.g. SL-123456"
+									value={sealValue}
+									disabled={!sealSessionId || sealLoading}
+									onChange={(event) => setSealValue(event.target.value)}
+									onKeyDown={(event) => {
+										if (event.key === "Enter") void saveSealNumber();
+									}}
+								/>
+							</div>
+						</div>
+						<div className="modal-footer">
+							<button type="button" className="btn-secondary" onClick={() => setSealOrder(null)}>
+								Cancel
+							</button>
+							<button
+								type="button"
+								className="btn-primary"
+								disabled={!sealSessionId || sealLoading || sealSaving}
+								onClick={() => void saveSealNumber()}
+							>
+								{sealSaving ? (
+									<Loader2 size={16} className="animate-spin" />
+								) : (
+									<ShieldCheck size={16} />
+								)}
+								{sealSaving ? "Saving…" : "Save seal number"}
+							</button>
+						</div>
+					</section>
+				</div>
+			)}
 
 			{/* RECALL SEALED UNIT MODAL */}
 			{recallOrder && (

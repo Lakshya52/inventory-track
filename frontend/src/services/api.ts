@@ -628,6 +628,11 @@ export const api = {
         order_lines: Array<Record<string, any>>;
         unfilled_units?: number;
       }>(`/loading-sessions/${idPath(id)}/reload`, { method: 'POST' }),
+    setSeal: (id: EntityId, seal_number: string) =>
+      request<{ session_id: EntityId; order_id: EntityId | null; seal_number: string | null }>(
+        `/loading-sessions/${idPath(id)}/seal`,
+        { method: 'PATCH', body: JSON.stringify({ seal_number }) }
+      ),
     byOrder: (orderId: EntityId) =>
       request<{
         session_id: EntityId | null;

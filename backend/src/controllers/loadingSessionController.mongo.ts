@@ -1743,6 +1743,71 @@ export async function finalise(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * PATCH /api/loading-sessions/:id/seal
+ *
+ * The physical seal tag number is often only known after the truck is sealed
+ * at the gate — sometimes after finalise. Lets a dispatcher record or correct
+ * it on a CLOSED session. The value is mirrored onto the dispatch order so
+ * packing lists, reports and the orders work-list all show the same number.
+ */
+export async function setSeal(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const id = req.params.id;
+  if (!isValidId(id)) {
+    res.status(400).json({ error: 'Invalid loading session id', code: 'INVALID_SESSION_ID' });
+    return;
+  }
+  const sealNumber = trimmed(req.body?.seal_number).slice(0, 100) || null;
+
+  try {
+    const result = await withTransaction(async (ctx: DbContext) => {
+      const df = divisionFilter(req);
+      const stamp = divisionStamp(req);
+      const session = await ctx.findOne('loading_sessions', { id, tenant_id: tenantId, ...df });
+      if (!session) throw new SyncError('Loading session not found', 'SESSION_NOT_FOUND', 404);
+      if (req.user!.role === 'DISPATCH' && idKey(session.loader_id) !== idKey(req.user!.userId)) {
+        throw new SyncError('You can only update your own loading sessions', 'FORBIDDEN', 403);
+      }
+      if (String(session.status) !== 'CLOSED') {
+        throw new SyncError('Seal numbers can only be updated after finalise', 'SESSION_NOT_CLOSED', 409);
+      }
+
+      const previous = session.seal_number ?? null;
+      await ctx.updateOne(
+        'loading_sessions',
+        { id: session.id, tenant_id: tenantId, ...df },
+        { $set: { seal_number: sealNumber } }
+      );
+      if (session.dispatch_order_id) {
+        // The packing list and reports read the order, so keep both in sync.
+        await ctx.updateOne(
+          'dispatch_orders',
+          { id: session.dispatch_order_id, tenant_id: tenantId, ...df },
+          { $set: { seal_number: sealNumber } }
+        );
+      }
+      await logActivity(
+        ctx,
+        req.user!,
+        'SEAL_NUMBER_UPDATED',
+        `Seal number ${previous ? `"${previous}" ` : ''}${sealNumber ? `changed to "${sealNumber}"` : 'cleared'} for session ${session.id}`,
+        tenantId,
+        stamp
+      );
+      return {
+        session_id: session.id,
+        order_id: session.dispatch_order_id ?? null,
+        seal_number: sealNumber,
+      };
+    });
+    publish(req, 'dispatch.loading-seal-updated', { sessionId: id, sealNumber });
+    res.json(result);
+  } catch (error) {
+    errorResponse(res, error, 'Could not update the seal number');
+  }
+}
+
+/**
  * POST /api/loading-sessions/:id/cancel
  *
  * Lets a dispatcher abandon a session they opened by mistake. Only allowed

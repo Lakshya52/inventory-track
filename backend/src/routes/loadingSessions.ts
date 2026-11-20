@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { active, cancel, finalise, getById, latestClosedByOrder, recallQr, recallSealed, reloadOrder, scan, start, stream } from '../controllers/loadingSessionController';
+import { active, cancel, finalise, getById, latestClosedByOrder, recallQr, recallSealed, reloadOrder, scan, setSeal, start, stream } from '../controllers/loadingSessionController';
 import { authenticate, authorize } from '../middleware/auth';
 
 const router = Router();
@@ -14,5 +14,6 @@ router.post('/:id/recall-qr', authorize('ADMIN', 'DISPATCH'), recallQr);
 router.post('/:id/recall-sealed', authorize('ADMIN', 'DISPATCH'), recallSealed);
 router.post('/:id/reload', authorize('ADMIN', 'DISPATCH'), reloadOrder);
 router.post('/:id/finalise', authorize('ADMIN', 'DISPATCH'), finalise);
+router.patch('/:id/seal', authorize('ADMIN', 'DISPATCH'), setSeal);
 router.post('/:id/cancel', authorize('ADMIN', 'DISPATCH'), cancel);
 export default router;

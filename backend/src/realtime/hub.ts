@@ -15,6 +15,7 @@
  *   - dispatch.order-status — an order moved PENDING↔APPROVED/REJECTED/DISPATCHED
  *   - dispatch.loading-opened / dispatch.loading-closed — loading session lifecycle
  *   - dispatch.loading-recalled / dispatch.loading-reopened — post-seal recall / order reloaded
+ *   - dispatch.loading-seal-updated — a seal number was recorded/corrected after finalise
  */
 import type { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -29,7 +30,8 @@ export type RealtimeEventName =
   | 'dispatch.loading-opened'
   | 'dispatch.loading-closed'
   | 'dispatch.loading-recalled'
-  | 'dispatch.loading-reopened';
+  | 'dispatch.loading-reopened'
+  | 'dispatch.loading-seal-updated';
 
 export type RealtimeEvent = {
   type: RealtimeEventName;
