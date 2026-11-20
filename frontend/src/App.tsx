@@ -8,7 +8,6 @@ const Login = lazy(() => import('./pages/Login'));
 const Register = lazy(() => import('./pages/Register'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Clients = lazy(() => import('./pages/Clients'));
-const Batches = lazy(() => import('./pages/Batches'));
 const QCBatches = lazy(() => import('./pages/QCBatches'));
 const QCDashboard = lazy(() => import('./pages/QCDashboard'));
 const LoadingMonitor = lazy(() => import('./pages/LoadingMonitor'));
@@ -19,7 +18,6 @@ const Reports = lazy(() => import('./pages/Reports'));
 const Settings = lazy(() => import('./pages/Settings'));
 const ShelfLocations = lazy(() => import('./pages/ShelfLocations'));
 const Users = lazy(() => import('./pages/Users'));
-const DispatchOrders = lazy(() => import('./pages/DispatchOrders'));
 const DispatchWorkspaceOrders = lazy(() => import('./pages/DispatchWorkspaceOrders'));
 const PackingList = lazy(() => import('./pages/PackingList'));
 const QRLabels = lazy(() => import('./pages/QRLabels'));
@@ -75,15 +73,13 @@ export default function App() {
         <Route path="/clients" element={<Navigate to="/masters?tab=clients" replace />} />
         <Route path="/vendors" element={<Navigate to="/masters?tab=vendors" replace />} />
         <Route path="/masters" element={<ProtectedRoute roles={['ADMIN']}><Masters /></ProtectedRoute>} />
-        <Route path="/batches" element={<ProtectedRoute roles={['ADMIN', 'QC']}>{user?.role === 'QC' ? <QCBatches /> : <Batches />}</ProtectedRoute>} />
+        {/* One shared screen for both roles: the QC decision queue. */}
+        <Route path="/batches" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCBatches /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute roles={['ADMIN']}><Navigate to="/masters?tab=products" replace /></ProtectedRoute>} />
         <Route path="/loading-monitor" element={<ProtectedRoute roles={['ADMIN', 'QC']}><LoadingMonitor /></ProtectedRoute>} />
 
         {/* QC */}
-        {/* /qc is the QC decision queue (QCBatches). QC users were already
-            landing here via the old redirect to /batches; the admin now gets
-            the same screen directly so they can mark QC like a QC person. */}
-        <Route path="/qc" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCBatches /></ProtectedRoute>} />
+        <Route path="/qc" element={<Navigate to="/batches" replace />} />
         <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN']}><QRLabels /></ProtectedRoute>} />
         <Route path="/qc-dashboard" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCDashboard /></ProtectedRoute>} />
 
@@ -92,7 +88,8 @@ export default function App() {
         <Route path="/dispatch-dashboard" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchDashboard /></ProtectedRoute>} />
         <Route path="/dispatch/batches" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchBatches /></ProtectedRoute>} />
         <Route path="/dispatch/qr-labels" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><QRLabels /></ProtectedRoute>} />
-        <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}>{user?.role === 'DISPATCH' ? <DispatchWorkspaceOrders /> : <DispatchOrders />}</ProtectedRoute>} />
+        {/* One shared screen for both roles: the dispatch workspace. */}
+        <Route path="/dispatch-orders" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><DispatchWorkspaceOrders /></ProtectedRoute>} />
         <Route path="/packing-list" element={<ProtectedRoute roles={['ADMIN', 'DISPATCH']}><PackingList /></ProtectedRoute>} />
 
         {/* Storage locations, warehouse details, and rack details */}
