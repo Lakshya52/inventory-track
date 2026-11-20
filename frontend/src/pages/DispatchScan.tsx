@@ -314,6 +314,8 @@ export default function DispatchScan() {
 	>("DAMAGED");
 	const [recalling, setRecalling] = useState(false);
 	const [recallScanning, setRecallScanning] = useState(false);
+	// Recall is an exception flow — the panel stays tucked away until asked for.
+	const [recallOpen, setRecallOpen] = useState(false);
 	const recallVideoRef = useRef<HTMLVideoElement>(null);
 	const [driverName, setDriverName] = useState("");
 	const [driverPhone, setDriverPhone] = useState("");
@@ -2054,77 +2056,104 @@ export default function DispatchScan() {
 
 						<div className="grid gap-4 p-4 sm:gap-6 sm:p-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.9fr)]">
 							<div className="min-w-0 space-y-5">
-								<div className="rounded-2xl border border-brand-100 bg-gradient-to-br from-brand-50 via-white to-white p-5 shadow-sm sm:p-6">
-									<div className="flex flex-wrap items-end justify-between gap-3">
-										<div>
-											<div className="text-sm font-semibold uppercase tracking-wide text-surface-600">
-												Scanned units
+								<div
+									className={`overflow-hidden rounded-2xl border shadow-sm ${allScanned ? "border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-white" : "border-brand-100 bg-gradient-to-br from-brand-50 via-white to-white"}`}
+								>
+									<div className="p-5 sm:p-6">
+										<div className="flex flex-wrap items-end justify-between gap-4">
+											<div>
+												<div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-surface-600">
+													<ScanLine
+														size={14}
+														className="text-brand-500"
+													/>
+													Scanned units
+												</div>
+												<div className="mt-1 text-6xl font-bold tabular-nums tracking-tight text-surface-900 sm:text-7xl">
+													{scannedCount}
+													<span className="text-4xl font-semibold text-surface-400 sm:text-5xl">
+														{" "}
+														/ {totalCount}
+													</span>
+												</div>
 											</div>
-											<div className="mt-1 text-5xl font-bold tabular-nums tracking-tight text-surface-900">
-												{scannedCount}{" "}
-												<span className="text-3xl text-surface-500">
-													/ {totalCount}
-												</span>
+											<div className="text-right">
+												<div
+													className={`text-4xl font-bold tabular-nums ${progress >= 100 ? "text-emerald-600" : "text-brand-700"}`}
+												>
+													{progress}%
+												</div>
+												<div className="mt-1 text-sm text-surface-600">
+													{remaining === 0 ? (
+														<span className="inline-flex items-center gap-1.5 font-semibold text-emerald-700">
+															<CheckCircle
+																size={14}
+															/>
+															All units scanned
+														</span>
+													) : (
+														`${remaining} unit${remaining === 1 ? "" : "s"} remaining`
+													)}
+												</div>
 											</div>
 										</div>
-										<div className="text-right">
-											<div
-												className={`text-3xl font-bold tabular-nums ${progress >= 100 ? "text-emerald-600" : "text-brand-700"}`}
-											>
-												{progress}%
-											</div>
-											<div className="text-sm text-surface-600">
-												{remaining === 0
-													? "All units scanned"
-													: `${remaining} unit${remaining === 1 ? "" : "s"} remaining`}
-											</div>
-										</div>
-									</div>
-									<div
-										className="mt-5 h-4 w-full overflow-hidden rounded-full bg-surface-200"
-										role="progressbar"
-										aria-valuemin={0}
-										aria-valuemax={100}
-										aria-valuenow={progress}
-										aria-label="Loading progress"
-									>
 										<div
-											className={`h-full rounded-full transition-all duration-300 ${progress >= 100 ? "bg-emerald-500" : "bg-brand-500"}`}
-											style={{ width: `${progress}%` }}
-										/>
-									</div>
-									<div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-surface-600">
-										<span>
-											{lastSyncedAt
-												? `Last sync ${formatTime(lastSyncedAt)}`
-												: "Live counter"}
-										</span>
-										{pollError ? (
-											<span className="flex items-center gap-1 text-amber-600">
-												<AlertTriangle size={12} />{" "}
-												Connection issue — retrying
+											className="mt-5 h-4 w-full overflow-hidden rounded-full bg-surface-200"
+											role="progressbar"
+											aria-valuemin={0}
+											aria-valuemax={100}
+											aria-valuenow={progress}
+											aria-label="Loading progress"
+										>
+											<div
+												className={`h-full rounded-full transition-all duration-300 ${progress >= 100 ? "bg-emerald-500" : "bg-brand-500"}`}
+												style={{ width: `${progress}%` }}
+											/>
+										</div>
+										<div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-surface-600">
+											<span>
+												{lastSyncedAt
+													? `Last sync ${formatTime(lastSyncedAt)}`
+													: "Live counter"}
 											</span>
-										) : (
-											<span className="flex items-center gap-1 text-emerald-600">
-												<span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />{" "}
-												Live
-											</span>
-										)}
+											{pollError ? (
+												<span className="flex items-center gap-1 text-amber-600">
+													<AlertTriangle size={12} />{" "}
+													Connection issue — retrying
+												</span>
+											) : (
+												<span className="flex items-center gap-1 text-emerald-600">
+													<span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />{" "}
+													Live
+												</span>
+											)}
+										</div>
 									</div>
-								</div>
 
+									<div className="border-t border-surface-100 bg-white/70 p-4 sm:p-5">
 								<div>
-									<label
-										className="mb-2 block text-sm font-semibold text-surface-700"
-										htmlFor="manual-scan"
-									>
-										Unit QR code
-									</label>
+									<div className="mb-2 flex items-center justify-between gap-2">
+										<label
+											className="flex items-center gap-1.5 text-sm font-semibold text-surface-700"
+											htmlFor="manual-scan"
+										>
+											<QrCode
+												size={14}
+												className="text-brand-500"
+											/>
+											Unit QR code
+										</label>
+										<span className="text-xs text-surface-400">
+											{allScanned
+												? "Load complete"
+												: "Scanner-ready · press Enter to submit"}
+										</span>
+									</div>
 									<div className="flex flex-col gap-2 sm:flex-row">
 										<input
 											id="manual-scan"
 											ref={manualScanRef}
-											className="input min-h-12 flex-1 font-mono text-base"
+											className={`input min-h-14 flex-1 font-mono text-base sm:text-lg ${allScanned ? "border-emerald-300 bg-emerald-50/60" : ""}`}
 											placeholder={
 												allScanned
 													? "All units scanned — ready to finalise"
@@ -2146,7 +2175,7 @@ export default function DispatchScan() {
 										/>
 										<button
 											type="button"
-											className="btn-secondary min-h-12 w-full text-base sm:w-auto"
+											className="btn-secondary min-h-14 w-full text-base sm:w-auto"
 											onClick={submitManual}
 											disabled={
 												!manualValue.trim() ||
@@ -2168,7 +2197,7 @@ export default function DispatchScan() {
 										</button>
 										<button
 											type="button"
-											className="btn-primary min-h-12 w-full text-base sm:w-auto"
+											className="btn-primary min-h-14 w-full text-base sm:w-auto"
 											onClick={toggleCamera}
 											disabled={allScanned}
 										>
@@ -2182,8 +2211,41 @@ export default function DispatchScan() {
 												: "Scan with camera"}
 										</button>
 									</div>
+
+									{lastScan && (
+										<div
+											key={lastScan.at}
+											className={`mt-3 flex items-start gap-3 rounded-xl border p-4 ${INLINE_STYLES[lastScan.result].wrap}`}
+											role="status"
+											aria-live="polite"
+										>
+											<LastScanIcon
+												size={22}
+												className="mt-0.5 shrink-0"
+											/>
+											<div className="min-w-0 flex-1">
+												<div className="text-base font-semibold">
+													{
+														INLINE_STYLES[
+															lastScan.result
+														].label
+													}
+												</div>
+												<div
+													className="truncate font-mono text-sm opacity-80"
+													title={lastScan.qr}
+												>
+													{lastScan.qr}
+												</div>
+											</div>
+											<span className="shrink-0 text-xs opacity-80">
+												{formatTime(lastScan.at)}
+											</span>
+										</div>
+									)}
+
 									<p
-										className={`mt-2 text-sm leading-relaxed ${allScanned ? "font-medium text-emerald-700" : "text-surface-500"}`}
+										className={`mt-2.5 text-sm leading-relaxed ${allScanned ? "font-medium text-emerald-700" : "text-surface-500"}`}
 									>
 										{allScanned
 											? "All units are scanned. Add the seal number below and finalise the dispatch."
@@ -2223,48 +2285,47 @@ export default function DispatchScan() {
 									</div>
 								)}
 
-								{lastScan && (
-									<div
-										className={`flex items-start gap-3 rounded-xl border p-4 ${INLINE_STYLES[lastScan.result].wrap}`}
-										role="status"
-										aria-live="polite"
+								<div
+									className={`overflow-hidden rounded-2xl border ${recallOpen ? "border-amber-300 bg-amber-50/70" : "border-dashed border-amber-300 bg-amber-50/40"}`}
+								>
+									<button
+										type="button"
+										className="flex w-full items-center gap-3 px-4 py-3.5 text-left sm:px-5"
+										onClick={() => {
+											// Collapsing must not leave the recall
+											// camera running behind the scenes.
+											if (recallOpen && recallScanning) {
+												setRecallScanning(false);
+												stopRecallCamera();
+											}
+											setRecallOpen((open) => !open);
+										}}
+										aria-expanded={recallOpen}
 									>
-										<LastScanIcon
-											size={22}
-											className="mt-0.5 shrink-0"
-										/>
-										<div className="min-w-0 flex-1">
-											<div className="text-base font-semibold">
-												{
-													INLINE_STYLES[
-														lastScan.result
-													].label
-												}
-											</div>
-											<div
-												className="truncate font-mono text-sm opacity-80"
-												title={lastScan.qr}
-											>
-												{lastScan.qr}
-											</div>
-										</div>
-										<span className="shrink-0 text-xs opacity-80">
-											{formatTime(lastScan.at)}
+										<span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+											<RotateCcw size={16} />
 										</span>
-									</div>
-								)}
-
-								<div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 sm:p-5">
-									<div className="flex items-start gap-2">
-										<RotateCcw
-											size={17}
-											className="mt-0.5 text-amber-700"
-										/>
-										<div>
-											<h3 className="text-sm font-bold text-slate-900">
+										<span className="min-w-0 flex-1">
+											<span className="block text-sm font-bold text-slate-900">
 												Recall a product
-											</h3>
-											<p className="mt-1 text-sm leading-relaxed text-slate-700">
+											</span>
+											<span className="mt-0.5 block text-xs leading-relaxed text-slate-600">
+												Remove a damaged or wrongly loaded unit
+												from this load — even if it has already
+												been scanned.
+											</span>
+										</span>
+										<span className="shrink-0 text-xs font-semibold uppercase tracking-wide text-amber-700">
+											{recallOpen ? "Hide" : "Open"}
+										</span>
+										<ChevronDown
+											size={16}
+											className={`shrink-0 text-amber-700 transition-transform ${recallOpen ? "rotate-180" : ""}`}
+										/>
+									</button>
+									{recallOpen && (
+										<div className="border-t border-amber-200 px-4 py-4 sm:px-5">
+											<p className="mb-3 text-sm leading-relaxed text-slate-700">
 												Only QRs from this batch are accepted.
 												Use this if an item is damaged or
 												cannot be loaded — even if it has already
@@ -2272,9 +2333,7 @@ export default function DispatchScan() {
 												from the load; scan a replacement unit
 												before sealing.
 											</p>
-										</div>
-									</div>
-									<div className="mt-3 grid gap-2 sm:grid-cols-2">
+											<div className="grid gap-2 sm:grid-cols-2">
 											<div>
 											<label
 												className="mb-1.5 block text-sm font-semibold text-surface-700"
@@ -2401,6 +2460,10 @@ export default function DispatchScan() {
 											</div>
 										</div>
 									</div>
+											</div>
+										)}
+								</div>
+									</div>
 								</div>
 
 							</div>
@@ -2506,20 +2569,21 @@ export default function DispatchScan() {
 					</div>
 
 					<div className="card mb-6 p-4 sm:p-6">
-						<div className="flex flex-wrap items-center justify-between gap-2">
-							<div>
-								<h2 className="section-title flex items-center gap-2 text-lg">
-									<ShieldCheck
-										size={16}
-										className="text-indigo-500"
-									/>{" "}
-									Seal &amp; finalise
-								</h2>
-								<p className="mt-1 text-sm text-surface-500">
-									Complete the shipment details after loading,
-									then mark the order dispatched. Transporter
-									mobile is optional.
-								</p>
+						<div className="flex flex-wrap items-center justify-between gap-3">
+							<div className="flex items-start gap-3">
+								<span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-indigo-600">
+									<ShieldCheck size={18} />
+								</span>
+								<div>
+									<h2 className="section-title text-lg">
+										Seal &amp; finalise
+									</h2>
+									<p className="mt-0.5 text-sm text-surface-500">
+										Complete the shipment details after
+										loading, then mark the order dispatched.
+										Transporter mobile is optional.
+									</p>
+								</div>
 							</div>
 							<span
 								className={`badge ${shortfall ? "badge-warning" : "badge-success"}`}
