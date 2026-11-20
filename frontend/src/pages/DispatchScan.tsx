@@ -7,17 +7,21 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { formatDateTime as formatIsoDateTime } from "../utils/dateFormat";
 import {
 	AlertTriangle,
+	ArrowUpDown,
 	Boxes,
 	Camera,
 	CheckCircle,
+	ChevronDown,
 	ClipboardList,
 	Clock,
 	Loader2,
+	Play,
 	RotateCcw,
 	PackageCheck,
 	QrCode,
 	RefreshCw,
 	ScanLine,
+	Search,
 	ShieldCheck,
 	Truck,
 	X,
@@ -44,6 +48,7 @@ interface LoadingSession {
 	batch_id: string;
 	batch_number: string | null;
 	product_name: string | null;
+	grade_name?: string | null;
 	client_name: string | null;
 	driver_name: string | null;
 	vehicle_number: string | null;
@@ -81,6 +86,11 @@ const MESSAGE_STYLES: Record<MessageKind, string> = {
 	warning: "bg-amber-50 text-amber-700 border-amber-200",
 	info: "bg-sky-50 text-sky-700 border-sky-200",
 };
+
+// Order-list windowing: mount a first screen, then grow it on demand so a
+// work-list with hundreds of dispatch orders stays responsive.
+const PAGE_SIZE = 50;
+const PAGE_STEP = 100;
 
 const RESULT_LABELS: Record<ScanResult, string> = {
 	OK: "OK",
@@ -143,6 +153,12 @@ function text(value: unknown): string | null {
 	return valueText || null;
 }
 
+/** Grade name is the headline everywhere on this page; old rows may only
+ * carry a product name, so fall back to it rather than showing nothing. */
+function gradeLabel(source: any): string {
+	return text(source?.grade_name) ?? text(source?.product_name) ?? "-";
+}
+
 function formatTime(value?: string | number | null): string {
 	if (value === null || value === undefined || value === "") return "-";
 	const date = new Date(value);
@@ -203,6 +219,7 @@ function normalizeSession(raw: any, fallback?: any): LoadingSession {
 				return [];
 		})(),
 		product_name: text(source?.product_name) ?? text(base?.product_name),
+		grade_name: text(source?.grade_name) ?? text(base?.grade_name),
 		client_name: text(source?.client_name) ?? text(base?.client_name),
 		driver_name: text(source?.driver_name) ?? text(base?.driver_name),
 		vehicle_number:
@@ -232,39 +249,6 @@ function mapRecentEvents(events: any[]): RecentScan[] {
 		.filter((event) => event.qr)
 		.sort((a, b) => timeValue(b.at) - timeValue(a.at))
 		.slice(0, 12);
-}
-
-function QrValueChips({
-	values,
-	max = 16,
-}: {
-	values?: unknown[] | null;
-	max?: number;
-}) {
-	const list = Array.isArray(values)
-		? values.map(String).filter(Boolean)
-		: [];
-	if (list.length === 0) {
-		return <span className="text-surface-400">-</span>;
-	}
-	const shown = list.slice(0, max);
-	return (
-		<span className="flex flex-wrap gap-1">
-			{shown.map((value) => (
-				<span
-					key={value}
-					className="rounded-md border border-surface-200 bg-surface-50 px-1.5 py-0.5 font-mono text-[10px] text-surface-800"
-				>
-					{value}
-				</span>
-			))}
-			{list.length > shown.length && (
-				<span className="self-center text-[10px] text-surface-500">
-					+{list.length - shown.length} more
-				</span>
-			)}
-		</span>
-	);
 }
 
 function percent(scanned: number, total: number): number {
@@ -299,6 +283,11 @@ export default function DispatchScan() {
 	const [ordersLoading, setOrdersLoading] = useState(true);
 	const [orderSearch, setOrderSearch] = useState("");
 	const debouncedOrderSearch = useDebouncedValue(orderSearch, 250);
+	// Incremental rendering: the work-list can hold hundreds of orders, so only
+	// a window is mounted until the operator asks for more.
+	const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+	const [sortAsc, setSortAsc] = useState(false);
+	const [startingOrderId, setStartingOrderId] = useState<string | null>(null);
 	const [selectedOrderId, setSelectedOrderId] = useState("");
 	const [session, setSession] = useState<LoadingSession | null>(null);
 	const [activeSession, setActiveSession] = useState<LoadingSession | null>(
@@ -352,6 +341,7 @@ export default function DispatchScan() {
 	const deepLinkHandledRef = useRef(false);
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const manualScanRef = useRef<HTMLInputElement>(null);
+	const orderSearchRef = useRef<HTMLInputElement>(null);
 
 	useEffect(() => {
 		sessionIdRef.current = session?.id ?? null;
@@ -387,7 +377,6 @@ export default function DispatchScan() {
 							order.status === "APPROVED" &&
 							Number(order.quantity) > 0 &&
 							Boolean(order.batch_id) &&
-							Boolean(order.product_name) &&
 							Number(order.qr_count ?? order.quantity) >=
 								Number(order.quantity),
 					)
@@ -443,33 +432,62 @@ export default function DispatchScan() {
 
 	const filteredOrders = useMemo(() => {
 		const needle = debouncedOrderSearch.trim().toLowerCase();
-		if (!needle) return orders;
-		return orders.filter((order) =>
-			[
-				order.order_number,
-				order.id,
-				order.batch_number,
-				order.product_name,
-				order.product_sku,
-				order.client_name,
-				order.driver_name,
-				order.vehicle_number,
-				order.container_number,
-				...(Array.isArray(order.qr_values)
-					? order.qr_values
-					: []),
-				...(Array.isArray(order.items)
-					? order.items.flatMap((item: any) =>
-							Array.isArray(item?.qr_values)
-								? item.qr_values
-								: [],
-						)
-					: []),
-			]
-				.filter(Boolean)
-				.some((value) => String(value).toLowerCase().includes(needle)),
-		);
-	}, [orders, debouncedOrderSearch]);
+		const matched = !needle
+			? orders
+			: orders.filter((order) =>
+					[
+						order.order_number,
+						order.id,
+						order.batch_number,
+						order.grade_name,
+						order.product_name,
+						order.product_sku,
+						order.client_name,
+						order.driver_name,
+						order.vehicle_number,
+						order.container_number,
+						...(Array.isArray(order.qr_values)
+							? order.qr_values
+							: []),
+						...(Array.isArray(order.items)
+							? order.items.flatMap((item: any) => [
+									...(Array.isArray(item?.qr_values)
+										? item.qr_values
+										: []),
+									item?.batch_number,
+									item?.product_name,
+								])
+							: []),
+					]
+						.filter(Boolean)
+						.some((value) =>
+							String(value).toLowerCase().includes(needle),
+						),
+				);
+		// The server returns newest first; the toggle shows the oldest first.
+		return sortAsc ? [...matched].reverse() : matched;
+	}, [orders, debouncedOrderSearch, sortAsc]);
+
+	const visibleOrders = useMemo(
+		() => filteredOrders.slice(0, visibleCount),
+		[filteredOrders, visibleCount],
+	);
+
+	// Total units in the current result set — the operator's "how much is
+	// waiting" number.
+	const filteredUnits = useMemo(
+		() =>
+			filteredOrders.reduce(
+				(sum, order) => sum + (Number(order.quantity) || 0),
+				0,
+			),
+		[filteredOrders],
+	);
+
+	// A new search or sort direction starts the window over.
+	useEffect(() => {
+		setVisibleCount(PAGE_SIZE);
+	}, [debouncedOrderSearch, sortAsc]);
 
 	// Enrich the resume banner with client/driver details once the order list arrives.
 	useEffect(() => {
@@ -502,6 +520,32 @@ export default function DispatchScan() {
 		next.delete("order");
 		setSearchParams(next, { replace: true });
 	}, [orders, ordersLoading, searchParams, setSearchParams]);
+
+	// Keyboard shortcuts for the work-list: "/" focuses the search from
+	// anywhere (unless already typing), Escape clears a focused search.
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent) => {
+			const target = event.target as HTMLElement | null;
+			const typing =
+				target &&
+				(target.tagName === "INPUT" ||
+					target.tagName === "TEXTAREA" ||
+					target.tagName === "SELECT" ||
+					target.isContentEditable);
+			if (
+				event.key === "Escape" &&
+				document.activeElement === orderSearchRef.current
+			) {
+				setOrderSearch("");
+				return;
+			}
+			if (event.key !== "/" || session || typing) return;
+			event.preventDefault();
+			orderSearchRef.current?.focus();
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [session]);
 
 	const selectOrder = (id: string) => {
 		if (session) return;
@@ -577,15 +621,19 @@ export default function DispatchScan() {
 		);
 	};
 
-	const startSession = async () => {
-		if (!selectedOrder) {
+	// Starts a session for an explicit order (per-row "Start Loading") or,
+	// with no argument, for the currently selected order.
+	const startSession = async (order: any = selectedOrder) => {
+		if (!order) {
 			setMessageKind("error");
 			setMessage(
 				"Select a dispatch order before starting a loading session.",
 			);
 			return;
 		}
+		if (starting) return;
 		setStarting(true);
+		setStartingOrderId(String(order.id));
 		setMessage("");
 		setFinaliseResult(null);
 		setLastScan(null);
@@ -593,7 +641,7 @@ export default function DispatchScan() {
 		stopCamera();
 		try {
 			const response = await api.loadingSessions.start(
-				selectedOrder.id,
+				order.id,
 				operationId(),
 			);
 			const payload = response?.session ?? response;
@@ -604,8 +652,9 @@ export default function DispatchScan() {
 						response?.batch_number ?? payload?.batch_number,
 					product_name:
 						response?.product_name ?? payload?.product_name,
+					grade_name: response?.grade_name ?? payload?.grade_name,
 				},
-				selectedOrder,
+				order,
 			);
 			if (!next.id)
 				throw new Error(
@@ -617,15 +666,15 @@ export default function DispatchScan() {
 			setLastSyncedAt(Date.now());
 			setPollError(false);
 			setSealNumber("");
-			setDriverName(selectedOrder.driver_name || "");
-			setDriverPhone(selectedOrder.driver_phone || "");
-			setVehicleNumber(selectedOrder.vehicle_number || "");
-			setContainerNumber(selectedOrder.container_number || "");
+			setDriverName(order.driver_name || "");
+			setDriverPhone(order.driver_phone || "");
+			setVehicleNumber(order.vehicle_number || "");
+			setContainerNumber(order.container_number || "");
 			setRemarks("");
 			setOutcome("DISPATCHED");
 			setMessageKind("success");
 			setMessage(
-				`Loading session started for order #${selectedOrder.id} — scan ${next.total} units.`,
+				`Loading session started for order #${orderNumber(order)} — scan ${next.total} units.`,
 			);
 		} catch (err: any) {
 			// If the order already has an active session, resume it instead of failing.
@@ -634,10 +683,10 @@ export default function DispatchScan() {
 				const match = (Array.isArray(active) ? active : []).find(
 					(item: any) =>
 						String(item.order_id ?? item.dispatch_order_id) ===
-						String(selectedOrder.id),
+						String(order.id),
 				);
 				if (match) {
-					await resumeSession(normalizeSession(match, selectedOrder));
+					await resumeSession(normalizeSession(match, order));
 					return;
 				}
 			} catch {
@@ -647,6 +696,7 @@ export default function DispatchScan() {
 			setMessage(err?.message || "Could not start the loading session.");
 		} finally {
 			setStarting(false);
+			setStartingOrderId(null);
 		}
 	};
 
@@ -894,6 +944,7 @@ export default function DispatchScan() {
 						total: Math.max(0, Number(raw?.total ?? prev.total)),
 						batch_number: merged.batch_number ?? prev.batch_number,
 						product_name: merged.product_name ?? prev.product_name,
+						grade_name: merged.grade_name ?? prev.grade_name,
 						started_at: merged.started_at ?? prev.started_at,
 					};
 				});
@@ -1475,8 +1526,7 @@ export default function DispatchScan() {
 										Loading already in progress
 									</h2>
 									<p className="mt-1 text-sm text-surface-500">
-										{activeSession.product_name ||
-											"Product"}{" "}
+										{gradeLabel(activeSession)}{" "}
 										· {activeSession.scanned}/
 										{activeSession.total} units scanned
 										{activeSession.client_name
@@ -1515,165 +1565,265 @@ export default function DispatchScan() {
 						</div>
 					)}
 
-					<div className="card mb-5 p-4 sm:p-6">
-						<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-							<div>
-								<h2 className="section-title flex items-center gap-2">
-									<PackageCheck
-										size={16}
-										className="text-brand-500"
-									/>{" "}
-									Ready for loading
-									<span className="badge badge-neutral">
-										{filteredOrders.length}
-									</span>
-									{checkingActive && (
-										<Loader2
-											size={13}
-											className="animate-spin text-surface-400"
-											aria-label="Checking active sessions"
-										/>
-									)}
-								</h2>
-								<p className="mt-1 text-sm text-surface-500">
-									Select a dispatch order to start scanning.
-									Orders are ready as soon as Dispatch creates
-									them.
-								</p>
+					<div className="card mb-5 overflow-hidden p-0">
+						{/* Toolbar — stays put while the list scrolls */}
+						<div className="border-b border-surface-100 p-4 sm:p-5">
+							<div className="flex flex-wrap items-center justify-between gap-3">
+								<div className="min-w-0">
+									<h2 className="section-title flex items-center gap-2 text-lg">
+										<PackageCheck
+											size={17}
+											className="text-brand-500"
+										/>{" "}
+										Ready for loading
+										<span className="badge badge-neutral">
+											{filteredOrders.length}
+										</span>
+										{checkingActive && (
+											<Loader2
+												size={13}
+												className="animate-spin text-surface-400"
+												aria-label="Checking active sessions"
+											/>
+										)}
+									</h2>
+									<p className="mt-0.5 text-xs text-surface-500">
+										{orders.length} open order
+										{orders.length === 1 ? "" : "s"}
+										{filteredOrders.length !== orders.length
+											? ` · ${filteredOrders.length} matching`
+											: ""}
+										· {filteredUnits.toLocaleString()} unit
+										{filteredUnits === 1 ? "" : "s"} to load
+									</p>
+								</div>
+								<div className="flex flex-wrap items-center gap-2">
+									<button
+										type="button"
+										className="btn-secondary btn-sm min-h-10"
+										onClick={() => setSortAsc((v) => !v)}
+										title={
+											sortAsc
+												? "Showing oldest orders first — switch to newest"
+												: "Showing newest orders first — switch to oldest"
+										}
+									>
+										<ArrowUpDown size={14} />
+										{sortAsc ? "Oldest" : "Newest"}
+									</button>
+									<button
+										type="button"
+										className="btn-secondary btn-sm min-h-10"
+										onClick={() =>
+											void Promise.all([
+												loadOrders(),
+												loadActiveSession(),
+											])
+										}
+										disabled={ordersLoading}
+									>
+										<RefreshCw
+											size={14}
+											className={
+												ordersLoading ? "animate-spin" : ""
+											}
+										/>{" "}
+										Refresh
+									</button>
+								</div>
 							</div>
-							<button
-								className="btn-secondary btn-sm min-h-10"
-								onClick={() =>
-									void Promise.all([
-										loadOrders(),
-										loadActiveSession(),
-									])
-								}
-								disabled={ordersLoading}
-							>
-								<RefreshCw
-									size={14}
-									className={
-										ordersLoading ? "animate-spin" : ""
+
+							<div className="relative mt-3">
+								<Search
+									size={16}
+									className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-surface-400"
+								/>
+								<input
+									ref={orderSearchRef}
+									className="input min-h-12 w-full pl-9 pr-10 text-base"
+									placeholder="Search by grade, order number, batch, client, vehicle or QR… — press / to focus"
+									value={orderSearch}
+									onChange={(event) =>
+										setOrderSearch(event.target.value)
 									}
-								/>{" "}
-								Refresh
-							</button>
+									aria-label="Search dispatch orders"
+								/>
+								{orderSearch && (
+									<button
+										type="button"
+										className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-surface-400 hover:bg-surface-100 hover:text-surface-700"
+										onClick={() => setOrderSearch("")}
+										aria-label="Clear search"
+									>
+										<X size={15} />
+									</button>
+								)}
+							</div>
 						</div>
 
-						<input
-							className="input mb-3 min-h-12 text-base"
-							placeholder="Search orders by order number, batch, product, client, transporter, or vehicle"
-							value={orderSearch}
-							onChange={(event) =>
-								setOrderSearch(event.target.value)
-							}
-						/>
+						{/* Column headers — fixed above the scroll area */}
+						<div className="hidden gap-4 border-b border-surface-100 bg-surface-50/70 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-surface-400 lg:grid lg:grid-cols-[8.5rem_minmax(0,1.6fr)_minmax(0,1.2fr)_9rem_minmax(0,1.2fr)_auto]">
+							<span>Order</span>
+							<span>Grade</span>
+							<span>Client / Transporter</span>
+							<span className="text-right">To load</span>
+							<span>Vehicle / Container</span>
+							<span className="text-right">Action</span>
+						</div>
 
-						<div className="max-h-[60vh] divide-y divide-surface-100 overflow-y-auto rounded-xl border border-surface-200 bg-white sm:max-h-96">
-							{filteredOrders.map((order) => {
+						<div className="max-h-[60vh] overflow-y-auto sm:max-h-[32rem]">
+							{ordersLoading && orders.length === 0 && (
+								<div aria-hidden>
+									{[0, 1, 2, 3].map((row) => (
+										<div
+											key={row}
+											className="animate-pulse border-b border-surface-100 px-4 py-4 sm:px-5"
+										>
+											<div className="flex items-center gap-4">
+												<div className="h-4 w-20 rounded bg-surface-100" />
+												<div className="h-4 flex-1 rounded bg-surface-100" />
+												<div className="hidden h-4 w-28 rounded bg-surface-100 lg:block" />
+												<div className="h-9 w-32 rounded-xl bg-surface-100" />
+											</div>
+										</div>
+									))}
+								</div>
+							)}
+							{visibleOrders.map((order) => {
 								const isSelected =
 									String(order.id) === selectedOrderId;
+								const isStartingThis =
+									starting &&
+									startingOrderId === String(order.id);
 								return (
-									<button
+									<div
 										key={String(order.id)}
-										type="button"
+										role="button"
+										tabIndex={0}
+										aria-pressed={isSelected}
 										onClick={() =>
 											selectOrder(String(order.id))
 										}
-										className={`flex w-full flex-col gap-3 p-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:p-5 ${
+										onKeyDown={(event) => {
+											if (
+												event.key === "Enter" ||
+												event.key === " "
+											) {
+												event.preventDefault();
+												selectOrder(String(order.id));
+											}
+										}}
+										className={`relative cursor-pointer border-b border-surface-100 px-4 py-3 outline-none transition-colors last:border-0 focus-visible:bg-brand-50 sm:px-5 lg:grid lg:grid-cols-[8.5rem_minmax(0,1.6fr)_minmax(0,1.2fr)_9rem_minmax(0,1.2fr)_auto] lg:items-center lg:gap-4 ${
 											isSelected
-												? "border-l-4 border-l-brand-600 bg-brand-50 shadow-inner"
+												? "bg-brand-50/70 ring-1 ring-inset ring-brand-200"
 												: "hover:bg-surface-50"
 										}`}
 									>
-										<div className="min-w-0 flex-1">
-											<div className="flex flex-wrap items-center gap-2">
-												<span className="truncate text-base font-semibold text-surface-900">
-													{order.product_name}
-												</span>
-												<span className="badge badge-info">
-													Order #{orderNumber(order)}
-												</span>
-												<span className="rounded-md bg-surface-100 px-2 py-1 font-mono text-sm text-surface-700">
-													{order.items?.length > 1
-														? `${order.items.length} product lines`
-														: order.batch_number}
-												</span>
+										{isSelected && (
+											<span
+												className="absolute inset-y-0 left-0 w-1 bg-brand-600"
+												aria-hidden
+											/>
+										)}
+
+										{/* Order # + when it was raised */}
+										<div className="flex items-center justify-between gap-2 lg:block">
+											<span className="font-mono text-sm font-bold text-surface-900">
+												#{orderNumber(order)}
+											</span>
+											<span className="text-[11px] text-surface-400 lg:mt-0.5 lg:block">
+												{formatDateTime(order.created_at)}
+											</span>
+										</div>
+
+										{/* Grade — the headline the operator scans for */}
+										<div className="mt-1.5 min-w-0 lg:mt-0">
+											<div
+												className="truncate text-sm font-semibold text-surface-900"
+												title={gradeLabel(order)}
+											>
+												{gradeLabel(order)}
 											</div>
-											{order.items?.length > 1 && (
-												<div className="mt-2 flex flex-wrap gap-1.5">
-													{order.items.map(
-														(item: any) => (
-															<span
-																key={String(
-																	item.batch_id,
-																)}
-																className="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 text-xs text-surface-700"
-															>
-																<strong className="text-surface-800">
-																	{
-																		item.product_name
-																	}
-																</strong>{" "}
-																·{" "}
-																{
-																	item.batch_number
-																}{" "}
-																·{" "}
-																{Number(
-																	item.quantity,
-																).toLocaleString()}{" "}
-																x{" "}
-																{item.uom ||
-																	"units"}
-															</span>
-														),
-													)}
-												</div>
-											)}
-											<div className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 text-sm text-surface-600 sm:grid-cols-2 lg:grid-cols-3">
-												<span>
-													Client:{" "}
-													<strong className="text-surface-700">
-														{order.client_name ||
-															"-"}
-													</strong>
-												</span>
-												<span>
-													To load:{" "}
-													<strong className="text-surface-700">
-														{Number(
-															order.quantity,
-														).toLocaleString()}{" "}
-														x {order.uom || "units"}
-													</strong>
-												</span>
-												<span>
-													Transporter Name:{" "}
-													<strong className="text-surface-700">
-														{order.driver_name || "-"}
-													</strong>
-												</span>
-												<span>
-													Vehicle:{" "}
-													{order.vehicle_number ||
-														"-"}
-												</span>
-												<span>
-													Container:{" "}
-													{order.container_number ||
-														"-"}
-												</span>
+											<div className="mt-0.5 truncate font-mono text-[11px] text-surface-500">
+												{order.batch_number || "-"}
 											</div>
 										</div>
-										<span className="badge badge-success shrink-0 self-start text-sm sm:self-center">
-											Ready
-										</span>
-									</button>
+
+										{/* Client + transporter */}
+										<div className="mt-1.5 min-w-0 lg:mt-0">
+											<div
+												className="truncate text-sm font-medium text-surface-700"
+												title={
+													order.client_name || undefined
+												}
+											>
+												{order.client_name || "-"}
+											</div>
+											<div className="truncate text-[11px] text-surface-400">
+												{order.driver_name ||
+													"No transporter"}
+											</div>
+										</div>
+
+										{/* Quantity to load */}
+										<div className="mt-1.5 flex items-baseline justify-between gap-2 lg:mt-0 lg:block lg:text-right">
+											<span className="text-[11px] font-semibold uppercase tracking-wide text-surface-400 lg:hidden">
+												To load
+											</span>
+											<span className="text-sm font-bold tabular-nums text-surface-900">
+												{Number(
+													order.quantity,
+												).toLocaleString()}{" "}
+												<span className="font-medium text-surface-500">
+													{order.uom || "units"}
+												</span>
+											</span>
+										</div>
+
+										{/* Vehicle + container */}
+										<div className="mt-1.5 min-w-0 lg:mt-0">
+											<div className="truncate font-mono text-xs font-medium text-surface-700">
+												{order.vehicle_number ||
+													"No vehicle"}
+											</div>
+											<div className="truncate text-[11px] text-surface-400">
+												{order.container_number
+													? `Container ${order.container_number}`
+													: "No container"}
+											</div>
+										</div>
+
+										{/* One click: select this order and start loading */}
+										<div className="mt-2.5 flex justify-end lg:mt-0">
+											<button
+												type="button"
+												className="btn-primary btn-sm min-h-10 whitespace-nowrap"
+												onClick={(event) => {
+													event.stopPropagation();
+													selectOrder(
+														String(order.id),
+													);
+													void startSession(order);
+												}}
+												disabled={starting}
+											>
+												{isStartingThis ? (
+													<Loader2
+														size={14}
+														className="animate-spin"
+													/>
+												) : (
+													<Play size={14} />
+												)}
+												{isStartingThis
+													? "Starting…"
+													: "Start Loading"}
+											</button>
+										</div>
+									</div>
 								);
 							})}
-							{filteredOrders.length === 0 && (
+							{!ordersLoading && filteredOrders.length === 0 && (
 								<div className="p-8 text-center">
 									<div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-100">
 										<PackageCheck
@@ -1682,72 +1832,120 @@ export default function DispatchScan() {
 										/>
 									</div>
 									<div className="text-sm font-semibold text-surface-700">
-										{ordersLoading
-											? "Loading dispatch orders..."
-											: orderSearch
-												? "No dispatch orders match that search"
-												: "No dispatch orders ready for loading"}
+										{orderSearch
+											? "No dispatch orders match that search"
+											: "No dispatch orders ready for loading"}
 									</div>
 									<div className="mt-1 text-sm text-surface-500">
-										{ordersLoading
-											? "Please wait a moment."
-											: orderSearch
-												? "Try a different order number, product or client."
-												: "Create a dispatch order from a stocked batch to begin loading."}
+										{orderSearch
+											? "Try a grade, order number, batch, client or vehicle."
+											: "Create a dispatch order from a stocked batch to begin loading."}
 									</div>
 								</div>
 							)}
 						</div>
+
+						{/* Window footer — grow the list on demand */}
+						{filteredOrders.length > 0 && (
+							<div className="border-t border-surface-100 px-4 py-3 text-center sm:px-5">
+								{filteredOrders.length > visibleCount ? (
+									<button
+										type="button"
+										className="btn-secondary btn-sm min-h-10"
+										onClick={() =>
+											setVisibleCount((count) =>
+												count + PAGE_STEP,
+											)
+										}
+									>
+										<ChevronDown size={14} /> Show more (
+										{filteredOrders.length - visibleCount}{" "}
+										remaining)
+									</button>
+								) : (
+									<span className="text-[11px] text-surface-400">
+										Showing all {filteredOrders.length}{" "}
+										order
+										{filteredOrders.length === 1 ? "" : "s"}
+									</span>
+								)}
+							</div>
+						)}
 					</div>
 
 					{selectedOrder && (
-						<div className="card mb-5 border-l-4 border-l-brand-500 p-4 sm:p-6">
-							<div className="flex flex-wrap items-center justify-between gap-4">
-								<div className="min-w-0">
-									<h2 className="section-title text-lg">
-										Selected order #{selectedOrder.id}
+						<div className="card mb-5 overflow-hidden border-l-4 border-l-brand-500 p-0">
+							<div className="flex flex-wrap items-center justify-between gap-4 p-4 sm:p-5">
+								<div className="min-w-0 flex-1">
+									<div className="flex flex-wrap items-center gap-2">
+										<span className="badge badge-info">
+											Order #{orderNumber(selectedOrder)}
+										</span>
+										<span className="text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+											Selected — ready to load
+										</span>
+									</div>
+									<h2
+										className="mt-1.5 truncate text-xl font-bold text-surface-900"
+										title={gradeLabel(selectedOrder)}
+									>
+										{gradeLabel(selectedOrder)}
 									</h2>
-									<div className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-										<p className="text-surface-600">
-											Product:{" "}
-											<strong className="text-surface-900">
-												{selectedOrder.product_name || "Product"}
+									<div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm text-surface-600">
+										<span>
+											<span className="text-surface-400">
+												Batch:{" "}
+											</span>
+											<strong className="font-mono text-surface-800">
+												{selectedOrder.batch_number ||
+													"-"}
 											</strong>
-										</p>
-										<p className="text-surface-600">
-											Batch:{" "}
-											<strong className="font-mono text-surface-900">
-												{selectedOrder.batch_number || "-"}
+										</span>
+										<span>
+											<span className="text-surface-400">
+												To load:{" "}
+											</span>
+											<strong className="text-surface-800">
+												{Number(
+													selectedOrder.quantity || 0,
+												).toLocaleString()}{" "}
+												{selectedOrder.uom || "units"}
 											</strong>
-										</p>
-										<p className="text-surface-600">
-											To load:{" "}
-											<strong className="text-surface-900">
-												{Number(selectedOrder.quantity || 0).toLocaleString()} {selectedOrder.uom || "units"}
+										</span>
+										<span>
+											<span className="text-surface-400">
+												Client:{" "}
+											</span>
+											<strong className="text-surface-800">
+												{selectedOrder.client_name ||
+													"-"}
 											</strong>
-										</p>
-										<p className="text-surface-600">
-											Client:{" "}
-											<strong className="text-surface-900">
-												{selectedOrder.client_name || "-"}
+										</span>
+										<span>
+											<span className="text-surface-400">
+												Transporter:{" "}
+											</span>
+											<strong className="text-surface-800">
+												{selectedOrder.driver_name ||
+													"-"}
 											</strong>
-										</p>
-										<p className="text-surface-600">
-											Transporter Name:{" "}
-											<strong className="text-surface-900">
-												{selectedOrder.driver_name || "-"}
+										</span>
+										<span>
+											<span className="text-surface-400">
+												Vehicle / Container:{" "}
+											</span>
+											<strong className="font-mono text-surface-800">
+												{selectedOrder.vehicle_number ||
+													"-"}{" "}
+												/{" "}
+												{selectedOrder.container_number ||
+													"-"}
 											</strong>
-										</p>
-										<p className="text-surface-600">
-											Vehicle / Container:{" "}
-											<strong className="font-mono text-surface-900">
-												{selectedOrder.vehicle_number || "-"} / {selectedOrder.container_number || "-"}
-											</strong>
-										</p>
+										</span>
 									</div>
 								</div>
 								<button
-									className="btn-primary min-h-12 w-full shrink-0 text-base sm:w-auto"
+									className="btn-primary min-h-12 w-full shrink-0 px-6 text-base sm:w-auto"
 									onClick={() => void startSession()}
 									disabled={starting}
 								>
@@ -1757,7 +1955,7 @@ export default function DispatchScan() {
 											className="animate-spin"
 										/>
 									) : (
-										<PackageCheck size={16} />
+										<Play size={16} />
 									)}
 									{starting
 										? "Starting..."
@@ -1819,7 +2017,8 @@ export default function DispatchScan() {
 											size={18}
 											className="text-brand-500"
 										/>
-										{session.product_name ||
+										{session.grade_name ||
+											session.product_name ||
 											"Loading in progress"}
 									</h2>
 									<p className="mt-2 text-sm leading-relaxed text-surface-600">
@@ -2217,8 +2416,11 @@ export default function DispatchScan() {
 									</h3>
 									<dl className="mt-3 text-sm">
 										<DetailRow
-											label="Product"
-											value={session.product_name}
+											label="Grade"
+											value={
+												session.grade_name ||
+												session.product_name
+											}
 										/>
 										<DetailRow
 											label="Batch"
@@ -2463,7 +2665,7 @@ export default function DispatchScan() {
 					<table>
 						<thead>
 							<tr>
-								<th>Product</th>
+								<th>Grade</th>
 								<th>Batch</th>
 								<th>Time</th>
 							</tr>
@@ -2473,7 +2675,8 @@ export default function DispatchScan() {
 								<tr key={dispatch.id}>
 									<td>
 										<span className="font-medium text-surface-800">
-											{dispatch.product_name}
+											{dispatch.grade_name ||
+												dispatch.product_name}
 										</span>
 									</td>
 									<td>
@@ -2554,10 +2757,10 @@ export default function DispatchScan() {
 							<div className="rounded-xl border border-surface-100 bg-surface-50 p-3 text-xs">
 								<div className="flex justify-between gap-3">
 									<span className="text-surface-400">
-										Product
+										Grade
 									</span>
 									<span className="truncate font-medium text-surface-700">
-										{cancelTarget.product_name || "-"}
+										{gradeLabel(cancelTarget)}
 									</span>
 								</div>
 								<div className="mt-1 flex justify-between gap-3">

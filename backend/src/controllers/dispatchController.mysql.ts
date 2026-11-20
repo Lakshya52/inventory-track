@@ -148,14 +148,17 @@ export async function today(req: Request, res: Response): Promise<void> {
   const dvDr = divisionWhere(req, 'dr.division_id');
   const dvB = divisionWhere(req, 'b.division_id');
   const dvP = divisionWhere(req, 'p.division_id');
+  const dvG = divisionWhere(req, 'g.division_id');
   const records = await query<RowDataPacket[]>(
-    `SELECT dr.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku
+    `SELECT dr.*, b.batch_number, b.barcode_value, p.name AS product_name, p.sku AS product_sku,
+            COALESCE(g.name, p.grade) AS grade_name
      FROM dispatch_records dr
      JOIN batches b ON dr.batch_id = b.id ${dvB.sql}
      JOIN products p ON b.product_id = p.id ${dvP.sql}
+     LEFT JOIN grades g ON g.id = b.grade_id AND g.tenant_id = ? ${dvG.sql}
      WHERE dr.tenant_id = ? AND b.tenant_id = ? AND p.tenant_id = ? AND dr.created_at >= CURDATE() ${scope.sql} ${dvDr.sql}
      ORDER BY dr.created_at DESC LIMIT 100`,
-    [...dvB.params, ...dvP.params, tenantId, tenantId, tenantId, ...scope.params, ...dvDr.params]
+    [...dvB.params, ...dvP.params, tenantId, ...dvG.params, tenantId, tenantId, tenantId, ...scope.params, ...dvDr.params]
   );
   res.json(records);
 }

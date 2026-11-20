@@ -37,6 +37,32 @@ function numeric(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/**
+ * Grade display name(s) for a set of batches. The batch's grade record wins,
+ * with the product's free-text grade as fallback so imported rows still show
+ * something. Distinct grades are de-duplicated and comma-joined (a dispatch
+ * order can span several batches).
+ */
+async function gradeNamesFor(
+  ctx: DbContext,
+  batchIds: Array<string | number | null | undefined>,
+  tenantId: string | number,
+  df: Record<string, any>
+): Promise<string | null> {
+  const batches = await mapByIds<Record<string, any>>(ctx, 'batches', batchIds, tenantId, df);
+  if (batches.size === 0) return null;
+  const [grades, products] = await Promise.all([
+    mapByIds<Record<string, any>>(ctx, 'grades', [...batches.values()].map((batch) => batch.grade_id), tenantId, df),
+    mapByIds<Record<string, any>>(ctx, 'products', [...batches.values()].map((batch) => batch.product_id), tenantId, df),
+  ]);
+  const names = [...new Set(
+    [...batches.values()]
+      .map((batch) => grades.get(idKey(batch.grade_id))?.name ?? products.get(idKey(batch.product_id))?.grade ?? null)
+      .filter(Boolean)
+  )];
+  return names.length > 0 ? names.join(', ') : null;
+}
+
 async function logActivity(
   ctx: DbContext,
   user: NonNullable<Request['user']>,
@@ -356,10 +382,15 @@ async function buildActiveSessions(
   });
   if (sessions.length === 0) return [];
 
+  const lineBatchIds = sessions.flatMap((session) =>
+    Array.isArray(session.order_lines)
+      ? session.order_lines.map((line: any) => line?.batch_id)
+      : []
+  );
   const batches = await mapByIds<Record<string, any>>(
     ctx,
     'batches',
-    sessions.map((session) => session.batch_id),
+    [...sessions.map((session) => session.batch_id), ...lineBatchIds],
     tenantId,
     df
   );
@@ -370,6 +401,20 @@ async function buildActiveSessions(
     tenantId,
     df
   );
+  const grades = await mapByIds<Record<string, any>>(
+    ctx,
+    'grades',
+    [...batches.values()].map((batch) => batch.grade_id),
+    tenantId,
+    df
+  );
+  const gradeNameForBatch = (batchId: any): string | null => {
+    const batch = batches.get(idKey(batchId));
+    if (!batch) return null;
+    return grades.get(idKey(batch.grade_id))?.name
+      ?? products.get(idKey(batch.product_id))?.grade
+      ?? null;
+  };
   const loaderNames = await mapNames(
     ctx,
     'dispatch_users',
@@ -422,6 +467,12 @@ async function buildActiveSessions(
       product_name: Array.isArray(session.order_lines) && session.order_lines.length
         ? session.order_lines.map((line: any) => line.product_name).filter(Boolean).join(', ')
         : product?.name ?? null,
+      grade_name: [...new Set(
+        (Array.isArray(session.order_lines) && session.order_lines.length
+          ? session.order_lines
+          : [{ batch_id: session.batch_id }]
+        ).map((line: any) => gradeNameForBatch(line?.batch_id)).filter(Boolean)
+      )].join(', ') || session.grade_name || null,
       loader_name: loaderNames.get(idKey(session.loader_id))
         ?? adminLoaders.get(idKey(session.loader_id))
         ?? null,
@@ -476,6 +527,14 @@ export async function start(req: Request, res: Response): Promise<void> {
           quantity: batch.quantity ?? null,
         });
       }
+      // Stored on the session so every later read (polls, resume, getById)
+      // can show the grade without re-resolving it.
+      const gradeName = await gradeNamesFor(
+        ctx,
+        orderLines.map((line: any) => line.batch_id),
+        tenantId,
+        df
+      );
 
       const existing = await ctx.findOne(
         'loading_sessions',
@@ -498,6 +557,7 @@ export async function start(req: Request, res: Response): Promise<void> {
           batch_id: batch.id,
           batch_ids: orderLines.map((line: any) => line.batch_id),
           order_lines: orderLines,
+          grade_name: gradeName,
           loader_id: req.user!.userId,
           status: 'ACTIVE',
           total,
@@ -550,12 +610,14 @@ export async function start(req: Request, res: Response): Promise<void> {
           order_number: order.order_number ?? null,
           batch_id: batch.id,
           order_lines: orderLines,
+          grade_name: gradeName,
           qr_values: qrValues,
         },
         order_id: order.id,
         order_number: order.order_number ?? null,
         batch_number: batch.batch_number ?? null,
         product_name: orderLines.map((line: any) => line.product_name).filter(Boolean).join(', ') || product?.name || null,
+        grade_name: gradeName,
         order_lines: orderLines,
         qr_values: qrValues,
         total,
@@ -1405,6 +1467,15 @@ export async function getById(req: Request, res: Response): Promise<void> {
     const product = batch?.product_id
       ? await ctx.findOne('products', { id: batch.product_id, tenant_id: tenantId, ...df })
       : null;
+    // New sessions store grade_name at start; older ones resolve it here from
+    // the main batch (the orders list still supplies the full multi-grade
+    // string as a fallback on the client).
+    const gradeName = session.grade_name
+      ?? (batch?.grade_id
+        ? (await ctx.findOne('grades', { id: batch.grade_id, tenant_id: tenantId, ...df }, { projection: { _id: 0, name: 1 } }))?.name
+        : null)
+      ?? product?.grade
+      ?? null;
 
     res.json({
       session: {
@@ -1414,6 +1485,7 @@ export async function getById(req: Request, res: Response): Promise<void> {
         product_name: Array.isArray(session.order_lines) && session.order_lines.length
           ? session.order_lines.map((line: any) => line.product_name).filter(Boolean).join(', ')
           : product?.name ?? null,
+        grade_name: gradeName,
         loader_name: loader?.name ?? adminLoader?.name ?? null,
       },
       events,

@@ -230,7 +230,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
      LEFT JOIN qc_users qu ON d.approved_by_id = qu.id AND d.approved_by_role = 'QC' AND qu.tenant_id = ?
      LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH' AND du.tenant_id = ?
      WHERE ${where.join(' AND ')} ${search.sql} ${dvD.sql}
-     ORDER BY d.created_at DESC LIMIT 100`,
+     ORDER BY d.created_at DESC LIMIT 500`,
     [...dvB.params, ...dvP.params, ...joinTenantParams, ...params, ...dvD.params]
   );
   res.json(await withOrderLines(orders, tenantId, undefined, req));
@@ -279,7 +279,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
      LEFT JOIN dispatch_users du ON d.approved_by_id = du.id AND d.approved_by_role = 'DISPATCH' AND du.tenant_id = ?
      LEFT JOIN clients c ON c.id = d.client_id AND c.tenant_id = ?
      WHERE ${where.join(' AND ')} ${search.sql} ${dvD.sql}
-     ORDER BY d.created_at DESC LIMIT 100`,
+     ORDER BY d.created_at DESC LIMIT 500`,
     [...dvB.params, ...dvP.params, ...joinTenantParams, ...params, ...dvD.params]
   );
   res.json(await withOrderLines(orders, tenantId, undefined, req));

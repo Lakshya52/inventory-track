@@ -17,6 +17,17 @@ const ORDER_STATUS_FILTERS = [
   'CLOSED_NOT_DISPATCHED',
 ];
 
+/**
+ * How many orders the list endpoints return. The Loading & Scan screen is a
+ * work-list meant to hold a whole day's orders, so the default is much higher
+ * than the old hard-coded 100; callers may pass ?limit=, capped at 1,000.
+ */
+function orderListLimit(req: Request): number {
+  const requested = Number(req.query.limit);
+  if (!Number.isFinite(requested) || requested < 1) return 500;
+  return Math.min(Math.floor(requested), 1000);
+}
+
 // Explicitly chosen QR labels for an order line, if the picker selected any.
 function sanitizeLabelIds(value: unknown): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -293,7 +304,7 @@ export async function listAll(req: Request, res: Response): Promise<void> {
   const filter = await orderFilterForSearch(ctx, q, base, tenantId, divisionScope);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: -1 },
-    limit: 100,
+    limit: orderListLimit(req),
     projection: { _id: 0 },
   });
   res.json(await enrichOrders(ctx, orders, tenantId, divisionScope));
@@ -315,7 +326,7 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   const filter = await orderFilterForSearch(ctx, q, base, tenantId, divisionScope);
   const orders = await ctx.find('dispatch_orders', filter, {
     sort: { created_at: -1 },
-    limit: 100,
+    limit: orderListLimit(req),
     projection: { _id: 0 },
   });
   res.json(await enrichOrders(ctx, orders, tenantId, divisionScope));
