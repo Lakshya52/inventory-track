@@ -305,7 +305,12 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   const status = String(req.query.status || '').toUpperCase();
   const ctx = await getContext();
   const divisionScope = divisionFilter(req);
-  const base: Record<string, any> = { tenant_id: tenantId, ...divisionScope, raised_by: req.user!.userId };
+  const base: Record<string, any> = { tenant_id: tenantId, ...divisionScope };
+  // DISPATCH users only ever see their own orders. The admin uses this same
+  // endpoint as the dispatch work-list, so they get every order in the
+  // division selected in the top-right switcher instead of an empty
+  // "raised by me" list.
+  if (req.user!.role === 'DISPATCH') base.raised_by = req.user!.userId;
   if (ORDER_STATUS_FILTERS.includes(status)) base.status = status;
   const filter = await orderFilterForSearch(ctx, q, base, tenantId, divisionScope);
   const orders = await ctx.find('dispatch_orders', filter, {

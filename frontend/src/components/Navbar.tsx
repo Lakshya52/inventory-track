@@ -30,17 +30,18 @@ const navSections: { title: string; items: NavItem[] }[] = [
   {
     title: 'Quality',
     items: [
-      { label: 'QC Scan', path: '/qc', icon: '🔬', roles: ['QC'] },
+      { label: 'QC Scan', path: '/qc', icon: '🔬', roles: ['ADMIN', 'QC'] },
       { label: 'QR Labels', path: '/qc/qr-codes', icon: '🔳', roles: ['ADMIN', 'QC'] },
-      { label: 'QC Dashboard', path: '/qc-dashboard', icon: '📊', roles: ['QC'] },
+      { label: 'QC Dashboard', path: '/qc-dashboard', icon: '📊', roles: ['ADMIN', 'QC'] },
     ],
   },
   {
     title: 'Dispatch',
     items: [
-      { label: 'Dispatch Scan', path: '/dispatch', icon: '📷', roles: ['DISPATCH'] },
-      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: '📋', roles: ['DISPATCH'] },
-      { label: 'Packing List', path: '/packing-list', icon: '📄', roles: ['DISPATCH'] },
+      { label: 'Dispatch Scan', path: '/dispatch', icon: '📷', roles: ['ADMIN', 'DISPATCH'] },
+      { label: 'Dispatch Orders', path: '/dispatch-orders', icon: '📋', roles: ['ADMIN', 'DISPATCH'] },
+      { label: 'Dispatch Batches', path: '/dispatch/batches', icon: '🧾', roles: ['ADMIN', 'DISPATCH'] },
+      { label: 'Packing List', path: '/packing-list', icon: '📄', roles: ['ADMIN', 'DISPATCH'] },
     ],
   },
   {

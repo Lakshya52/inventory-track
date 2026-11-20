@@ -16,10 +16,10 @@ function retiredCreate(_req: Request, res: Response): void {
 
 router.post('/', authorize('ADMIN', 'DISPATCH'), retiredCreate);
 router.post('/group', authorize('ADMIN', 'DISPATCH'), createGroup);
-router.post('/:id/finish-goods', authorize('QC'), finishGoods);
+router.post('/:id/finish-goods', authorize('ADMIN', 'QC'), finishGoods);
 router.get('/', list);
 router.get('/search', search);
 router.get('/barcode/:barcode', getByBarcode);
 router.get('/:id', getById);
-router.put('/:id', authorize('QC'), update);
+router.put('/:id', authorize('ADMIN', 'QC'), update);
 export default router;

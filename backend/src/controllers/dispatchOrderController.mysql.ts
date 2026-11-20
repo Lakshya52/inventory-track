@@ -241,8 +241,14 @@ export async function listMine(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || '').toUpperCase();
   const search = searchClause(q);
-  const where = ['d.tenant_id = ?', 'b.tenant_id = ?', 'p.tenant_id = ?', 'd.raised_by = ?'];
-  const params: any[] = [tenantId, tenantId, tenantId, req.user!.userId];
+  const where = ['d.tenant_id = ?', 'b.tenant_id = ?', 'p.tenant_id = ?'];
+  const params: any[] = [tenantId, tenantId, tenantId];
+  // DISPATCH users only ever see their own orders; the admin uses this as the
+  // division-wide dispatch work-list (scoped by the top-right switcher).
+  if (req.user!.role === 'DISPATCH') {
+    where.push('d.raised_by = ?');
+    params.push(req.user!.userId);
+  }
   if (['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(status)) {
     where.push('d.status = ?');
     params.push(status);

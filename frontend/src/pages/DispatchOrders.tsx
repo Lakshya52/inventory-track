@@ -98,6 +98,9 @@ export default function DispatchOrders() {
 
   const isAdmin = user?.role === 'ADMIN';
   const isDispatch = user?.role === 'DISPATCH';
+  // Raising orders and starting loading are dispatch tasks the admin can also
+  // perform on the division picked in the top-right switcher.
+  const canRaise = isAdmin || isDispatch;
 
   const fetchData = useCallback(async () => {
     const requestId = ++fetchRequest.current;
@@ -106,15 +109,17 @@ export default function DispatchOrders() {
       if (isDispatch) {
         const dispatchOrders = await api.dispatchOrders.mine({ q: debouncedSearch || undefined, status: statusFilter || undefined });
         if (requestId === fetchRequest.current) setOrders(dispatchOrders);
+      } else {
+        const all = await api.dispatchOrders.all({ q: debouncedSearch || undefined, status: statusFilter || undefined });
+        if (requestId === fetchRequest.current) setOrders(all);
+      }
+      if (canRaise) {
         const batches = await api.batches.recent({ status: 'QC_PASSED,DISPATCH_APPROVED', limit: 100 });
         if (requestId === fetchRequest.current) setQcPassedBatches(batches.filter((batch: any) =>
           ['QC_PASSED', 'DISPATCH_APPROVED'].includes(batch.status) &&
           Number(batch.qr_count) === Number(batch.quantity) &&
           Number(batch.available_quantity ?? batch.quantity) > 0,
         ));
-      } else {
-        const all = await api.dispatchOrders.all({ q: debouncedSearch || undefined, status: statusFilter || undefined });
-        if (requestId === fetchRequest.current) setOrders(all);
       }
     } catch (err: any) {
       if (requestId === fetchRequest.current) {
@@ -124,7 +129,7 @@ export default function DispatchOrders() {
     } finally {
       if (requestId === fetchRequest.current) setLoading(false);
     }
-  }, [isDispatch, debouncedSearch, statusFilter]);
+  }, [canRaise, isDispatch, debouncedSearch, statusFilter]);
 
   useEffect(() => {
     void fetchData();
@@ -137,13 +142,13 @@ export default function DispatchOrders() {
   }, [fetchData]);
 
   useEffect(() => {
-    if (isDispatch) {
+    if (canRaise) {
       api.clients.list().then(setClients).catch((err: Error) => {
         setMessage(err.message || 'Could not load clients');
         setMessageKind('error');
       });
     }
-  }, [isDispatch]);
+  }, [canRaise]);
 
   useEffect(() => {
     if (!selectedOrder) return;
@@ -327,7 +332,7 @@ export default function DispatchOrders() {
             </h1>
             <p className="text-sm sm:text-base text-slate-500 mt-0.5">
               {isAdmin
-                ? 'Overview of all client shipments, loading status, and packing lists.'
+                ? 'Raise orders, start loading, and recall units for the division picked in the switcher.'
                 : 'Create dispatch orders, open packaging lists, and start loading.'}
             </p>
           </div>
@@ -385,8 +390,8 @@ export default function DispatchOrders() {
         </div>
       )}
 
-      {/* 3. DISPATCH USER FORM (Raise Dispatch Order) */}
-      {isDispatch && (
+      {/* 3. RAISE DISPATCH ORDER FORM (admin + dispatch) */}
+      {canRaise && (
         <div className="bg-white rounded-2xl border-2 border-slate-200 p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
             <Plus size={20} className="text-brand-600" />
@@ -638,7 +643,7 @@ export default function DispatchOrders() {
 
                     <td className="px-5 py-4 text-right">
                       <div className="flex items-center justify-end gap-2 flex-wrap">
-                        {isDispatch && order.status === 'APPROVED' && order.batch_status !== 'LOADING' && (
+                        {canRaise && order.status === 'APPROVED' && order.batch_status !== 'LOADING' && (
                           <button
                             onClick={() => navigate(`/dispatch?order=${order.id}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs"

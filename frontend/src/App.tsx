@@ -80,7 +80,10 @@ export default function App() {
         <Route path="/loading-monitor" element={<ProtectedRoute roles={['ADMIN', 'QC']}><LoadingMonitor /></ProtectedRoute>} />
 
         {/* QC */}
-        <Route path="/qc" element={<Navigate to="/batches" replace />} />
+        {/* /qc is the QC decision queue (QCBatches). QC users were already
+            landing here via the old redirect to /batches; the admin now gets
+            the same screen directly so they can mark QC like a QC person. */}
+        <Route path="/qc" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCBatches /></ProtectedRoute>} />
         <Route path="/qc/qr-codes" element={<ProtectedRoute roles={['ADMIN']}><QRLabels /></ProtectedRoute>} />
         <Route path="/qc-dashboard" element={<ProtectedRoute roles={['ADMIN', 'QC']}><QCDashboard /></ProtectedRoute>} />
 
