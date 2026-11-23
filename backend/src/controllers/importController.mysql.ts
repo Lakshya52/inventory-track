@@ -198,21 +198,19 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
     });
   }
 
-  // Chunked insert (~2,000 rows per transaction). A rollback rolls back that chunk
-  // only — not the whole file — and invalid rows never enter this loop.
+  // One multi-row INSERT per chunk instead of 50k individual round-trips.
   const inserted: Array<{ sku: string; family: string }> = [];
   const failed: Array<{ row: number; message: string }> = [];
-  const CHUNK = 2000;
+  const CHUNK = 1000;
   for (let offset = 0; offset < insertOps.length; offset += CHUNK) {
     const chunk = insertOps.slice(offset, offset + CHUNK);
+    const marks = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(',');
     try {
       await withTransaction(async (conn) => {
-        for (const op of chunk) {
-          await conn.query(
-            'INSERT INTO products (tenant_id, division_id, name, description, sku, quantity, grade, manufacturer, bag_quantity_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            op.args
-          );
-        }
+        await conn.query(
+          `INSERT INTO products (tenant_id, division_id, name, description, sku, quantity, grade, manufacturer, bag_quantity_id) VALUES ${marks}`,
+          chunk.flatMap((op) => op.args),
+        );
       });
       for (const op of chunk) inserted.push({ sku: String(op.args[4]), family: op.row.product });
     } catch (err: any) {
@@ -223,13 +221,31 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
     }
   }
 
-  // Grades master list (idempotent)
+  // Grades master list: dedupe and insert only missing names in a few bulk
+  // statements instead of attempting 50k individual (mostly duplicate) inserts.
+  const gradeNames = new Map<string, string>();
   for (const op of insertOps) {
-    if (!op.row.grade) continue;
-    try {
-      await execute('INSERT INTO grades (tenant_id, name, is_active) VALUES (?, ?, 1)', [tenantId, op.row.grade]);
-    } catch (gradeErr: any) {
-      if (gradeErr?.code !== 'ER_DUP_ENTRY') console.error('grade insert failed', gradeErr);
+    const grade = op.row.grade;
+    if (!grade) continue;
+    const name = String(grade).trim();
+    if (name) gradeNames.set(name.toLowerCase(), name);
+  }
+  if (gradeNames.size > 0) {
+    const names = [...gradeNames.values()];
+    const marks = names.map(() => '?').join(',');
+    const existing = await query<RowDataPacket[]>(
+      `SELECT name FROM grades WHERE tenant_id = ? AND name IN (${marks})`,
+      [tenantId, ...names],
+    );
+    const existingNames = new Set(existing.map((row) => String(row.name ?? '').trim().toLowerCase()));
+    const newGrades = names.filter((name) => !existingNames.has(name.toLowerCase()));
+    for (let i = 0; i < newGrades.length; i += CHUNK) {
+      const slice = newGrades.slice(i, i + CHUNK);
+      const gradeMarks = slice.map(() => '(?, ?, 1)').join(',');
+      await execute(
+        `INSERT INTO grades (tenant_id, name, is_active) VALUES ${gradeMarks}`,
+        slice.flatMap((name) => [tenantId, name]),
+      );
     }
   }
 

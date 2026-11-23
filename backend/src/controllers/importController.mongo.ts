@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getContext, isDuplicateKey, withTransaction } from '../config/database';
+import { getContext, withTransaction } from '../config/database';
 import { buildImportTemplate } from '../services/importTemplate';
 import {
   cleanText,
@@ -213,8 +213,8 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
     });
   }
 
-  // Chunked insert (~2,000 rows per transaction). A rollback rolls back that chunk
-  // only — not the whole file — and invalid rows never enter this loop.
+  // One bulk insert per chunk instead of 50k individual round-trips. A rollback
+  // rolls back that chunk only — not the whole file.
   const inserted: Array<{ sku: string; family: string }> = [];
   const failed: Array<{ row: number; message: string }> = [];
   const CHUNK = 2000;
@@ -222,7 +222,7 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
     const chunk = insertOps.slice(offset, offset + CHUNK);
     try {
       await withTransaction(async (tx) => {
-        for (const op of chunk) await tx.insert('products', op.doc);
+        await tx.insertMany('products', chunk.map((op) => op.doc));
       });
       for (const op of chunk) inserted.push({ sku: op.doc.sku as string, family: op.row.product });
     } catch (err: any) {
@@ -231,19 +231,25 @@ export async function applyImport(req: Request, res: Response): Promise<void> {
     }
   }
 
-  // Grades master list: add the new grade names (idempotent)
+  // Grades master list: dedupe names and insert only the missing ones in one
+  // bulk write. The old per-row insert attempted (and failed) 50k duplicate keys.
+  const gradeNames = new Map<string, string>();
   for (const row of validated) {
-    if (row.errors.length > 0) continue;
-    if (!row.grade) continue;
-    try {
-      await ctx.insert('grades', { tenant_id: tenantId, name: row.grade, is_active: 1 });
-    } catch (err: any) {
-      if (!isDuplicateKey(err)) {
-        // Ignore duplicate keys (already in grades list) — log only real errors
-        // via console so one bad row doesn't abort the rest.
-        console.error('grade insert failed', err);
-      }
-    }
+    if (row.errors.length > 0 || !row.grade) continue;
+    const name = String(row.grade).trim();
+    if (name) gradeNames.set(name.toLowerCase(), name);
+  }
+  if (gradeNames.size > 0) {
+    const existing = await ctx.find(
+      'grades',
+      { tenant_id: tenantId, name: { $in: [...gradeNames.keys()] } },
+      { projection: { _id: 0, name: 1 } },
+    );
+    const existingNames = new Set(existing.map((row: any) => String(row.name ?? '').trim().toLowerCase()));
+    const newGrades = [...gradeNames.entries()]
+      .filter(([key]) => !existingNames.has(key))
+      .map(([, name]) => ({ tenant_id: tenantId, name, is_active: 1 }));
+    if (newGrades.length > 0) await ctx.insertMany('grades', newGrades);
   }
 
   await ctx.insert('activity_logs', {
