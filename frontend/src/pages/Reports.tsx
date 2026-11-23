@@ -13,8 +13,8 @@ import {
 	FileBarChart,
 	Microscope,
 	Truck,
-	ClipboardList,
 	Boxes,
+	ClipboardList,
 	Layers,
 	Activity,
 	Download,
@@ -23,25 +23,24 @@ import {
 	Eye,
 	X,
 	AlertCircle,
+	Loader2,
 } from "lucide-react";
 
 type Tab =
 	| "overview"
 	| "qc"
 	| "dispatch"
-	| "requests"
 	| "inventory"
 	| "batches"
 	| "activity";
 
 const TABS: { key: Tab; label: string; icon: any }[] = [
 	{ key: "overview", label: "Overview", icon: FileBarChart },
-	{ key: "qc", label: "QC Reports", icon: Microscope },
-	{ key: "dispatch", label: "Dispatch Reports", icon: Truck },
-	{ key: "requests", label: "Dispatch Requests", icon: ClipboardList },
-	{ key: "inventory", label: "Inventory", icon: Boxes },
-	{ key: "batches", label: "Batches", icon: Layers },
-	{ key: "activity", label: "Activity Log", icon: Activity },
+	{ key: "qc", label: "QC Reports & Logs", icon: Microscope },
+	{ key: "dispatch", label: "Dispatch Reports & Logs", icon: Truck },
+	{ key: "inventory", label: "Inventory Reports", icon: Boxes },
+	{ key: "batches", label: "Batch Reports", icon: Layers },
+	{ key: "activity", label: "Activity Logs", icon: Activity },
 ];
 
 const statusBadge: Record<string, string> = {
@@ -169,6 +168,88 @@ function downloadPdf(
 	doc.save(filename);
 }
 
+type ReportSection = {
+	title: string;
+	headers: string[];
+	rows: (string | number)[][];
+};
+
+/** One CSV containing every section, separated by a title and a blank line. */
+function downloadSectionsCsv(filename: string, sections: ReportSection[]): void {
+	const escape = (value: string | number) =>
+		`"${String(value ?? "").replace(/"/g, '""')}"`;
+	const lines: string[] = [];
+	for (const section of sections) {
+		lines.push(escape(section.title));
+		lines.push(section.headers.map(escape).join(","));
+		for (const row of section.rows) lines.push(row.map(escape).join(","));
+		lines.push("");
+	}
+	const blob = new Blob([lines.join("\n")], {
+		type: "text/csv;charset=utf-8;",
+	});
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	a.click();
+	window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** One PDF with a page per section. */
+function downloadSectionsPdf(filename: string, sections: ReportSection[]): void {
+	const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+	const pageWidth = doc.internal.pageSize.getWidth();
+	const pageHeight = doc.internal.pageSize.getHeight();
+	const margin = 10;
+	let first = true;
+	for (const section of sections) {
+		const columnWidth = (pageWidth - margin * 2) / Math.max(1, section.headers.length);
+		let y = 12;
+		const drawHeader = () => {
+			doc.setFont("helvetica", "bold");
+			doc.setFontSize(13);
+			doc.text(section.title, margin, y);
+			y += 8;
+			doc.setFontSize(7);
+			const cells = section.headers.map((header, index) => ({
+				text: doc.splitTextToSize(header, columnWidth - 2),
+				x: margin + index * columnWidth + 1,
+			}));
+			const height = Math.max(...cells.map((c) => c.text.length)) * 3.4 + 3;
+			doc.setFillColor(240, 244, 248);
+			doc.rect(margin, y - 3, pageWidth - margin * 2, height, "F");
+			cells.forEach((cell) => doc.text(cell.text, cell.x, y));
+			y += height;
+			doc.setFont("helvetica", "normal");
+			doc.setFontSize(6.5);
+		};
+		if (!first) doc.addPage();
+		first = false;
+		drawHeader();
+		section.rows.forEach((row) => {
+			const cells = section.headers.map((_, index) => ({
+				text: doc.splitTextToSize(
+					String(row[index] ?? "").replace(/\s+/g, " ").slice(0, 180),
+					columnWidth - 2,
+				),
+				x: margin + index * columnWidth + 1,
+			}));
+			const height = Math.max(...cells.map((c) => c.text.length)) * 3 + 3;
+			if (y + height > pageHeight - margin) {
+				doc.addPage();
+				y = 12;
+				drawHeader();
+			}
+			cells.forEach((cell) => doc.text(cell.text, cell.x, y));
+			doc.setDrawColor(225, 231, 238);
+			doc.line(margin, y + height - 2, pageWidth - margin, y + height - 2);
+			y += height;
+		});
+	}
+	doc.save(filename);
+}
+
 function formatDate(value?: string | null): string {
 	return formatIsoDate(value);
 }
@@ -198,6 +279,7 @@ export default function Reports() {
 	const [search, setSearch] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 250);
 	const [exportFormat, setExportFormat] = useState<"CSV" | "PDF">("CSV");
+	const [overallExporting, setOverallExporting] = useState(false);
 
 	const [imageViewer, setImageViewer] = useState<{
 		title: string;
@@ -248,19 +330,24 @@ export default function Reports() {
 					});
 					if (!cancelled) setQcRecords(data);
 				} else if (tab === "dispatch") {
-					const data = await api.reports.dispatch({
-						from: from || undefined,
-						to: to || undefined,
-					});
-					if (!cancelled) setDispatchRecords(data);
-				} else if (tab === "requests") {
-					const data = await api.reports.dispatchRequests({
-						from: from || undefined,
-						to: to || undefined,
-						status:
-							requestStatus === "ALL" ? undefined : requestStatus,
-					});
-					if (!cancelled) setRequests(data);
+					const [data, requestData] = await Promise.all([
+						api.reports.dispatch({
+							from: from || undefined,
+							to: to || undefined,
+						}),
+						api.reports.dispatchRequests({
+							from: from || undefined,
+							to: to || undefined,
+							status:
+								requestStatus === "ALL"
+									? undefined
+									: requestStatus,
+						}),
+					]);
+					if (!cancelled) {
+						setDispatchRecords(data);
+						setRequests(requestData);
+					}
 				} else if (tab === "inventory") {
 					const data = await api.reports.inventory();
 					if (!cancelled) setInventory(data);
@@ -272,7 +359,7 @@ export default function Reports() {
 					});
 					if (!cancelled) setBatches(data);
 				} else if (tab === "activity") {
-					const data = await api.activity.list(1, 250);
+					const data = await api.activity.list(1, 100000);
 					if (!cancelled) setLogs(data.logs);
 				}
 			} catch (err: any) {
@@ -451,39 +538,6 @@ export default function Reports() {
 				r.dispatcher_name,
 				r.remarks || "",
 			]);
-		} else if (tab === "requests") {
-			filename = `dispatch_requests_${new Date().toISOString().slice(0, 10)}`;
-			title = "Dispatch requests";
-			headers = [
-				"Date",
-				"Product",
-				"SKU",
-				"Grade",
-				"Lot",
-				"Bags",
-				"Client",
-				"Driver",
-				"Vehicle",
-				"Container",
-				"Raised By",
-				"Status",
-				"Approver Remarks",
-			];
-			rows = filteredRequests.map((r) => [
-				formatDateTime(r.created_at),
-				r.product_name,
-				r.product_sku,
-				r.grade_name || r.product_grade || "",
-				r.batch_number,
-				r.quantity,
-				r.client_name || "",
-				r.driver_name || "",
-				r.vehicle_number || "",
-				r.container_number || "",
-				r.raised_by_name,
-				r.status,
-				r.admin_remarks || "",
-			]);
 		} else if (tab === "inventory") {
 			filename = `inventory_report_${new Date().toISOString().slice(0, 10)}`;
 			title = "Inventory report";
@@ -554,11 +608,88 @@ export default function Reports() {
 		else downloadCsv(`${filename}.csv`, headers, rows);
 	};
 
-	const showFilters = ["qc", "dispatch", "requests", "batches"].includes(tab);
+	/** Overview export: one file containing every report section. */
+	const handleOverallExport = async () => {
+		setOverallExporting(true);
+		setError("");
+		try {
+			const [qc, dispatch, requests, inventory, batches, activity] =
+				await Promise.all([
+					api.reports.qc(),
+					api.reports.dispatch(),
+					api.reports.dispatchRequests(),
+					api.reports.inventory(),
+					api.reports.batches(),
+					api.activity.list(1, 100000),
+				]);
+			const sections: ReportSection[] = [
+				{
+					title: "QC Reports & Logs",
+					headers: ["Date", "Product", "SKU", "Batch", "Tester", "Result", "Remarks"],
+					rows: qc.map((r: any) => [
+						formatDateTime(r.created_at), r.product_name, r.product_sku,
+						r.batch_number, r.tester_name, r.result, r.remarks || "",
+					]),
+				},
+				{
+					title: "Dispatch Reports & Logs",
+					headers: ["Date", "Party", "Product", "SKU", "Grade", "Lot", "Bags", "Container", "Vehicle", "Dispatched By", "Remarks"],
+					rows: dispatch.map((r: any) => [
+						formatDateTime(r.created_at), r.client_name || "", r.product_name,
+						r.product_sku, r.grade || "", r.batch_number, r.quantity,
+						r.container_number || "", r.vehicle_number || "", r.dispatcher_name, r.remarks || "",
+					]),
+				},
+				{
+					title: "Dispatch Requests",
+					headers: ["Date", "Product", "SKU", "Grade", "Lot", "Bags", "Client", "Raised By", "Status", "Approver Remarks"],
+					rows: requests.map((r: any) => [
+						formatDateTime(r.created_at), r.product_name, r.product_sku,
+						r.grade_name || r.product_grade || "", r.batch_number, r.quantity,
+						r.client_name || "", r.raised_by_name, r.status, r.admin_remarks || "",
+					]),
+				},
+				{
+					title: "Inventory",
+					headers: ["Product", "SKU", "Grade", "Stock Qty", "Batch Qty", "QC Passed Qty", "Batches"],
+					rows: inventory.map((r: any) => [
+						r.name, r.sku, r.grade || "", r.quantity, r.batch_quantity,
+						r.qc_passed_quantity, r.batch_count,
+					]),
+				},
+				{
+					title: "Batch Reports",
+					headers: ["Created", "Product", "SKU", "Batch", "Quantity", "UOM", "Status", "Mfg Date", "Expiry Date", "Location"],
+					rows: batches.map((r: any) => [
+						formatDateTime(r.created_at), r.product_name, r.product_sku, r.batch_number,
+						r.quantity, r.uom || "", r.status, formatDateOnly(r.manufacturing_date),
+						formatDateOnly(r.expiry_date), r.storage_location || "",
+					]),
+				},
+				{
+					title: "Activity Logs",
+					headers: ["Time", "User", "Role", "Action", "Description"],
+					rows: activity.logs.map((r: any) => [
+						formatDateTime(r.created_at), r.user_name || "", r.user_role || "",
+						r.action, r.description || "",
+					]),
+				},
+			];
+			const filename = `overall_report_${new Date().toISOString().slice(0, 10)}`;
+			if (exportFormat === "PDF")
+				downloadSectionsPdf(`${filename}.pdf`, sections);
+			else downloadSectionsCsv(`${filename}.csv`, sections);
+		} catch (err: any) {
+			setError(err.message || "Could not build the overall report");
+		} finally {
+			setOverallExporting(false);
+		}
+	};
+
+	const showFilters = ["qc", "dispatch", "batches"].includes(tab);
 	const showSearch = [
 		"qc",
 		"dispatch",
-		"requests",
 		"inventory",
 		"batches",
 		"activity",
@@ -610,51 +741,69 @@ export default function Reports() {
 			<div className="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<div className="flex items-center gap-3 mb-1">
-						<div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center">
+						{/* <div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center">
 							<FileBarChart
 								size={20}
 								className="text-brand-600"
 							/>
-						</div>
+						</div> */}
 						<h1 className="text-2xl font-bold text-slate-900">
 							Reports &amp; Audit Logs
 						</h1>
 					</div>
-					<p className="text-base text-slate-500 ml-[52px]">
+					<p className="text-base text-slate-500 ">
 						Comprehensive audit ledgers, QC results, dispatch
 						reports, and inventory exports.
 					</p>
 				</div>
-				{[
-					"qc",
-					"dispatch",
-					"requests",
-					"inventory",
-					"batches",
-					"activity",
-				].includes(tab) && (
-					<div className="flex items-center gap-3">
-						<select
-							aria-label="Report export format"
-							className="input text-base py-2.5 min-w-[170px]"
-							value={exportFormat}
-							onChange={(event) =>
-								setExportFormat(
-									event.target.value as "CSV" | "PDF",
-								)
-							}
-						>
-							<option value="CSV">CSV (Excel-compatible)</option>
-							<option value="PDF">PDF</option>
-						</select>
-						<button
-							onClick={handleExport}
-							className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-base font-medium"
-						>
-							<Download size={18} /> Export {exportFormat}
-						</button>
+				<div className="flex flex-wrap items-center gap-3">
+					<div
+						className="flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1"
+						role="group"
+						aria-label="Report export format"
+					>
+						{(["CSV", "PDF"] as const).map((format) => (
+							<button
+								key={format}
+								type="button"
+								onClick={() => setExportFormat(format)}
+								className={`rounded-lg px-3.5 py-2 text-sm font-bold transition-colors ${
+									exportFormat === format
+										? "bg-white text-brand-700 shadow-sm"
+										: "text-slate-500 hover:text-slate-800"
+								}`}
+							>
+								{format}
+							</button>
+						))}
 					</div>
-				)}
+					<button
+						type="button"
+						onClick={
+							tab === "overview"
+								? () => void handleOverallExport()
+								: handleExport
+						}
+						disabled={overallExporting}
+						className="btn-primary inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold shadow-sm disabled:opacity-60"
+						title={
+							tab === "overview"
+								? "Download one file containing every report section"
+								: `Export ${TABS.find((t) => t.key === tab)?.label}`
+						}
+					>
+						{overallExporting ? (
+							<Loader2 size={16} className="animate-spin" />
+						) : (
+							<Download size={16} />
+						)}
+						{overallExporting
+							? "Preparing…"
+							: tab === "overview"
+								? "Export full report"
+								: `Export ${TABS.find((t) => t.key === tab)?.label}`}
+					</button>
+				</div>
 			</div>
 
 			{/* ── Error Banner ─────────────────────────────────────────────────────── */}
@@ -786,7 +935,7 @@ export default function Reports() {
 								</select>
 							</div>
 						)}
-						{tab === "requests" && (
+						{tab === "dispatch" && (
 							<div className="space-y-1.5">
 								<label className="text-sm font-semibold text-slate-600">
 									Status
@@ -885,7 +1034,7 @@ export default function Reports() {
 								Pending Dispatch Requests
 							</h3>
 							<button
-								onClick={() => setTab("requests")}
+								onClick={() => setTab("dispatch")}
 								className="text-sm text-brand-600 font-semibold hover:underline"
 							>
 								View all
@@ -1374,8 +1523,8 @@ export default function Reports() {
 				</div>
 			)}
 
-			{/* ── Dispatch Requests Tab ────────────────────────────────────────────── */}
-			{!loading && tab === "requests" && (
+			{/* ── Dispatch Requests (shown inside the Dispatch tab) ───────────────── */}
+			{!loading && tab === "dispatch" && (
 				<div className="bg-white rounded-2xl border-2 border-slate-200 shadow-xs overflow-hidden">
 					<div className="p-5 border-b-2 border-slate-100 flex items-center justify-between">
 						<h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
