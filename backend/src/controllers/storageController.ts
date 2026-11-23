@@ -9,6 +9,7 @@ export const listInventory = implementation.listInventory;
 export const createWarehouse = implementation.createWarehouse;
 export const getWarehouse = implementation.getWarehouse;
 export const updateWarehouse = implementation.updateWarehouse;
+export const removeWarehouse = implementation.removeWarehouse;
 export const createRack = implementation.createRack;
 export const updateRack = implementation.updateRack;
 export const removeRack = implementation.removeRack;

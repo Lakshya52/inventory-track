@@ -2,6 +2,12 @@ import { Request, Response } from 'express';
 import { query, withTransaction } from '../config/database';
 import { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { divisionStamp, divisionWhere } from '../utils/division';
+import {
+  buildInventoryResponse,
+  getCached,
+  InventoryAggregate,
+  setCached,
+} from './inventoryShared';
 
 function validName(value: unknown): string { return typeof value === 'string' ? value.trim().slice(0, 120) : ''; }
 function positiveInt(value: unknown, max: number): number { const n = Number(value); return Number.isInteger(n) && n > 0 && n <= max ? n : 0; }
@@ -17,7 +23,9 @@ async function snapshot(req: Request, warehouseId: string) {
   const warehouses = await query<RowDataPacket[]>(`SELECT * FROM warehouses WHERE id = ? AND tenant_id = ?${dv.sql} LIMIT 1`, [warehouseId, tenantId, ...dv.params]);
   if (!warehouses.length) return null;
   const warehouse = warehouses[0];
-  const racks = await query<RowDataPacket[]>(`SELECT * FROM storage_racks WHERE warehouse_id = ? AND tenant_id = ?${dv.sql} ORDER BY rack_code`, [warehouseId, tenantId, ...dv.params]);
+  // Creation order (auto-increment id) — not alphabetical, so Rack10 never
+  // jumps next to Rack1 ahead of Rack2.
+  const racks = await query<RowDataPacket[]>(`SELECT * FROM storage_racks WHERE warehouse_id = ? AND tenant_id = ?${dv.sql} ORDER BY id ASC`, [warehouseId, tenantId, ...dv.params]);
   const locations = await query<RowDataPacket[]>(`SELECT id, location_code FROM shelf_locations WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]);
   const locationCodes = new Map(locations.map(row => [String(row.id), row.location_code]));
   const cellsAll = racks.flatMap(rack => parseJson(rack.cells));
@@ -93,78 +101,90 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
   const dv = divisionWhere(req);
   const dvP = divisionWhere(req, 'p.division_id');
   const dvG = divisionWhere(req, 'g.division_id');
-  const dvS = divisionWhere(req, 's.division_id');
-  const rows = await query<RowDataPacket[]>(
-    `SELECT b.id, b.product_id, b.grade_id, b.bag_quantity_id, b.batch_number, b.parent_batch_number,
-            b.quantity, b.dispatched_quantity, b.recalled_quantity, b.package_quantity, b.uom, b.status,
-            b.shelf_location_id, b.storage_location, b.created_at,
-            p.name AS master_product_name, p.sku AS master_product_sku,
-            p.grade AS product_grade, g.name AS grade_name,
-            q.name AS bag_quantity_name, q.quantity AS bag_quantity,
-            q.unit AS bag_quantity_unit,
-            s.location_code, s.warehouse, s.rack, s.shelf
-     FROM batches b
-     LEFT JOIN products p ON p.id = b.product_id AND p.tenant_id = b.tenant_id${dvP.sql}
-     LEFT JOIN grades g ON g.id = b.grade_id${dvG.sql}
-     LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
-     LEFT JOIN shelf_locations s ON s.id = b.shelf_location_id AND s.tenant_id = b.tenant_id${dvS.sql}
-     WHERE b.tenant_id = ?${dv.sql} AND b.status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED')
-     ORDER BY b.created_at DESC`,
-    [...dvP.params, ...dvG.params, ...dvS.params, tenantId, ...dv.params],
-  );
-  const [rackRows, warehouseRows] = await Promise.all([
-    query<RowDataPacket[]>(`SELECT id, warehouse_id, rack_code, cells FROM storage_racks WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]),
-    query<RowDataPacket[]>(`SELECT id, name FROM warehouses WHERE tenant_id = ?${dv.sql}`, [tenantId, ...dv.params]),
+  const cacheKey = `${tenantId}|${JSON.stringify(dv)}|${JSON.stringify(dvP)}|${JSON.stringify(dvG)}`;
+  const forceRefresh = String(req.query.refresh || '') === '1';
+  type CachedStock = { aggregates: InventoryAggregate[]; occupiedPositions: number };
+  let cached = forceRefresh ? null : getCached<CachedStock>(cacheKey);
+
+  if (!cached) {
+  // Aggregate inside MySQL. The old query streamed every live batch (100k+)
+  // into Node with joins, then grouped it in JS. One GROUP BY returns a handful
+  // of compact rows and keeps the totals correct across the whole warehouse.
+  const [rows, positionRows] = await Promise.all([
+    query<RowDataPacket[]>(
+      `SELECT b.product_id, b.grade_id, b.bag_quantity_id, b.package_quantity, b.uom,
+              SUM(GREATEST(b.quantity - COALESCE(b.dispatched_quantity, 0) - COALESCE(b.recalled_quantity, 0), 0)) AS remaining,
+              p.name AS product_name, p.sku AS product_sku, p.grade AS product_grade,
+              g.name AS grade_name,
+              q.name AS bag_quantity_name, q.quantity AS bag_quantity,
+              q.unit AS bag_quantity_unit
+       FROM batches b
+       LEFT JOIN products p ON p.id = b.product_id AND p.tenant_id = b.tenant_id${dvP.sql}
+       LEFT JOIN grades g ON g.id = b.grade_id${dvG.sql}
+       LEFT JOIN bag_quantities q ON q.id = b.bag_quantity_id
+       WHERE b.tenant_id = ?${dv.sql}
+         AND b.status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED')
+       GROUP BY b.product_id, b.grade_id, b.bag_quantity_id, b.package_quantity, b.uom,
+                p.name, p.sku, p.grade, g.name, q.name, q.quantity, q.unit
+       HAVING SUM(GREATEST(b.quantity - COALESCE(b.dispatched_quantity, 0) - COALESCE(b.recalled_quantity, 0), 0)) > 0`,
+      [...dvP.params, ...dvG.params, tenantId, ...dv.params],
+    ),
+    query<RowDataPacket[]>(
+      `SELECT COUNT(DISTINCT shelf_location_id) AS count
+       FROM batches
+       WHERE tenant_id = ?${dv.sql}
+         AND status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED')
+         AND quantity > COALESCE(dispatched_quantity, 0) + COALESCE(recalled_quantity, 0)`,
+      [tenantId, ...dv.params],
+    ),
   ]);
-  const warehousesById = new Map(warehouseRows.map((row) => [String(row.id), row.name]));
-  const rackByLocation = new Map<string, { rack_id: string; warehouse_id: string; rack_code: string; warehouse_name: string }>();
-  for (const rack of rackRows) {
-    for (const cell of parseJson(rack.cells)) {
-      if (cell.shelf_location_id) rackByLocation.set(String(cell.shelf_location_id), {
-        rack_id: String(rack.id),
-        warehouse_id: String(rack.warehouse_id),
-        rack_code: rack.rack_code,
-        warehouse_name: warehousesById.get(String(rack.warehouse_id)) || '',
-      });
-    }
-  }
-  res.json(rows.map((row) => {
-    const remaining = Math.max(0, Number(row.quantity || 0) - Number(row.dispatched_quantity || 0) - Number(row.recalled_quantity || 0));
-    const rack = rackByLocation.get(String(row.shelf_location_id));
-    return {
-      id: row.id,
-      product_id: row.product_id,
-      batch_number: row.parent_batch_number || row.batch_number,
-      product_name: row.product_name || row.master_product_name || 'Unknown product',
-      product_sku: row.product_sku || row.master_product_sku || null,
-      product_grade: row.product_grade || null,
-      grade_name: row.grade_name || null,
-      package_quantity: row.package_quantity ?? null,
-      bag_quantity_name: row.bag_quantity_name || null,
-      bag_quantity: row.bag_quantity ?? null,
-      bag_quantity_unit: row.bag_quantity_unit || null,
-      quantity: row.quantity,
-      remaining_quantity: remaining,
-      uom: row.uom || 'units',
-      status: row.status,
-      location_code: row.location_code || row.storage_location || null,
-      warehouse: row.warehouse || rack?.warehouse_name || null,
-      rack: row.rack || rack?.rack_code || null,
-      shelf: row.shelf || null,
-      warehouse_id: rack?.warehouse_id || null,
-      rack_id: rack?.rack_id || null,
-      created_at: row.created_at,
-    };
+  const aggregates: InventoryAggregate[] = rows.map((row) => ({
+    product_id: row.product_id,
+    grade_id: row.grade_id,
+    product_name: row.product_name || null,
+    product_sku: row.product_sku || null,
+    product_grade: row.product_grade || null,
+    grade_name: row.grade_name || null,
+    bag_quantity_id: row.bag_quantity_id || null,
+    bag_quantity_name: row.bag_quantity_name || null,
+    bag_quantity: row.bag_quantity ?? null,
+    bag_quantity_unit: row.bag_quantity_unit || null,
+    package_quantity: row.package_quantity ?? null,
+    uom: row.uom || 'units',
+    remaining_quantity: row.remaining,
   }));
+    cached = {
+      aggregates,
+      occupiedPositions: Number(positionRows[0]?.count || 0),
+    };
+    setCached(cacheKey, cached);
+  }
+
+  res.json(buildInventoryResponse(cached.aggregates, {
+    q: String(req.query.q || ''),
+    page: Number(req.query.page),
+    limit: Number(req.query.limit),
+    occupiedPositions: cached.occupiedPositions,
+  }));
+}
+
+/** Storage locations always belong to one concrete division. */
+async function resolveWarehouseDivision(tenantId: string | number, divisionId: unknown): Promise<{ id?: number; error?: string }> {
+  const id = Number(divisionId);
+  if (!divisionId || !Number.isSafeInteger(id) || id < 1) return { error: 'Select a division for this storage location.' };
+  const rows = await query<RowDataPacket[]>('SELECT id FROM divisions WHERE id = ? AND tenant_id = ? AND is_active = 1', [id, tenantId]);
+  if (rows.length === 0) return { error: 'That division was not found or is deactivated.' };
+  return { id: Number(rows[0].id) };
 }
 
 export async function createWarehouse(req: Request, res: Response): Promise<void> {
   const name = validName(req.body.name); const capacity = positiveInt(req.body.capacity, 1_000_000_000);
   if (!name || !capacity) { res.status(400).json({ error: 'Enter a warehouse name and a positive capacity.' }); return; }
-  const dv = divisionWhere(req);
-  const duplicate = await query<RowDataPacket[]>(`SELECT id FROM warehouses WHERE tenant_id = ? AND LOWER(name) = LOWER(?)${dv.sql} LIMIT 1`, [req.user!.tenantId, name, ...dv.params]);
-  if (duplicate.length) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
-  const result = await query<any>('INSERT INTO warehouses (tenant_id, name, capacity, is_active, division_id) VALUES (?, ?, ?, 1, ?)', [req.user!.tenantId, name, capacity, divisionStamp(req)]);
+  const division = await resolveWarehouseDivision(req.user!.tenantId, req.body.division_id);
+  if (division.error) { res.status(400).json({ error: division.error }); return; }
+  const duplicate = await query<RowDataPacket[]>('SELECT id FROM warehouses WHERE tenant_id = ? AND division_id = ? AND LOWER(name) = LOWER(?) LIMIT 1', [req.user!.tenantId, division.id, name]);
+  if (duplicate.length) { res.status(409).json({ error: 'A storage location with that name already exists in this division.' }); return; }
+  const result = await query<any>('INSERT INTO warehouses (tenant_id, name, capacity, is_active, division_id) VALUES (?, ?, ?, 1, ?)', [req.user!.tenantId, name, capacity, division.id]);
   res.status(201).json(await snapshot(req, String(result.insertId)));
 }
 
@@ -184,9 +204,11 @@ export async function updateWarehouse(req: Request, res: Response): Promise<void
   const positions = (current.racks || []).reduce((sum: number, rack: any) => sum + (rack.cells || []).length, 0);
   if (capacity < positions) { res.status(409).json({ error: `Capacity cannot be below the ${positions} storage positions already configured.` }); return; }
   if (capacity < Number(current.occupied_capacity)) { res.status(409).json({ error: `Capacity cannot be below the ${current.occupied_capacity} units currently stored.` }); return; }
-  const duplicate = await query<RowDataPacket[]>(`SELECT id FROM warehouses WHERE tenant_id = ? AND id <> ? AND LOWER(name) = LOWER(?)${dv.sql} LIMIT 1`, [req.user!.tenantId, req.params.id, name, ...dv.params]);
-  if (duplicate.length) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
-  await query(`UPDATE warehouses SET name = ?, capacity = ? WHERE id = ? AND tenant_id = ?${dv.sql}`, [name, capacity, req.params.id, req.user!.tenantId, ...dv.params]);
+  const division = await resolveWarehouseDivision(req.user!.tenantId, req.body.division_id);
+  if (division.error) { res.status(400).json({ error: division.error }); return; }
+  const duplicate = await query<RowDataPacket[]>('SELECT id FROM warehouses WHERE tenant_id = ? AND id <> ? AND division_id = ? AND LOWER(name) = LOWER(?) LIMIT 1', [req.user!.tenantId, req.params.id, division.id, name]);
+  if (duplicate.length) { res.status(409).json({ error: 'A storage location with that name already exists in this division.' }); return; }
+  await query(`UPDATE warehouses SET name = ?, capacity = ?, division_id = ? WHERE id = ? AND tenant_id = ?${dv.sql}`, [name, capacity, division.id, req.params.id, req.user!.tenantId, ...dv.params]);
   res.json(await snapshot(req, req.params.id));
 }
 
@@ -301,6 +323,31 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
 
   const updated = await snapshot(req, req.params.id);
   res.json(updated?.racks.find((rack: any) => String(rack.id) === String(req.params.rackId)));
+}
+
+export async function removeWarehouse(req: Request, res: Response): Promise<void> {
+  const dv = divisionWhere(req);
+  const rows = await query<RowDataPacket[]>(`SELECT id FROM warehouses WHERE id = ? AND tenant_id = ?${dv.sql} LIMIT 1`, [req.params.id, req.user!.tenantId, ...dv.params]);
+  if (!rows.length) { res.status(404).json({ error: 'Storage location not found.' }); return; }
+  const racks = await query<RowDataPacket[]>(`SELECT id, cells FROM storage_racks WHERE tenant_id = ? AND warehouse_id = ?${dv.sql}`, [req.user!.tenantId, req.params.id, ...dv.params]);
+  const ids = racks.flatMap(rack => parseJson(rack.cells).map(cell => String(cell.shelf_location_id)));
+  if (ids.length) {
+    const marks = ids.map(() => '?').join(',');
+    // Refuse to remove a godown that still holds stock — removing it would
+    // orphan those batches. Dispatched/cancelled batches do not count as stock.
+    const occupied = await query<RowDataPacket[]>(`SELECT id FROM batches WHERE tenant_id = ?${dv.sql} AND shelf_location_id IN (${marks}) AND quantity > COALESCE(dispatched_quantity, 0) + COALESCE(recalled_quantity, 0) AND status NOT IN ('DISPATCHED', 'CANCELLED', 'REJECTED') LIMIT 1`, [req.user!.tenantId, ...dv.params, ...ids]);
+    if (occupied.length) { res.status(409).json({ error: 'This storage location contains stock. Move or dispatch the stock before deleting it.' }); return; }
+  }
+  await withTransaction(async conn => {
+    const dv = divisionWhere(req);
+    if (ids.length) {
+      const marks = ids.map(() => '?').join(',');
+      await conn.execute(`DELETE FROM shelf_locations WHERE tenant_id = ?${dv.sql} AND id IN (${marks})`, [req.user!.tenantId, ...dv.params, ...ids]);
+    }
+    await conn.execute(`DELETE FROM storage_racks WHERE tenant_id = ? AND warehouse_id = ?${dv.sql}`, [req.user!.tenantId, req.params.id, ...dv.params]);
+    await conn.execute(`DELETE FROM warehouses WHERE id = ? AND tenant_id = ?${dv.sql}`, [req.params.id, req.user!.tenantId, ...dv.params]);
+  });
+  res.json({ id: req.params.id, deleted: true });
 }
 
 export async function removeRack(req: Request, res: Response): Promise<void> {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '../middleware/auth';
-import { createRack, createWarehouse, getWarehouse, listInventory, listWarehouses, listWarehouseRacks, removeRack, updateRack, updateWarehouse } from '../controllers/storageController';
+import { createRack, createWarehouse, getWarehouse, listInventory, listWarehouses, listWarehouseRacks, removeRack, removeWarehouse, updateRack, updateWarehouse } from '../controllers/storageController';
 
 const router = Router();
 router.use(authenticate);
@@ -9,6 +9,7 @@ router.get('/inventory', listInventory);
 router.post('/', authorize('ADMIN', 'QC'), createWarehouse);
 router.get('/:id', listWarehouseRacks);
 router.put('/:id', authorize('ADMIN', 'QC'), updateWarehouse);
+router.delete('/:id', authorize('ADMIN', 'QC'), removeWarehouse);
 router.post('/:id/racks', authorize('ADMIN', 'QC'), createRack);
 router.put('/:id/racks/:rackId', authorize('ADMIN', 'QC'), updateRack);
 router.delete('/:id/racks/:rackId', authorize('ADMIN', 'QC'), removeRack);

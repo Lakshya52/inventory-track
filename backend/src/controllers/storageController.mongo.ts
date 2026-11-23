@@ -1,6 +1,12 @@
 import { Request, Response } from 'express';
 import { getContext, isValidId, withTransaction } from '../config/database';
 import { divisionFilter, divisionStamp } from '../utils/division';
+import {
+  buildInventoryResponse,
+  getCached,
+  InventoryAggregate,
+  setCached,
+} from './inventoryShared';
 
 function validName(value: unknown): string { return typeof value === 'string' ? value.trim().slice(0, 120) : ''; }
 function positiveInt(value: unknown, max: number): number { const n = Number(value); return Number.isInteger(n) && n > 0 && n <= max ? n : 0; }
@@ -15,7 +21,9 @@ async function warehouseSnapshot(req: Request, warehouseId: string) {
   const ctx = await getContext();
   const warehouse = await ctx.findOne('warehouses', { id: warehouseId, tenant_id: tenantId, ...df });
   if (!warehouse) return null;
-  const racks = await ctx.find('storage_racks', { tenant_id: tenantId, warehouse_id: warehouseId, ...df }, { sort: { rack_code: 1 } });
+  // Creation order (ObjectId is time-ordered) — not alphabetical, so Rack10
+  // never jumps next to Rack1 ahead of Rack2.
+  const racks = await ctx.find('storage_racks', { tenant_id: tenantId, warehouse_id: warehouseId, ...df }, { sort: { _id: 1 } });
   const locationIds = racks.flatMap((rack: any) => rack.cells || []).map((cell: any) => cell.shelf_location_id).filter(Boolean);
   // Load-test data puts thousands of bags in each position. Aggregate counts
   // and a bounded sample inside MongoDB instead of shipping every batch here.
@@ -126,87 +134,144 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
   const tenantId = req.user!.tenantId;
   const df = divisionFilter(req);
   const ctx = await getContext();
-  // A factory month holds >100k unit batches. Never ship the whole table —
-  // the UI only renders a slice, and an unbounded find would block the API.
-  const limitRaw = Number(req.query.limit);
-  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 2000) : 500;
-  const batches = await ctx.find('batches', {
-    tenant_id: tenantId,
-    status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
-    ...df,
-  }, {
-    sort: { _id: -1 }, // natural index order — no blocking in-memory sort
-    limit,
-    projection: {
-      _id: 1, product_id: 1, grade_id: 1, batch_number: 1, parent_batch_number: 1,
-      product_name: 1, product_sku: 1, bag_quantity_id: 1, quantity: 1,
-      dispatched_quantity: 1, recalled_quantity: 1, uom: 1, status: 1,
-      shelf_location_id: 1, storage_location: 1, created_at: 1,
+  const cacheKey = `${tenantId}|${JSON.stringify(df)}`;
+  const forceRefresh = String(req.query.refresh || '') === '1';
+  let aggregates = forceRefresh ? null : getCached<InventoryAggregate[]>(cacheKey);
+
+  if (!aggregates) {
+  // Do the heavy work inside MongoDB. The previous version shipped up to 500
+  // raw batches PLUS six complete master collections (10k products, 4k shelf
+  // locations...) and grouped them in the browser — slow and, because of the
+  // 500-row cap, it only ever counted the most recent batches. One grouped
+  // pass over every live batch fixes both problems.
+  const groups = await ctx.aggregate('batches', [
+    {
+      $match: {
+        tenant_id: tenantId,
+        status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
+        ...df,
+      },
     },
-  });
-  const [products, grades, bagQuantities, locations, racks, warehouses] = await Promise.all([
-    ctx.find('products', { tenant_id: tenantId, ...df }),
-    ctx.find('grades', { ...df }),
-    ctx.find('bag_quantities', {}),
-    ctx.find('shelf_locations', { tenant_id: tenantId, ...df }),
-    ctx.find('storage_racks', { tenant_id: tenantId, ...df }),
-    ctx.find('warehouses', { tenant_id: tenantId, ...df }),
+    {
+      $addFields: {
+        remaining: {
+          $max: [{
+            $subtract: [
+              {
+                $subtract: [
+                  { $ifNull: ['$quantity', 0] },
+                  { $ifNull: ['$dispatched_quantity', 0] },
+                ],
+              },
+              { $ifNull: ['$recalled_quantity', 0] },
+            ],
+          }, 0],
+        },
+      },
+    },
+    { $match: { remaining: { $gt: 0 } } },
+    {
+      $group: {
+        _id: {
+          product_id: { $ifNull: ['$product_id', ''] },
+          grade_id: { $ifNull: ['$grade_id', ''] },
+          bag_quantity_id: { $ifNull: ['$bag_quantity_id', ''] },
+          package_quantity: { $ifNull: ['$package_quantity', ''] },
+          uom: { $ifNull: ['$uom', ''] },
+        },
+        count: { $sum: '$remaining' },
+        totalContent: {
+          $sum: {
+            $multiply: [
+              '$remaining',
+              {
+                $cond: [
+                  { $gt: [{ $ifNull: ['$package_quantity', 0] }, 0] },
+                  { $ifNull: ['$package_quantity', 1] },
+                  1,
+                ],
+              },
+            ],
+          },
+        },
+        product_name: { $first: '$product_name' },
+        product_sku: { $first: '$product_sku' },
+        bag_quantity_id: { $first: '$bag_quantity_id' },
+        package_quantity: { $first: '$package_quantity' },
+        uom: { $first: '$uom' },
+        locations: { $addToSet: '$shelf_location_id' },
+      },
+    },
+  ]);
+
+  // Resolve only the masters actually referenced by the grouped rows, with a
+  // small projection, instead of loading every product/grade/bag in the tenant.
+  const productIds = [...new Set(groups.map((row: any) => String(row._id.product_id)).filter(Boolean))];
+  const gradeIds = [...new Set(groups.map((row: any) => String(row._id.grade_id)).filter(Boolean))];
+  const bagIds = [...new Set(groups.map((row: any) => String(row.bag_quantity_id)).filter(Boolean))];
+  const [products, grades, bags] = await Promise.all([
+    productIds.length
+      ? ctx.find('products', { tenant_id: tenantId, id: { $in: productIds }, ...df }, { projection: { _id: 0, id: 1, name: 1, sku: 1, grade: 1 } })
+      : [],
+    gradeIds.length
+      ? ctx.find('grades', { id: { $in: gradeIds }, ...df }, { projection: { _id: 0, id: 1, name: 1 } })
+      : [],
+    bagIds.length
+      ? ctx.find('bag_quantities', { id: { $in: bagIds } }, { projection: { _id: 0, id: 1, name: 1, quantity: 1, unit: 1 } })
+      : [],
   ]);
   const productsById = new Map(products.map((row: any) => [String(row.id), row]));
   const gradesById = new Map(grades.map((row: any) => [String(row.id), row]));
-  const bagQuantitiesById = new Map(bagQuantities.map((row: any) => [String(row.id), row]));
-  const locationsById = new Map(locations.map((row: any) => [String(row.id), row]));
-  const warehousesById = new Map(warehouses.map((row: any) => [String(row.id), row.name]));
-  const rackByLocation = new Map<string, { rack_id: string; warehouse_id: string; rack_code: string; warehouse_name: string }>();
-  for (const rack of racks as any[]) {
-    for (const cell of rack.cells || []) {
-      if (cell.shelf_location_id) rackByLocation.set(String(cell.shelf_location_id), {
-        rack_id: String(rack.id),
-        warehouse_id: String(rack.warehouse_id),
-        rack_code: rack.rack_code,
-        warehouse_name: warehousesById.get(String(rack.warehouse_id)) || '',
-      });
-    }
-  }
-  res.json(batches.map((batch: any) => {
-    const product = productsById.get(String(batch.product_id));
-    const location = locationsById.get(String(batch.shelf_location_id));
-    const rack = rackByLocation.get(String(batch.shelf_location_id));
-    const bagQuantity = bagQuantitiesById.get(String(batch.bag_quantity_id));
+  const bagsById = new Map(bags.map((row: any) => [String(row.id), row]));
+
+  aggregates = groups.map((row: any) => {
+    const product = productsById.get(String(row._id.product_id));
+    const bag = bagsById.get(String(row.bag_quantity_id));
     return {
-      id: batch.id,
-      product_id: batch.product_id,
-      batch_number: batch.parent_batch_number || batch.batch_number,
-      product_name: batch.product_name || product?.name || 'Unknown product',
-      product_sku: batch.product_sku || product?.sku || null,
+      product_id: row._id.product_id,
+      grade_id: row._id.grade_id,
+      product_name: row.product_name || product?.name || null,
+      product_sku: row.product_sku || product?.sku || null,
       product_grade: product?.grade || null,
-      grade_name: gradesById.get(String(batch.grade_id))?.name || null,
-      package_quantity: batch.package_quantity ?? null,
-      bag_quantity_name: bagQuantity?.name ?? null,
-      bag_quantity: bagQuantity?.quantity ?? null,
-      bag_quantity_unit: bagQuantity?.unit ?? null,
-      quantity: batch.quantity,
-      remaining_quantity: Math.max(0, Number(batch.quantity || 0) - Number(batch.dispatched_quantity || 0) - Number(batch.recalled_quantity || 0)),
-      uom: batch.uom || 'units',
-      status: batch.status,
-      location_code: location?.location_code || batch.storage_location || null,
-      warehouse: location?.warehouse || rack?.warehouse_name || null,
-      rack: location?.rack || rack?.rack_code || null,
-      shelf: location?.shelf || null,
-      warehouse_id: rack?.warehouse_id || null,
-      rack_id: rack?.rack_id || null,
-      created_at: batch.created_at,
+      grade_name: gradesById.get(String(row._id.grade_id))?.name || null,
+      bag_quantity_id: row.bag_quantity_id || null,
+      bag_quantity_name: bag?.name || null,
+      bag_quantity: bag?.quantity ?? null,
+      bag_quantity_unit: bag?.unit || null,
+      package_quantity: row.package_quantity ?? null,
+      uom: row.uom || 'units',
+      remaining_quantity: row.count,
+      location_keys: (row.locations || []).map((location: any) => String(location ?? '')),
     };
+  });
+    setCached(cacheKey, aggregates);
+  }
+
+  res.json(buildInventoryResponse(aggregates, {
+    q: String(req.query.q || ''),
+    page: Number(req.query.page),
+    limit: Number(req.query.limit),
   }));
+}
+
+/** Storage locations always belong to one concrete division. */
+async function resolveWarehouseDivision(ctx: any, tenantId: string | number, divisionId: unknown): Promise<{ id?: string; error?: string }> {
+  const id = String(divisionId ?? '').trim();
+  if (!id || !isValidId(id)) return { error: 'Select a division for this storage location.' };
+  const division = await ctx.findOne('divisions', { id, tenant_id: tenantId, is_active: 1 }, { projection: { _id: 0, id: 1 } });
+  if (!division) return { error: 'That division was not found or is deactivated.' };
+  return { id: String(division.id) };
 }
 
 export async function createWarehouse(req: Request, res: Response): Promise<void> {
   const name = validName(req.body.name); const capacity = positiveInt(req.body.capacity, 1_000_000_000);
   if (!name || !capacity) { res.status(400).json({ error: 'Enter a warehouse name and a positive capacity.' }); return; }
   const ctx = await getContext();
-  const existing = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, ...divisionFilter(req), name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
-  if (existing) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
-  const id = await ctx.insert('warehouses', { tenant_id: req.user!.tenantId, name, capacity, is_active: 1, division_id: divisionStamp(req) });
+  const division = await resolveWarehouseDivision(ctx, req.user!.tenantId, req.body.division_id);
+  if (division.error) { res.status(400).json({ error: division.error }); return; }
+  const existing = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, division_id: division.id, name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+  if (existing) { res.status(409).json({ error: 'A storage location with that name already exists in this division.' }); return; }
+  const id = await ctx.insert('warehouses', { tenant_id: req.user!.tenantId, name, capacity, is_active: 1, division_id: division.id });
   res.status(201).json(await warehouseSnapshot(req, id));
 }
 
@@ -225,15 +290,17 @@ export async function updateWarehouse(req: Request, res: Response): Promise<void
   const df = divisionFilter(req);
   const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df });
   if (!warehouse) { res.status(404).json({ error: 'Storage location not found.' }); return; }
-  const duplicates = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, id: { $ne: req.params.id }, ...df, name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
-  if (duplicates) { res.status(409).json({ error: 'A storage location with that name already exists.' }); return; }
+  const division = await resolveWarehouseDivision(ctx, req.user!.tenantId, req.body.division_id);
+  if (division.error) { res.status(400).json({ error: division.error }); return; }
+  const duplicates = await ctx.findOne('warehouses', { tenant_id: req.user!.tenantId, id: { $ne: req.params.id }, division_id: division.id, name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+  if (duplicates) { res.status(409).json({ error: 'A storage location with that name already exists in this division.' }); return; }
   const snapshot = await warehouseSnapshot(req, req.params.id);
   const occupied = Number(snapshot?.occupied_capacity || 0);
   const positions = (snapshot?.racks || []).reduce((sum: number, rack: any) => sum + (rack.cells || []).length, 0);
   if (capacity < positions) { res.status(409).json({ error: `Capacity cannot be below the ${positions} storage positions already configured.` }); return; }
   if (capacity < occupied) { res.status(409).json({ error: `Capacity cannot be below the ${occupied} units currently stored.` }); return; }
-  await ctx.updateOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df }, { $set: { name, capacity } });
-  res.json(await warehouseSnapshot(req, req.params.id));
+  await ctx.updateOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df }, { $set: { name, capacity, division_id: division.id } });
+  res.json(await warehouseSnapshot(req, req.params.id) ?? { id: req.params.id, name, capacity, division_id: division.id });
 }
 
 export async function listWarehouseRacks(req: Request, res: Response): Promise<void> { await getWarehouse(req, res); }
@@ -341,6 +408,41 @@ export async function updateRack(req: Request, res: Response): Promise<void> {
 
   const updated = await warehouseSnapshot(req, String(warehouse.id));
   res.json(updated?.racks.find((item: any) => String(item.id) === String(rack.id)) || { ...rack, rack_code: rackCode, rows, columns, cells });
+}
+
+export async function removeWarehouse(req: Request, res: Response): Promise<void> {
+  if (!isValidId(req.params.id)) { res.status(400).json({ error: 'Invalid storage location.' }); return; }
+  const ctx = await getContext();
+  const df = divisionFilter(req);
+  const warehouse = await ctx.findOne('warehouses', { id: req.params.id, tenant_id: req.user!.tenantId, ...df });
+  if (!warehouse) { res.status(404).json({ error: 'Storage location not found.' }); return; }
+
+  const racks = await ctx.find('storage_racks', { tenant_id: req.user!.tenantId, warehouse_id: warehouse.id, ...df });
+  const rackIds = racks.map((rack: any) => rack.id);
+  const locationIds = racks.flatMap((rack: any) => (rack.cells || []).map((cell: any) => cell.shelf_location_id).filter(Boolean));
+  // Refuse to remove a godown that still holds stock — removing it would orphan
+  // those batches. Dispatched/cancelled batches do not count as live stock.
+  const candidateBatches = locationIds.length
+    ? await ctx.find('batches', {
+        tenant_id: req.user!.tenantId,
+        shelf_location_id: { $in: locationIds },
+        status: { $nin: ['DISPATCHED', 'CANCELLED', 'REJECTED'] },
+        ...df,
+      })
+    : [];
+  const occupied = candidateBatches.some((batch: any) =>
+    Number(batch.quantity || 0) > Number(batch.dispatched_quantity || 0) + Number(batch.recalled_quantity || 0));
+  if (occupied) {
+    res.status(409).json({ error: 'This storage location contains stock. Move or dispatch the stock before deleting it.' });
+    return;
+  }
+
+  await withTransaction(async (tx) => {
+    if (locationIds.length) await tx.deleteMany('shelf_locations', { tenant_id: req.user!.tenantId, id: { $in: locationIds }, ...df });
+    if (rackIds.length) await tx.deleteMany('storage_racks', { tenant_id: req.user!.tenantId, id: { $in: rackIds }, ...df });
+    await tx.deleteOne('warehouses', { id: warehouse.id, tenant_id: req.user!.tenantId, ...df });
+  });
+  res.json({ id: warehouse.id, deleted: true });
 }
 
 export async function removeRack(req: Request, res: Response): Promise<void> {

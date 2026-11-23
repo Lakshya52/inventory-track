@@ -11,13 +11,14 @@ import {
 	Plus,
 	RefreshCw,
 	Search,
+	Trash2,
 	Warehouse,
 	X,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
-import DivisionContextNote from "../components/DivisionContextNote";
 import { api } from "../services/api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import type { Division, EntityId } from "../types";
 
 type StorageRack = {
 	id: string;
@@ -30,6 +31,7 @@ type WarehouseRow = {
 	name: string;
 	capacity: number;
 	occupied_capacity: number;
+	division_id?: EntityId | null;
 	racks: StorageRack[];
 };
 
@@ -271,17 +273,19 @@ function Dialog({
 function WarehouseForm({
 	title,
 	initial,
+	divisions,
 	saving,
 	onCancel,
 	onSubmit,
 }: {
 	title: string;
-	initial: { name: string; capacity: string };
+	initial: { name: string; capacity: string; division_id: string };
+	divisions: Division[];
 	saving: boolean;
 	onCancel: () => void;
 	onSubmit: (
 		event: FormEvent<HTMLFormElement>,
-		values: { name: string; capacity: string },
+		values: { name: string; capacity: string; division_id: string },
 	) => Promise<void>;
 }) {
 	const [values, setValues] = useState(initial);
@@ -291,7 +295,31 @@ function WarehouseForm({
 				onSubmit={(event) => void onSubmit(event, values)}
 				className="space-y-4"
 			>
-				<DivisionContextNote />
+				<Field label="Division">
+					<select
+						className="input"
+						value={values.division_id}
+						onChange={(event) =>
+							setValues((current) => ({
+								...current,
+								division_id: event.target.value,
+							}))
+						}
+						required
+					>
+						<option value="">Select a division…</option>
+						{divisions
+							.filter((division) => Number(division.is_active) === 1)
+							.map((division) => (
+								<option key={division.id} value={String(division.id)}>
+									{division.name}
+								</option>
+							))}
+					</select>
+					<p className="mt-1.5 text-xs text-slate-500">
+						Storage locations belong to a single division. Select one before saving.
+					</p>
+				</Field>
 				<Field label="Location name">
 					<input
 						className="input"
@@ -353,8 +381,21 @@ function WarehouseForm({
 
 export default function Storage() {
 	const navigate = useNavigate();
-	const { user } = useAuth();
+	const { user, adminDivisionId } = useAuth();
 	const canManage = user?.role === "ADMIN" || user?.role === "QC";
+	const [divisions, setDivisions] = useState<Division[]>([]);
+	useEffect(() => {
+		let active = true;
+		api
+			.divisions.list()
+			.then((list) => { if (active) setDivisions(list); })
+			.catch(() => { if (active) setDivisions([]); });
+		return () => { active = false; };
+	}, []);
+	const divisionName = (id?: EntityId | null) =>
+		id == null
+			? "All divisions"
+			: divisions.find((division) => String(division.id) === String(id))?.name ?? "Division";
 	const {
 		warehouses,
 		loading,
@@ -368,6 +409,10 @@ export default function Storage() {
 	const [saving, setSaving] = useState(false);
 	const [warehouseDialog, setWarehouseDialog] = useState(false);
 	const [editing, setEditing] = useState<WarehouseRow | null>(null);
+	const [warehouseToDelete, setWarehouseToDelete] =
+		useState<WarehouseRow | null>(null);
+	const [deleting, setDeleting] = useState(false);
+	const [deleteError, setDeleteError] = useState("");
 	const debouncedSearch = useDebouncedValue(search, 250);
 	const visible = useMemo(
 		() =>
@@ -393,7 +438,7 @@ export default function Storage() {
 
 	const saveWarehouse = async (
 		event: FormEvent<HTMLFormElement>,
-		values: { name: string; capacity: string },
+		values: { name: string; capacity: string; division_id: string },
 	) => {
 		event.preventDefault();
 		setSaving(true);
@@ -403,6 +448,7 @@ export default function Storage() {
 			const payload = {
 				name: values.name.trim(),
 				capacity: Number(values.capacity),
+				division_id: values.division_id,
 			};
 			if (editing) await api.storage.update(editing.id, payload);
 			else await api.storage.create(payload);
@@ -418,6 +464,25 @@ export default function Storage() {
 			setError(err.message || "Could not save this storage location.");
 		} finally {
 			setSaving(false);
+		}
+	};
+
+	const removeWarehouse = async (warehouse: WarehouseRow) => {
+		setDeleting(true);
+		setDeleteError("");
+		setError("");
+		setMessage("");
+		try {
+			await api.storage.remove(warehouse.id);
+			await reload();
+			setWarehouseToDelete(null);
+			setMessage(`"${warehouse.name}" was deleted.`);
+		} catch (err: any) {
+			setDeleteError(
+				err.message || "Could not delete this storage location.",
+			);
+		} finally {
+			setDeleting(false);
 		}
 	};
 
@@ -479,6 +544,16 @@ export default function Storage() {
 					)}
 				</div>
 			</header>
+			{error && (
+				<div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+					{error}
+				</div>
+			)}
+			{message && (
+				<div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+					{message}
+				</div>
+			)}
 			<section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
 				<Metric
 					icon={<Warehouse size={20} />}
@@ -552,6 +627,9 @@ export default function Storage() {
 											{totalRackPositions(warehouse)}{" "}
 											positions
 										</p>
+										<span className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-[11px] font-bold text-violet-700">
+											<Building2 size={11} /> {divisionName(warehouse.division_id)}
+										</span>
 									</div>
 								</div>
 								<span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
@@ -612,15 +690,27 @@ export default function Storage() {
 										View location <ChevronRight size={16} />
 									</button>
 									{canManage && (
-										<button
-											className="btn-secondary"
-											onClick={() => {
-												setEditing(warehouse);
-												setWarehouseDialog(true);
-											}}
-										>
-											Edit
-										</button>
+										<>
+											<button
+												className="btn-secondary"
+												onClick={() => {
+													setEditing(warehouse);
+													setWarehouseDialog(true);
+												}}
+											>
+												Edit
+											</button>
+											<button
+												className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-sm font-bold text-rose-600 transition hover:bg-rose-100"
+												title="Delete storage location"
+												onClick={() => {
+													setDeleteError("");
+													setWarehouseToDelete(warehouse);
+												}}
+											>
+												<Trash2 size={15} /> Delete
+											</button>
+										</>
 									)}
 								</div>
 							</div>
@@ -641,9 +731,18 @@ export default function Storage() {
 							? {
 									name: editing.name,
 									capacity: String(editing.capacity),
+									division_id: String(editing.division_id ?? ""),
 								}
-							: { name: "", capacity: "" }
+							: {
+									name: "",
+									capacity: "",
+									division_id:
+										adminDivisionId === "all"
+											? ""
+											: String(adminDivisionId),
+								}
 					}
+					divisions={divisions}
 					saving={saving}
 					onCancel={() => {
 						setWarehouseDialog(false);
@@ -651,6 +750,53 @@ export default function Storage() {
 					}}
 					onSubmit={saveWarehouse}
 				/>
+			)}
+			{warehouseToDelete && (
+				<Dialog
+					title="Delete storage location"
+					onClose={() => {
+						if (!deleting) setWarehouseToDelete(null);
+					}}
+				>
+					<div className="space-y-4">
+						<p className="text-sm leading-relaxed text-slate-600">
+							Delete <strong>{warehouseToDelete.name}</strong> and
+							all of its racks and shelf positions? This cannot be
+							undone. A location that still holds stock cannot be
+							deleted.
+						</p>
+						{deleteError && (
+							<p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+								{deleteError}
+							</p>
+						)}
+						<div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+							<button
+								type="button"
+								className="rounded-xl px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100"
+								disabled={deleting}
+								onClick={() => setWarehouseToDelete(null)}
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-wait disabled:opacity-60"
+								disabled={deleting}
+								onClick={() =>
+									void removeWarehouse(warehouseToDelete)
+								}
+							>
+								{deleting ? (
+									<Loader2 size={15} className="animate-spin" />
+								) : (
+									<Trash2 size={15} />
+								)}
+								{deleting ? "Deleting…" : "Delete location"}
+							</button>
+						</div>
+					</div>
+				</Dialog>
 			)}
 		{/* </StoragePageFrame> */}
 		</div>

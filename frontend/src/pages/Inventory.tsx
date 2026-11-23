@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
 	Boxes,
 	Building2,
+	ChevronLeft,
+	ChevronRight,
 	MapPin,
 	Package,
 	RefreshCw,
@@ -86,21 +88,37 @@ function Metric({
 	);
 }
 
+const PAGE_SIZE = 25;
+
 export default function Inventory() {
 	const { user } = useAuth();
 	const navigate = useNavigate();
-	const [inventory, setInventory] = useState<InventoryRecord[]>([]);
+	const [response, setResponse] = useState<Awaited<
+		ReturnType<typeof api.storage.inventory>
+	> | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 	const [search, setSearch] = useState("");
+	const [page, setPage] = useState(1);
 	const debouncedSearch = useDebouncedValue(search, 250);
 	const canManage = user?.role === "ADMIN" || user?.role === "QC";
 
-	const load = useCallback(async () => {
+	// Grouping, searching and pagination all happen in the database now. The
+	// browser only receives the rows it is about to render plus global KPIs.
+	const load = useCallback(async (force = false) => {
 		setLoading(true);
 		setError("");
 		try {
-			setInventory(await api.storage.inventory());
+			const result = await api.storage.inventory({
+				q: debouncedSearch,
+				page,
+				limit: PAGE_SIZE,
+				refresh: force,
+			});
+			if (result.page > result.pages && result.pages > 0) {
+				setPage(result.pages);
+			}
+			setResponse(result);
 		} catch (err: unknown) {
 			setError(
 				err instanceof Error
@@ -110,137 +128,17 @@ export default function Inventory() {
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [debouncedSearch, page]);
 	useEffect(() => {
 		void load();
 	}, [load]);
 
-	const rows = useMemo<StockRow[]>(
-		() => {
-			const grouped = new Map<string, StockRow>();
-			for (const item of inventory) {
-				const quantity = Number(
-					item.remaining_quantity ?? item.quantity ?? 0,
-				);
-				if (!Number.isFinite(quantity) || quantity <= 0) continue;
+	const rows = (response?.rows ?? []) as StockRow[];
+	const total = response?.total ?? 0;
+	const pages = response?.pages ?? 1;
+	const summary = response?.summary;
 
-				const product = item.product_name || "Unknown product";
-				const grade =
-					item.grade_name || item.product_grade || "Standard Grade";
-				const productKey = String(
-					item.product_id ?? (item.product_sku || product),
-				);
-				const key = JSON.stringify([productKey, grade]);
-				let row = grouped.get(key);
-				if (!row) {
-					row = {
-						key,
-						productKey,
-						grade,
-						product,
-						sku: item.product_sku || "—",
-						packages: [],
-					};
-					grouped.set(key, row);
-				}
-
-				const packageSize = Number(
-					item.package_quantity ?? item.bag_quantity ?? 0,
-				);
-				const hasPackageSize =
-					Number.isFinite(packageSize) && packageSize > 0;
-				const packageName = item.bag_quantity_name?.trim() || "";
-				const hasPackaging = hasPackageSize || Boolean(packageName);
-				const contentUnit = item.uom?.trim() || "units";
-				const packageUnit =
-					item.package_quantity != null
-						? contentUnit
-						: item.bag_quantity_unit?.trim() || contentUnit;
-				const packageSizeLabel = hasPackageSize
-					? `${packageSize.toLocaleString()} ${packageUnit}`
-					: "";
-				const packageLabel =
-					packageName ||
-					(hasPackageSize
-						? `${packageSizeLabel} pack`
-						: "Packaging not recorded");
-				const detail = hasPackageSize
-					? `${packageSizeLabel} per pack`
-					: hasPackaging
-						? "Package size not recorded"
-						: "Packaging not recorded";
-				const countUnit = hasPackaging ? "packs" : contentUnit;
-				const totalContentUnit = hasPackageSize
-					? packageUnit
-					: hasPackaging
-						? "packs"
-						: contentUnit;
-				const packageKey = JSON.stringify([
-					packageLabel,
-					hasPackageSize ? packageSize : null,
-					packageUnit.toLowerCase(),
-					countUnit.toLowerCase(),
-				]);
-				const stock = row.packages.find(
-					(entry) => entry.key === packageKey,
-				);
-				if (stock) {
-					stock.count += quantity;
-					stock.totalContent +=
-						quantity * (hasPackageSize ? packageSize : 1);
-				} else {
-					row.packages.push({
-						key: packageKey,
-						name: packageLabel,
-						detail,
-						count: quantity,
-						countUnit,
-						totalContent:
-							quantity * (hasPackageSize ? packageSize : 1),
-						contentUnit: totalContentUnit,
-					});
-				}
-			}
-			return [...grouped.values()].sort(
-				(a, b) =>
-					a.grade.localeCompare(b.grade) ||
-					a.product.localeCompare(b.product),
-			);
-		},
-		[inventory],
-	);
-
-	const visibleRows = useMemo(() => {
-		const term = debouncedSearch.trim().toLowerCase();
-		return rows.filter(
-			(row) =>
-				!term ||
-				[row.grade, row.product, row.sku].some((value) =>
-					value.toLowerCase().includes(term),
-				) ||
-				row.packages.some((stock) =>
-					`${stock.name} ${stock.detail}`
-						.toLowerCase()
-						.includes(term),
-				),
-		);
-	}, [rows, debouncedSearch]);
-	const quantitiesByUom = new Map<
-		string,
-		{ uom: string; quantity: number }
-	>();
-	for (const row of rows) {
-		for (const stock of row.packages) {
-			const key = stock.contentUnit.toLowerCase();
-			const existing = quantitiesByUom.get(key);
-			quantitiesByUom.set(key, {
-				uom: existing?.uom ?? stock.contentUnit,
-				quantity:
-					(existing?.quantity ?? 0) + stock.totalContent,
-			});
-		}
-	}
-	const uomEntries = [...quantitiesByUom.values()].map(({ uom, quantity }) => [
+	const uomEntries = (summary?.stockByUom ?? []).map(({ uom, quantity }) => [
 		uom,
 		quantity,
 	] as const);
@@ -261,18 +159,9 @@ export default function Inventory() {
 			: uomEntries.length === 1
 				? "Across all storage locations"
 				: "No stock recorded";
-	const productCount = new Set(rows.map((row) => row.productKey)).size;
-	const occupiedPositions = new Set(
-		inventory
-			.filter(
-				(item) =>
-					Number(item.remaining_quantity ?? item.quantity ?? 0) > 0,
-			)
-			.map(
-				(item) =>
-					`${item.warehouse_id ?? ""}:${item.rack_id ?? ""}:${item.location_code ?? ""}`,
-			),
-	).size;
+	const productCount = summary?.productCount ?? 0;
+	const gradeCount = summary?.gradeCount ?? 0;
+	const occupiedPositions = summary?.occupiedPositions ?? 0;
 
 	return (
 		<div className="mx-auto max-w-7xl space-y-5">
@@ -311,7 +200,7 @@ export default function Inventory() {
 					)}
 					<button
 						className="btn-secondary"
-						onClick={() => void load()}
+						onClick={() => void load(true)}
 						disabled={loading}
 						aria-label="Refresh inventory"
 					>
@@ -345,7 +234,7 @@ export default function Inventory() {
 				/>
 				<Metric
 					label="Product grades"
-					value={rows.length.toLocaleString()}
+					value={gradeCount.toLocaleString()}
 					icon={<MapPin size={20} />}
 				/>
 				<Metric
@@ -375,7 +264,10 @@ export default function Inventory() {
 							className="input h-10 pl-9"
 							placeholder="Search product, grade, packaging, or SKU…"
 							value={search}
-							onChange={(event) => setSearch(event.target.value)}
+							onChange={(event) => {
+								setSearch(event.target.value);
+								setPage(1);
+							}}
 						/>
 					</label>
 				</div>
@@ -383,7 +275,7 @@ export default function Inventory() {
 					<div className="p-12 text-center text-sm text-slate-500">
 						Loading inventory…
 					</div>
-				) : visibleRows.length === 0 ? (
+				) : rows.length === 0 ? (
 					<div className="p-12 text-center">
 						<Package className="mx-auto text-slate-300" size={30} />
 						<p className="mt-3 font-bold text-slate-700">
@@ -405,7 +297,7 @@ export default function Inventory() {
 							<span>Available stock</span>
 						</div>
 						<div className="divide-y divide-slate-100">
-							{visibleRows.map((row) => (
+							{rows.map((row) => (
 								<div
 									key={row.key}
 									className="grid gap-4 px-4 py-4 transition-colors hover:bg-slate-50/70 sm:px-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(220px,1fr)_minmax(150px,0.65fr)] lg:items-center"
@@ -475,9 +367,29 @@ export default function Inventory() {
 						</div>
 					</div>
 				)}
-				<div className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs font-medium text-slate-500">
-					<span>{visibleRows.length} product grades</span>
-					<span>Dispatch users have view-only access</span>
+				<div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-xs font-medium text-slate-500">
+					<span>
+						{total.toLocaleString()} product grades · page {page} of{" "}
+						{pages.toLocaleString()}
+					</span>
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							className="btn-secondary btn-sm"
+							disabled={loading || page <= 1}
+							onClick={() => setPage((current) => Math.max(1, current - 1))}
+						>
+							<ChevronLeft size={13} /> Previous
+						</button>
+						<button
+							type="button"
+							className="btn-secondary btn-sm"
+							disabled={loading || page >= pages}
+							onClick={() => setPage((current) => current + 1)}
+						>
+							Next <ChevronRight size={13} />
+						</button>
+					</div>
 				</div>
 			</section>
 		</div>

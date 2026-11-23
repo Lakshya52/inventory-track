@@ -197,10 +197,23 @@ function Dialog({
 		</div>
 	);
 }
+/** Zero-padding follows the numbers already in use, not the end of this batch. */
+function rackPadLength(start: number, maxExisting: number): number {
+	return Math.max(2, String(start).length, String(maxExisting).length);
+}
+
+function highestRackNumber(racks: StorageRack[]): number {
+	return racks.reduce((max, rack) => {
+		const match = /(\d+)$/.exec(String(rack.rack_code || ""));
+		return match ? Math.max(max, Number(match[1])) : max;
+	}, 0);
+}
+
 function RackForm({
 	warehouse,
 	capacity,
 	otherRackPositions,
+	maxExistingRackNumber,
 	initialRack,
 	isEditing,
 	saving,
@@ -210,6 +223,7 @@ function RackForm({
 	warehouse: string;
 	capacity: number;
 	otherRackPositions: number;
+	maxExistingRackNumber: number;
 	initialRack?: StorageRack | null;
 	isEditing: boolean;
 	saving: boolean;
@@ -230,7 +244,7 @@ function RackForm({
 	const bulk = !isEditing && values.bulk;
 	const count = Math.max(1, Math.min(50, Number(values.count) || 1));
 	const startNumber = Math.max(1, Number(values.startNumber) || 1);
-	const padLength = String(startNumber + count - 1).length;
+	const padLength = rackPadLength(startNumber, maxExistingRackNumber);
 	const firstName = `${values.name.trim()}${String(startNumber).padStart(padLength, "0")}`;
 	const lastName = `${values.name.trim()}${String(startNumber + count - 1).padStart(padLength, "0")}`;
 	const requestedPositions =
@@ -414,6 +428,8 @@ export default function StorageLocation() {
 		reload,
 	} = useStorageData();
 	const [search, setSearch] = useState("");
+	const [page, setPage] = useState(1);
+	const [pageSize, setPageSize] = useState(12);
 	const [saving, setSaving] = useState(false);
 	const [rackDialog, setRackDialog] = useState(false);
 	const [editingRack, setEditingRack] = useState<StorageRack | null>(null);
@@ -433,6 +449,13 @@ export default function StorageLocation() {
 			) || [],
 		[warehouse, debouncedSearch],
 	);
+	const totalPages = Math.max(1, Math.ceil(racks.length / pageSize));
+	const currentPage = Math.min(page, totalPages);
+	const pagedRacks = racks.slice(
+		(currentPage - 1) * pageSize,
+		currentPage * pageSize,
+	);
+	useEffect(() => { setPage(1); }, [debouncedSearch, warehouseId]);
 	const occupied = warehouse ? totalOccupiedPositions(warehouse) : 0;
 	const positions = warehouse ? totalRackPositions(warehouse) : 0;
 	const occupancy = positions ? Math.round((occupied / positions) * 100) : 0;
@@ -460,7 +483,7 @@ export default function StorageLocation() {
 				const start = Number(values.startNumber);
 				if (!Number.isInteger(count) || count < 1 || count > 50) throw new Error("Choose between 1 and 50 racks.");
 				if (!Number.isInteger(start) || start < 1 || start > 9999) throw new Error("Starting number must be between 1 and 9999.");
-				const padLength = String(start + count - 1).length;
+				const padLength = rackPadLength(start, highestRackNumber(warehouse.racks));
 				const names = Array.from({ length: count }, (_, index) => `${values.name.trim()}${String(start + index).padStart(padLength, "0")}`);
 				const existing = new Set(warehouse.racks.map((rack) => rack.rack_code.toLowerCase()));
 				const duplicate = names.find((name) => existing.has(name.toLowerCase()));
@@ -704,12 +727,10 @@ export default function StorageLocation() {
 							)}
 						</div>
 					) : (
-						// this is the location we need to edit for the visuals of the racks and cells
-
-						// multiple racks containing div
+						<>
 						<div className="flex flex-wrap items-start gap-6">
 							{/* single rack here */}
-							{racks.map((rack) => {
+							{pagedRacks.map((rack) => {
 								const rowCount = Number(
 									rack.rows ||
 									rack.rows_count ||
@@ -850,6 +871,40 @@ export default function StorageLocation() {
 				);
 			})}
 		</div>
+						<div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-xs font-semibold text-slate-500">
+							<div className="flex items-center gap-2">
+								<span>Show</span>
+								<select
+									value={pageSize}
+									onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}
+									className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								>
+									{[6, 12, 24, 48].map((size) => (
+										<option key={size} value={size}>{size}</option>
+									))}
+								</select>
+								<span>per page · {racks.length} racks · page {currentPage} of {totalPages}</span>
+							</div>
+							<div className="flex items-center gap-2">
+								<button
+									type="button"
+									disabled={currentPage <= 1}
+									onClick={() => setPage((current) => Math.max(1, current - 1))}
+									className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+								>
+									Previous
+								</button>
+								<button
+									type="button"
+									disabled={currentPage >= totalPages}
+									onClick={() => setPage((current) => current + 1)}
+									className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+								>
+									Next
+								</button>
+							</div>
+						</div>
+						</>
 					)}
 					{rackDialog && canManage && (
 						<RackForm
@@ -860,6 +915,7 @@ export default function StorageLocation() {
 								positions -
 								(editingRack?.total_cells || 0)
 							}
+							maxExistingRackNumber={highestRackNumber(warehouse.racks)}
 							initialRack={editingRack}
 							isEditing={Boolean(editingRack)}
 							saving={saving}
