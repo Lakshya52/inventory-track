@@ -79,6 +79,25 @@ export async function update(req: Request, res: Response): Promise<void> {
   res.json({ message: 'Client updated' });
 }
 
+export async function setStatus(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const id = req.params.id;
+  if (!isValidId(id)) { res.status(400).json({ error: 'Invalid client id' }); return; }
+  const isActive = Number(req.body?.is_active) === 1 ? 1 : 0;
+  const ctx = await getContext();
+  const client = await ctx.findOne('clients', { id, tenant_id: tenantId }, { projection: { name: 1 } });
+  if (!client) { res.status(404).json({ error: 'Client not found' }); return; }
+  await ctx.updateOne('clients', { id, tenant_id: tenantId }, { $set: { is_active: isActive } });
+  await ctx.insert('activity_logs', {
+    tenant_id: tenantId,
+    user_name: req.user?.name || 'System',
+    user_role: req.user?.role || 'ADMIN',
+    action: isActive ? 'CLIENT_ACTIVATED' : 'CLIENT_DEACTIVATED',
+    description: `Client "${client.name}" ${isActive ? 'activated' : 'deactivated'}`,
+  });
+  res.json({ message: `Client ${isActive ? 'activated' : 'deactivated'}` });
+}
+
 export async function remove(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const id = req.params.id;
@@ -89,13 +108,24 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.status(404).json({ error: 'Client not found' });
     return;
   }
-  await ctx.updateOne('clients', { id, tenant_id: tenantId }, { $set: { is_active: 0 } });
+  // A client referenced by dispatch history cannot be removed — deleting it
+  // would orphan those orders and lose the customer name in reports.
+  const orderRefs = await ctx.count('dispatch_orders', { tenant_id: tenantId, client_id: id });
+  const recordRefs = await ctx.count('dispatch_records', { tenant_id: tenantId, client_id: id });
+  const refs = orderRefs + recordRefs;
+  if (refs > 0) {
+    res.status(409).json({
+      error: `Client "${client.name}" is linked to ${refs} dispatch record${refs === 1 ? '' : 's'} and cannot be deleted.`,
+    });
+    return;
+  }
+  await ctx.deleteOne('clients', { id, tenant_id: tenantId });
   await ctx.insert('activity_logs', {
     tenant_id: tenantId,
     user_name: req.user?.name || 'System',
     user_role: req.user?.role || 'ADMIN',
-    action: 'CLIENT_DEACTIVATED',
-    description: `Client "${client.name}" deactivated`,
+    action: 'CLIENT_DELETED',
+    description: `Client "${client.name}" deleted`,
   });
-  res.json({ message: 'Client deactivated' });
+  res.json({ message: 'Client deleted' });
 }

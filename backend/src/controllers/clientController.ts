@@ -8,3 +8,4 @@ export const list = implementation.list;
 export const create = implementation.create;
 export const update = implementation.update;
 export const remove = implementation.remove;
+export const setStatus = implementation.setStatus;

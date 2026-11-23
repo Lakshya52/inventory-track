@@ -65,6 +65,18 @@ export async function update(req: Request, res: Response): Promise<void> {
   res.json({ message: 'Client updated' });
 }
 
+export async function setStatus(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const { id } = req.params;
+  const isActive = Number(req.body?.is_active) === 1 ? 1 : 0;
+  const clients = await query<RowDataPacket[]>('SELECT name FROM clients WHERE id = ? AND tenant_id = ?', [id, tenantId]);
+  if (clients.length === 0) { res.status(404).json({ error: 'Client not found' }); return; }
+  await execute('UPDATE clients SET is_active = ? WHERE id = ? AND tenant_id = ?', [isActive, id, tenantId]);
+  await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id) VALUES (?, ?, ?, ?, ?)',
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', isActive ? 'CLIENT_ACTIVATED' : 'CLIENT_DEACTIVATED', `Client "${clients[0].name}" ${isActive ? 'activated' : 'deactivated'}`, tenantId]);
+  res.json({ message: `Client ${isActive ? 'activated' : 'deactivated'}` });
+}
+
 export async function remove(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const { id } = req.params;
@@ -73,8 +85,19 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.status(404).json({ error: 'Client not found' });
     return;
   }
-  await execute('UPDATE clients SET is_active = 0 WHERE id = ? AND tenant_id = ?', [id, tenantId]);
+  // A client referenced by dispatch history cannot be removed — deleting it
+  // would orphan those orders and lose the customer name in reports.
+  const [orderRows] = await query<RowDataPacket[]>('SELECT COUNT(*) AS total FROM dispatch_orders WHERE tenant_id = ? AND client_id = ?', [tenantId, id]);
+  const [recordRows] = await query<RowDataPacket[]>('SELECT COUNT(*) AS total FROM dispatch_records WHERE tenant_id = ? AND client_id = ?', [tenantId, id]);
+  const refs = Number(orderRows[0]?.total || 0) + Number(recordRows[0]?.total || 0);
+  if (refs > 0) {
+    res.status(409).json({
+      error: `Client "${clients[0].name}" is linked to ${refs} dispatch record${refs === 1 ? '' : 's'} and cannot be deleted.`,
+    });
+    return;
+  }
+  await execute('DELETE FROM clients WHERE id = ? AND tenant_id = ?', [id, tenantId]);
   await execute('INSERT INTO activity_logs (user_name, user_role, action, description, tenant_id) VALUES (?, ?, ?, ?, ?)',
-    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_DEACTIVATED', `Client "${clients[0].name}" deactivated`, tenantId]);
-  res.json({ message: 'Client deactivated' });
+    [req.user?.name || 'System', req.user?.role || 'ADMIN', 'CLIENT_DELETED', `Client "${clients[0].name}" deleted`, tenantId]);
+  res.json({ message: 'Client deleted' });
 }

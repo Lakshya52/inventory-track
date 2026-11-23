@@ -1,7 +1,7 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { Client, EntityId } from '../types';
-import { Building2, Plus, Pencil, Trash2, X, Handshake, Upload } from 'lucide-react';
+import { Building2, Plus, Pencil, Trash2, X, Handshake, Upload, Power } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import ImportWizard from '../components/ImportWizard';
 
@@ -48,9 +48,17 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
   };
 
   const handleDelete = async (id: EntityId) => {
-    if (!window.confirm('Delete this client?')) return;
+    if (!window.confirm('Permanently delete this client? This cannot be undone.')) return;
     try {
       await api.clients.delete(id);
+      await loadClients();
+    } catch (err: any) { setError(err.message); }
+  };
+
+  const handleToggleStatus = async (client: Client) => {
+    const next = !client.is_active;
+    try {
+      await api.clients.setStatus(client.id, next);
       await loadClients();
     } catch (err: any) { setError(err.message); }
   };
@@ -166,6 +174,13 @@ export default function Clients({ embedded = false }: { embedded?: boolean }) {
                   <td>
                     <div className="flex gap-1">
                       <button onClick={() => handleEdit(c)} className="btn-ghost btn-sm" title="Edit client"><Pencil size={14} /></button>
+                      <button
+                        onClick={() => void handleToggleStatus(c)}
+                        className={`btn-ghost btn-sm ${c.is_active ? 'text-amber-600' : 'text-emerald-600'}`}
+                        title={c.is_active ? 'Deactivate client' : 'Activate client'}
+                      >
+                        <Power size={14} />
+                      </button>
                       <button onClick={() => handleDelete(c.id)} className="btn-ghost btn-sm text-rose-500" title="Delete client"><Trash2 size={14} /></button>
                     </div>
                   </td>
