@@ -332,14 +332,27 @@ export async function listGroups(req: Request, res: Response): Promise<void> {
   const keys = groups.map((group) => String(group.group_key));
   const children = keys.length
     ? await query<RowDataPacket[]>(
-        `SELECT b.*, p.name AS product_name, p.sku AS product_sku, s.location_code, s.warehouse AS warehouse_name
+        `SELECT b.*, p.name AS product_name, p.sku AS product_sku, s.location_code, s.warehouse AS warehouse_name,
+                (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?) AS qr_count,
+                (SELECT MIN(l.print_job_id) FROM qr_labels l WHERE l.batch_id = b.id AND l.tenant_id = ?) AS qr_job_id,
+                (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.print_count > 0 AND l.tenant_id = ?) AS printed_label_count,
+                (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.dispatch_order_id IS NOT NULL AND l.tenant_id = ?) AS reserved_quantity,
+                (SELECT COUNT(*) FROM qr_labels l WHERE l.batch_id = b.id AND l.recall_status = 'RECALLED' AND l.tenant_id = ?) AS recalled_quantity
          FROM batches b
          LEFT JOIN products p ON b.product_id = p.id AND p.tenant_id = ?
          LEFT JOIN shelf_locations s ON b.shelf_location_id = s.id AND s.tenant_id = ?
          WHERE b.tenant_id = ?${dv.sql} AND b.batch_group_id IN (?)`,
-        [tenantId, tenantId, tenantId, ...dv.params, keys]
+        [tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId, ...dv.params, keys]
       )
     : [];
+  for (const batch of children) {
+    const total = Number((batch as any).qr_count || 0);
+    const printed = Number((batch as any).printed_label_count || 0);
+    (batch as any).qr_printed = total > 0 && printed >= total;
+    const reserved = Number((batch as any).reserved_quantity || 0);
+    const recalled = Number((batch as any).recalled_quantity || 0);
+    (batch as any).available_quantity = Math.max(0, Number((batch as any).quantity || 0) - reserved - recalled);
+  }
   const byGroup = new Map<string, any[]>();
   for (const batch of children) {
     const key = String(batch.batch_group_id);

@@ -422,10 +422,68 @@ export default function DispatchBatches() {
 	const [error, setError] = useState("");
 	const [message, setMessage] = useState("");
 	const [loaded, setLoaded] = useState(false);
+	// Inline UOM editor opened from a batch line whose grade has no UOM yet.
+	const [uomEditProduct, setUomEditProduct] = useState<any | null>(null);
+	const [uomEditValue, setUomEditValue] = useState("");
+	const [uomEditSaving, setUomEditSaving] = useState(false);
+	const [uomEditError, setUomEditError] = useState("");
 
 	const pickProduct = (product: any) => {
 		if (!product?.id) return;
 		setProducts((current) => ({ ...current, [String(product.id)]: product }));
+	};
+
+	const openUomEditor = (product: any) => {
+		setUomEditProduct(product);
+		setUomEditValue(
+			product?.bag_quantity_id ? String(product.bag_quantity_id) : "",
+		);
+		setUomEditError("");
+	};
+
+	const saveProductUom = async () => {
+		if (!uomEditProduct) return;
+		if (!uomEditValue) {
+			setUomEditError("Select a UOM first.");
+			return;
+		}
+		setUomEditSaving(true);
+		setUomEditError("");
+		try {
+			// The update endpoint replaces the whole grade record, so send every
+			// existing field back with the new UOM to avoid clearing data.
+			await api.products.update(uomEditProduct.id, {
+				name: uomEditProduct.name,
+				description: uomEditProduct.description || null,
+				sku: uomEditProduct.sku,
+				quantity: uomEditProduct.quantity || 0,
+				grade: uomEditProduct.grade || null,
+				bag_quantity_id: uomEditValue,
+				manufacturer: uomEditProduct.manufacturer || null,
+				hsn_code: uomEditProduct.hsn_code || null,
+				cas_number: uomEditProduct.cas_number || null,
+				molecular_formula: uomEditProduct.molecular_formula || null,
+				purity: uomEditProduct.purity || null,
+				storage_conditions: uomEditProduct.storage_conditions || null,
+				hazard_classification: uomEditProduct.hazard_classification || null,
+				physical_state: uomEditProduct.physical_state || null,
+			});
+			const id = String(uomEditProduct.id);
+			setProducts((current) => ({
+				...current,
+				[id]: {
+					...(current[id] || uomEditProduct),
+					bag_quantity_id: uomEditValue,
+				},
+			}));
+			setUomEditProduct(null);
+			setError("");
+			setMessage("UOM saved on the product. You can continue creating the batch.");
+		} catch (err: any) {
+			setUomEditError(err.message || "Could not save the UOM");
+		} finally {
+			setUomEditSaving(false);
+		}
 	};
 
 	const loadBatches = async (query: string, page = groupPage, pageSize = groupPageSize) => {
@@ -1274,9 +1332,16 @@ export default function DispatchBatches() {
 															getUom(product) ===
 																"UOM not set" && (
 																<p className="mt-1 text-xs font-semibold text-rose-600">
-																	Set a UOM on
-																	the product
-																	first.
+																	Set a UOM on the product first.{" "}
+																	<button
+																		type="button"
+																		className="font-bold text-brand-700 underline underline-offset-2 hover:text-brand-900"
+																		onClick={() =>
+																			openUomEditor(product)
+																		}
+																	>
+																		Set UOM here
+																	</button>
 																</p>
 															)}
 													</td>
@@ -1721,6 +1786,131 @@ export default function DispatchBatches() {
 					</div>
 				</div>
 			)}
+
+			{uomEditProduct &&
+				createPortal(
+					<div
+						className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs"
+						onMouseDown={(event) => {
+							if (
+								event.target === event.currentTarget &&
+								!uomEditSaving
+							)
+								setUomEditProduct(null);
+						}}
+					>
+						<div
+							role="dialog"
+							aria-modal="true"
+							aria-labelledby="uom-edit-title"
+							className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl sm:p-6"
+						>
+							<div className="flex items-start justify-between gap-4">
+								<div>
+									<h2
+										id="uom-edit-title"
+										className="text-xl font-extrabold text-slate-900"
+									>
+										Set product UOM
+									</h2>
+									<p className="mt-1 text-sm text-slate-500">
+										{uomEditProduct.grade
+											? `${uomEditProduct.grade} · `
+											: ""}
+										{uomEditProduct.name}
+									</p>
+								</div>
+								<button
+									type="button"
+									className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-800"
+									aria-label="Close UOM editor"
+									disabled={uomEditSaving}
+									onClick={() => setUomEditProduct(null)}
+								>
+									<X size={18} />
+								</button>
+							</div>
+
+							<div className="mt-5 space-y-2">
+								<label
+									htmlFor="uom-edit-select"
+									className="block text-xs font-bold uppercase tracking-wide text-slate-700"
+								>
+									Unit of measure
+								</label>
+								<select
+									id="uom-edit-select"
+									className="input border-slate-200 bg-white"
+									value={uomEditValue}
+									disabled={uomEditSaving}
+									onChange={(event) =>
+										setUomEditValue(event.target.value)
+									}
+								>
+									<option value="">— Select a UOM —</option>
+									{uoms.length > 0 && (
+										<optgroup label="Units of measure">
+											{uoms.map((uom: any) => (
+												<option
+													key={`uom-${uom.id}`}
+													value={String(uom.id)}
+												>
+													{uom.name}
+												</option>
+											))}
+										</optgroup>
+									)}
+									{bagQuantities.length > 0 && (
+										<optgroup label="Bag quantities">
+											{bagQuantities.map((bag: any) => (
+												<option
+													key={`bag-${bag.id}`}
+													value={String(bag.id)}
+												>
+													{bag.name}
+													{bag.quantity
+														? ` (${bag.quantity})`
+														: ""}
+												</option>
+											))}
+										</optgroup>
+									)}
+								</select>
+								<p className="text-xs text-slate-400">
+									The selected UOM is saved on the product and
+									will be used for this and future batches.
+								</p>
+								{uomEditError && (
+									<p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+										{uomEditError}
+									</p>
+								)}
+							</div>
+
+							<div className="mt-6 flex justify-end gap-2 border-t border-slate-100 pt-4">
+								<button
+									type="button"
+									className="btn-secondary"
+									disabled={uomEditSaving}
+									onClick={() => setUomEditProduct(null)}
+								>
+									Cancel
+								</button>
+								<button
+									type="button"
+									className="btn-primary"
+									disabled={uomEditSaving || !uomEditValue}
+									onClick={() => void saveProductUom()}
+								>
+									{uomEditSaving
+										? "Saving…"
+										: "Save UOM"}
+								</button>
+							</div>
+						</div>
+					</div>,
+					document.body,
+				)}
 		</div>
 	);
 }

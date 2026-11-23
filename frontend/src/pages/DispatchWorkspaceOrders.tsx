@@ -132,11 +132,19 @@ export default function DispatchWorkspaceOrders() {
 	const load = useCallback(async () => {
 		setError("");
 		try {
-			const [readyBatches, clientRows, orderRows] = await Promise.all([
-				api.batches.recent({ status: "QC_PASSED", limit: 100 }),
+			const [firstPage, clientRows, orderRows] = await Promise.all([
+				api.batches.groups({ status: "QC_PASSED", page: 1, limit: 100 }),
 				api.clients.list(),
 				api.dispatchOrders.mine(),
 			]);
+			// The old 100-row flat batch list silently truncated large batches:
+			// a 954-bag batch showed only 100 units. Walk the group pages and
+			// use ALL of their child batches instead.
+			const readyBatches: any[] = [...(firstPage.children || [])];
+			for (let p = 2; p <= firstPage.pages && p <= 50; p += 1) {
+				const page = await api.batches.groups({ status: "QC_PASSED", page: p, limit: 100 });
+				readyBatches.push(...(page.children || []));
+			}
 			// Only QC-passed batches whose QR labels have been printed can be
 			// put on a truck.
 			const ready = readyBatches.filter(
@@ -152,7 +160,14 @@ export default function DispatchWorkspaceOrders() {
 			const labelBatchIds = [...new Set(ready.map((row: any) => row.id).filter((id: any) => id !== null && id !== undefined))];
 			if (labelBatchIds.length > 0) {
 				try {
-					const available = await api.dispatchOrders.availableQrLabels(labelBatchIds);
+					// The API accepts at most 200 batch ids per call (and a long
+					// query string would be rejected). Fetch in chunks and merge
+					// so a 954-bag batch exposes all of its QR codes.
+					const available: any[] = [];
+					for (let i = 0; i < labelBatchIds.length; i += 200) {
+						const chunk = labelBatchIds.slice(i, i + 200);
+						available.push(...(await api.dispatchOrders.availableQrLabels(chunk)));
+					}
 					const grouped: Record<string, QrLabelChip[]> = {};
 					for (const label of available) {
 						(grouped[String(label.batch_id)] ??= []).push(label);

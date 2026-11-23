@@ -399,9 +399,31 @@ export async function listGroups(req: Request, res: Response): Promise<void> {
   const products = await mapByIds<Record<string, any>>(ctx, 'products', productIds, tenantId, df);
   const locationIds = [...new Set(children.map((batch: any) => batch.shelf_location_id).filter(Boolean))];
   const locations = await mapByIds<Record<string, any>>(ctx, 'shelf_locations', locationIds, tenantId, df);
+  // Dispatch order creation consumes `children`, so expose the same stock and
+  // print fields the flat batch list provides — without the old 100-row cap.
+  const childIds = children.map((batch: any) => batch.id);
+  const [qrStats, printStats, childLabels] = await Promise.all([
+    batchQrStats(ctx, childIds, tenantId, df),
+    batchPrintStats(ctx, childIds, tenantId, df),
+    childIds.length
+      ? ctx.find('qr_labels', { batch_id: { $in: childIds }, tenant_id: tenantId, ...df }, { projection: { _id: 0, batch_id: 1, dispatch_order_id: 1, recall_status: 1 } })
+      : Promise.resolve([] as any[]),
+  ]);
+  const reservedByBatch = new Map<string, number>();
+  const recalledByBatch = new Map<string, number>();
+  for (const label of childLabels as any[]) {
+    const key = idKey(label.batch_id);
+    if (label.dispatch_order_id) reservedByBatch.set(key, (reservedByBatch.get(key) || 0) + 1);
+    if (label.recall_status === 'RECALLED') recalledByBatch.set(key, (recalledByBatch.get(key) || 0) + 1);
+  }
   const enrichedChildren = children.map((batch: any) => {
     const product = products.get(idKey(batch.product_id));
     const location = locations.get(idKey(batch.shelf_location_id));
+    const key = idKey(batch.id);
+    const stats = qrStats.get(key);
+    const printed = printStats.get(key);
+    const reserved = reservedByBatch.get(key) || 0;
+    const recalled = recalledByBatch.get(key) || 0;
     return {
       ...batch,
       product_name: product?.name ?? batch.product_name ?? null,
@@ -409,6 +431,13 @@ export async function listGroups(req: Request, res: Response): Promise<void> {
       grade_name: product?.grade ?? null,
       warehouse_name: location?.warehouse ?? null,
       location_code: location?.location_code ?? batch.storage_location ?? null,
+      qr_count: stats?.count ?? 0,
+      qr_job_id: stats?.jobId ?? null,
+      printed_label_count: printed?.printed ?? 0,
+      qr_printed: Boolean(printed && printed.total > 0 && printed.printed >= printed.total),
+      reserved_quantity: reserved,
+      recalled_quantity: recalled,
+      available_quantity: Math.max(0, Number(batch.quantity) - reserved - recalled),
     };
   });
 
