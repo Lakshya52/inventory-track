@@ -1,0 +1,26 @@
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import 'tailwindcss/utilities.css';
+
+@import 'nativewind/theme';
+
+@theme {
+  /* Lexend Deca is the app-wide default font. Each weight is a separate file
+     on React Native, so each one is registered with its exact font name. */
+  --font-sans: "LexendDeca-Regular";
+  --font-lexend: "LexendDeca-Regular";
+  --font-lexend-medium: "LexendDeca-Medium";
+  --font-lexend-semibold: "LexendDeca-SemiBold";
+  --font-lexend-bold: "LexendDeca-Bold";
+
+  --color-brand: #0b218c;
+  --color-brand-deep: #07196f;
+  --color-ink: #14204b;
+  --color-muted: #65718c;
+  --color-canvas: #ffffff;
+  --color-surface: #ffffff;
+  --color-line: #dfe3ee;
+  --color-nav-active: #0b8c6f;
+  --color-nav-inactive: #5b6b8c;
+  --color-nav-pill: #e1f3ed;
+}
