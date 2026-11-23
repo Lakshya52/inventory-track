@@ -1,11 +1,5 @@
-import { AppHeader } from '@/components/layout/AppHeader';
-import { PlaceholderScreen } from '@/components/common/PlaceholderScreen';
+import { LoadingSeal } from '@/components/dispatch/LoadingSeal';
 
 export default function LoadingSealScreen() {
-  return (
-    <>
-      <AppHeader title="Enter Seal Number" showBack />
-      <PlaceholderScreen title="Seal & Finalize" description="Seal number entry before dispatching the vehicle." />
-    </>
-  );
+  return <LoadingSeal />;
 }

@@ -72,11 +72,12 @@ export function AppHeader({
         {logoUri ? (
           <Image source={{ uri: logoUri }} className="h-8 w-8 rounded-lg" resizeMode="contain" />
         ) : (
-          <View className="h-8 w-8 items-center justify-center rounded-lg bg-nav-pill">
-            <Text className="text-sm font-lexend-bold text-brand">
-              {(tenant?.name ?? 'P').charAt(0).toUpperCase()}
-            </Text>
-          </View>
+          <Image
+            source={require('../../../assets/logo.png')}
+            className="h-8 w-8"
+            resizeMode="contain"
+            accessibilityLabel="ProductScanning logo"
+          />
         )}
         <Text className="flex-1 text-base font-lexend-semibold text-brand">{title}</Text>
         {showMenu ? <MoreMenu items={items} /> : null}

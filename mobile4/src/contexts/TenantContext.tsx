@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { PropsWithChildren } from 'react';
 
 import { useAuth } from '@/contexts/AuthContext';
@@ -11,6 +11,7 @@ interface TenantContextValue {
   tenant: Tenant | null;
   logoUri: string | null;
   isLoading: boolean;
+  refresh: () => Promise<void>;
 }
 
 const TenantContext = createContext<TenantContextValue | null>(null);
@@ -22,35 +23,29 @@ export function TenantProvider({ children }: PropsWithChildren) {
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    let active = true;
-
+  const load = useCallback(async () => {
     if (!token) {
       setTenant(null);
       setIsLoading(false);
       return;
     }
-
     setIsLoading(true);
-    authenticatedRequest<Tenant>(API_ENDPOINTS.auth.tenant)
-      .then((data) => {
-        if (active) setTenant(data);
-      })
-      .catch(() => {
-        if (active) setTenant(null);
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
+    try {
+      setTenant(await authenticatedRequest<Tenant>(API_ENDPOINTS.auth.tenant));
+    } catch {
+      setTenant(null);
+    } finally {
+      setIsLoading(false);
+    }
   }, [token]);
 
+  useEffect(() => {
+    void load();
+  }, [load]);
+
   const value = useMemo(
-    () => ({ tenant, logoUri: getTenantLogoUri(tenant), isLoading }),
-    [tenant, isLoading],
+    () => ({ tenant, logoUri: getTenantLogoUri(tenant), isLoading, refresh: load }),
+    [tenant, isLoading, load],
   );
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;

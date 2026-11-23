@@ -1,19 +1,12 @@
 import { useLocalSearchParams } from 'expo-router';
 
-import { AppHeader } from '@/components/layout/AppHeader';
-import { PlaceholderScreen } from '@/components/common/PlaceholderScreen';
+import { BatchQrDetails, type QcStatus } from '@/components/dispatch/BatchQrDetails';
 
-/** One route covers all four QC states identified in the designs. */
+const STATUSES: QcStatus[] = ['NOT_MARKED', 'PASS', 'PRINTED', 'FAILED'];
+
 export default function BatchQrDetailsScreen() {
-  const { batchId } = useLocalSearchParams<{ batchId: string }>();
+  const { batchId, status } = useLocalSearchParams<{ batchId: string; status?: string }>();
+  const qcStatus = STATUSES.find((item) => item === status) ?? 'PASS';
 
-  return (
-    <>
-      <AppHeader title="Batch QR Details" showBack />
-      <PlaceholderScreen
-        title="Batch QR Details"
-        description={`QR details for batch ${batchId}. QC state variants are handled by this screen later.`}
-      />
-    </>
-  );
+  return <BatchQrDetails jobId={batchId} status={qcStatus} />;
 }

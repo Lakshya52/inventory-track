@@ -1,15 +1,30 @@
 import '../global.css';
 
-import { useFonts } from 'expo-font';
+import { getLoadedFonts, useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { ActivityIndicator, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AppErrorBoundary } from '@/components/common/AppErrorBoundary';
 import { ROLE_DASHBOARD_ROUTE, ROUTES } from '@/constants/routes';
+import { AppDataProvider } from '@/contexts/AppDataContext';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { BatchCreationProvider } from '@/contexts/BatchCreationContext';
+import { LoadingProvider } from '@/contexts/LoadingContext';
 import { TenantProvider } from '@/contexts/TenantContext';
+
+// NativeWind generates the font utilities correctly, but to guarantee the
+// family on native (regardless of class compilation), set the loaded family as
+// the global default for Text and TextInput. Weight-specific classes still
+// override this with the Medium/SemiBold/Bold files.
+const TextWithDefaults = Text as unknown as { defaultProps: { style?: unknown } };
+TextWithDefaults.defaultProps = TextWithDefaults.defaultProps ?? {};
+TextWithDefaults.defaultProps.style = [{ fontFamily: 'LexendDeca-Regular' }];
+
+const TextInputWithDefaults = TextInput as unknown as { defaultProps: { style?: unknown } };
+TextInputWithDefaults.defaultProps = TextInputWithDefaults.defaultProps ?? {};
+TextInputWithDefaults.defaultProps.style = [{ fontFamily: 'LexendDeca-Regular' }];
 
 function AppLoading() {
   return (
@@ -53,6 +68,23 @@ function RootNavigator() {
   );
 }
 
+function AuthenticatedProviders() {
+  const { session, isLoading } = useAuth();
+
+  if (isLoading) return <AppLoading />;
+  if (!session) return <RootNavigator />;
+
+  return (
+    <AppDataProvider>
+      <BatchCreationProvider>
+        <LoadingProvider>
+          <RootNavigator />
+        </LoadingProvider>
+      </BatchCreationProvider>
+    </AppDataProvider>
+  );
+}
+
 export default function RootLayout() {
   console.log('[mobile4] root layout loaded');
   // Keys are the exact PostScript names of the bundled font files, so iOS
@@ -64,6 +96,14 @@ export default function RootLayout() {
     'LexendDeca-Bold': require('@/fonts/LexendDeca-Bold.ttf'),
   });
 
+  console.log(
+    '[mobile4] fonts:',
+    fontsLoaded ? 'loaded' : 'pending',
+    fontError ? `error=${fontError.message}` : 'no error',
+    'native=',
+    typeof document === 'undefined' ? getLoadedFonts().join(',') : 'web',
+  );
+
   if (!fontsLoaded && !fontError) return <AppLoading />;
 
   return (
@@ -72,7 +112,7 @@ export default function RootLayout() {
         <AuthProvider>
           <TenantProvider>
             <StatusBar style="dark" />
-            <RootNavigator />
+            <AuthenticatedProviders />
           </TenantProvider>
         </AuthProvider>
       </SafeAreaProvider>

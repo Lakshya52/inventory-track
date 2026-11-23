@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Image, Pressable, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { Eye, EyeOff } from 'lucide-react-native';
 
@@ -38,7 +38,18 @@ export default function LoginScreen() {
   return (
     <ScreenContainer scroll>
       <View className="px-6 pt-20">
-        <Text className="text-2xl font-lexend-bold text-brand">Login</Text>
+        <View className="flex-row items-center gap-3">
+          <Image
+            source={require('../../assets/logo.png')}
+            className="h-14 w-14"
+            resizeMode="contain"
+            accessibilityLabel="ProductScanning logo"
+          />
+          <View>
+            <Text className="text-2xl font-lexend-bold text-brand">Login</Text>
+            <Text className="text-[10px] font-lexend text-muted">ProductScanning</Text>
+          </View>
+        </View>
 
         <Text className="mb-2 mt-8 text-sm font-lexend-medium text-ink">Email id</Text>
         <TextInput

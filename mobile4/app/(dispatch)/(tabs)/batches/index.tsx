@@ -1,11 +1,5 @@
-import { AppHeader } from '@/components/layout/AppHeader';
-import { PlaceholderScreen } from '@/components/common/PlaceholderScreen';
+import { BatchesOverview } from '@/components/dispatch/BatchesOverview';
 
 export default function BatchesScreen() {
-  return (
-    <>
-      <AppHeader title="Batches" />
-      <PlaceholderScreen title="Batches" description="Manage product batches and start the create-batch workflow." />
-    </>
-  );
+  return <BatchesOverview />;
 }

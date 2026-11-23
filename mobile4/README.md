@@ -23,6 +23,18 @@ EXPO_PUBLIC_API_URL=http://localhost:3001/api
 
 Use `http://10.0.2.2:3001/api` for the Android emulator or your PC's LAN IP for a physical device.
 
+## Android APK
+
+The release APK is built with `npx expo prebuild --platform android` followed by
+`./gradlew.bat assembleRelease` from the `android/` folder. The generated file is
+`android/app/build/outputs/apk/release/app-release.apk`.
+
+The build targets `arm64-v8a` only (standard single-ABI release APK). To build a
+universal APK with all four ABIs instead, set
+`reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64` in `android/gradle.properties`.
+
+Login with a backend user, for example `dispatch@gmail.com` / `dispatch@123`.
+
 ## Fonts
 
 Lexend Deca (400/500/600/700) is bundled as local TTF files in `src/fonts/`. The file names match the fonts' PostScript names (`LexendDeca-Regular`, `-Medium`, `-SemiBold`, `-Bold`), which is required for correct resolution on iOS. They are loaded at runtime with `useFonts` and exposed to NativeWind through the `--font-*` theme variables in `global.css`.
