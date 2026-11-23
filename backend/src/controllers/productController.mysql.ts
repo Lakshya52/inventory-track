@@ -7,6 +7,16 @@ import { naturalSortBy } from '../services/naturalSort';
 
 const MAX_GRADES_PER_PRODUCT = 50;
 
+/** GROUP_CONCAT returns a comma-separated string — expose it as an array like Mongo does. */
+function withDivisionIds(rows: RowDataPacket[]): Array<RowDataPacket & { divisionIds: string[] }> {
+  return rows.map((row) => ({
+    ...row,
+    divisionIds: row.division_ids
+      ? String(row.division_ids).split(',').filter(Boolean)
+      : [],
+  }));
+}
+
 type FamilyGradeInput = {
   grade: string;
   sku: string;
@@ -115,14 +125,15 @@ export async function listFamilies(req: Request, res: Response): Promise<void> {
   const dv = divisionWhere(req);
   const includeInactive = String(req.query.include || '').trim().toLowerCase() === 'inactive';
   const grouped = await query<RowDataPacket[]>(
-    `SELECT name, MAX(description) AS description, MAX(manufacturer) AS manufacturer, COUNT(*) AS count, COUNT(*) AS totalCount
+    `SELECT name, MAX(description) AS description, MAX(manufacturer) AS manufacturer, COUNT(*) AS count, COUNT(*) AS totalCount,
+            GROUP_CONCAT(DISTINCT division_id SEPARATOR ',') AS division_ids
      FROM products
      WHERE tenant_id = ?${dv.sql} AND is_active = ?
      GROUP BY name`,
     [tenantId, ...dv.params, includeInactive ? 0 : 1]
   );
   // Natural (numeric-aware) sort so "P9" < "P89" < "P90" — MySQL has no natural collation.
-  const families = naturalSortBy(grouped, (row) => String(row.name ?? ''));
+  const families = withDivisionIds(naturalSortBy(grouped, (row) => String(row.name ?? '')));
   res.json(families);
 }
 
@@ -134,17 +145,19 @@ export async function listFamiliesPage(req: Request, res: Response): Promise<voi
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(req.query.limit) || 25));
   const grouped = await query<RowDataPacket[]>(
-    `SELECT name, MAX(description) AS description, MAX(manufacturer) AS manufacturer, COUNT(*) AS count, COUNT(*) AS totalCount
+    `SELECT name, MAX(description) AS description, MAX(manufacturer) AS manufacturer, COUNT(*) AS count, COUNT(*) AS totalCount,
+            GROUP_CONCAT(DISTINCT division_id SEPARATOR ',') AS division_ids
      FROM products
      WHERE tenant_id = ?${dv.sql} AND is_active = ?
      GROUP BY name`,
     [tenantId, ...dv.params, includeInactive ? 0 : 1]
   );
-  const families = naturalSortBy(grouped, (row) => String(row.name ?? ''));
+  const families = withDivisionIds(naturalSortBy(grouped, (row) => String(row.name ?? '')));
   const start = (page - 1) * pageSize;
   const total = families.length;
   res.json({
     items: families.slice(start, start + pageSize),
+    allFamilies: families,
     total,
     page,
     pages: Math.max(1, Math.ceil(total / pageSize)),
@@ -275,7 +288,7 @@ export async function update(req: Request, res: Response): Promise<void> {
     [tenantId, ...dv.params, id, name, grade || '']
   );
   if (sibling.length > 0) {
-    res.status(409).json({ error: `Grade "${grade}" already exists for ${name}` });
+    res.status(409).json({ error: `Grade "${grade}" already exists for product : ${name}` });
     return;
   }
   const result = await execute(
@@ -338,7 +351,7 @@ export async function createFamily(req: Request, res: Response): Promise<void> {
       );
       for (const grade of grades) {
         if (familyGrades.has(grade.grade.toLowerCase())) {
-          throw Object.assign(new Error(`Grade "${grade.grade}" already exists for ${name}`), { statusCode: 409 });
+          throw Object.assign(new Error(`Grade "${grade.grade}" already exists for product : ${name}`), { statusCode: 409 });
         }
         if (grade.sku) {
           const skuKey = grade.sku.toLowerCase();

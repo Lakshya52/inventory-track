@@ -163,6 +163,9 @@ export async function listFamilies(req: Request, res: Response): Promise<void> {
   const NATURAL_COLLATION = { locale: 'en', numericOrdering: true } as const;
   const families = await ctx.aggregate('products', [
     { $match: { tenant_id: tenantId, ...(includeInactive ? { is_active: 0 } : { is_active: 1 }), ...dv } },
+    // Drop large fields before grouping — a 50k-grade catalogue otherwise
+    // drags full documents through the aggregation pipeline.
+    { $project: { name: 1, description: 1, manufacturer: 1, division_id: 1 } },
     {
       $group: {
         _id: { $toLower: '$name' },
@@ -170,10 +173,11 @@ export async function listFamilies(req: Request, res: Response): Promise<void> {
         description: { $max: '$description' },
         manufacturer: { $max: '$manufacturer' },
         count: { $sum: 1 },
+        divisionIds: { $addToSet: '$division_id' },
       },
     },
     { $sort: { name: 1 } },
-    { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count' } },
+    { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count', divisionIds: 1 } },
   ], { collation: NATURAL_COLLATION } as any);
   res.json(families);
 }
@@ -187,31 +191,44 @@ export async function listFamiliesPage(req: Request, res: Response): Promise<voi
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(req.query.limit) || 25));
   const NATURAL_COLLATION = { locale: 'en', numericOrdering: true } as const;
-  const match = {
-    $match: { tenant_id: tenantId, ...(includeInactive ? { is_active: 0 } : { is_active: 1 }), ...dv },
-  };
-  const group = {
-    $group: {
-      _id: { $toLower: '$name' },
-      name: { $first: '$name' },
-      description: { $max: '$description' },
-      manufacturer: { $max: '$manufacturer' },
-      count: { $sum: 1 },
+  // One pass with $facet computes both the total and the requested page.
+  // The old version grouped the whole catalogue twice (once for count, once
+  // for rows) on every load — the main cost when a division is selected.
+  const [result] = await ctx.aggregate('products', [
+    { $match: { tenant_id: tenantId, ...(includeInactive ? { is_active: 0 } : { is_active: 1 }), ...dv } },
+    { $project: { name: 1, description: 1, manufacturer: 1, division_id: 1 } },
+    {
+      $group: {
+        _id: { $toLower: '$name' },
+        name: { $first: '$name' },
+        description: { $max: '$description' },
+        manufacturer: { $max: '$manufacturer' },
+        count: { $sum: 1 },
+        divisionIds: { $addToSet: '$division_id' },
+      },
     },
-  };
-  const [countRows, items] = await Promise.all([
-    ctx.aggregate('products', [match, group, { $count: 'total' }], { collation: NATURAL_COLLATION } as any),
-    ctx.aggregate('products', [
-      match,
-      group,
-      { $sort: { name: 1 } },
-      { $skip: (page - 1) * pageSize },
-      { $limit: pageSize },
-      { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count' } },
-    ], { collation: NATURAL_COLLATION } as any),
-  ]);
-  const total = Number(countRows[0]?.total ?? 0);
-  res.json({ items, total, page, pages: Math.max(1, Math.ceil(total / pageSize)), pageSize });
+    {
+      $facet: {
+        count: [{ $count: 'total' }],
+        // All families in the same pass, so the UI no longer needs a second
+        // full aggregation just to populate its typeahead and counters.
+        all: [
+          { $sort: { name: 1 } },
+          { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count', divisionIds: 1 } },
+        ],
+        items: [
+          { $sort: { name: 1 } },
+          { $skip: (page - 1) * pageSize },
+          { $limit: pageSize },
+          { $project: { _id: 0, name: 1, description: 1, manufacturer: 1, count: 1, totalCount: '$count', divisionIds: 1 } },
+        ],
+      },
+    },
+  ], { collation: NATURAL_COLLATION } as any);
+  const items = (result as any)?.items ?? [];
+  const allFamilies = (result as any)?.all ?? [];
+  const total = Number((result as any)?.count?.[0]?.total ?? 0);
+  res.json({ items, allFamilies, total, page, pages: Math.max(1, Math.ceil(total / pageSize)), pageSize });
 }
 
 export async function listFamilyProducts(req: Request, res: Response): Promise<void> {
@@ -354,7 +371,7 @@ export async function update(req: Request, res: Response): Promise<void> {
     grade: { $regex: `^${String(grade || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
   }, { projection: { id: 1 } });
   if (sibling) {
-    res.status(409).json({ error: `Grade "${grade}" already exists for ${name}` });
+    res.status(409).json({ error: `Grade "${grade}" already exists for product : ${name}` });
     return;
   }
   const result = await ctx.updateOne('products', { id, tenant_id: tenantId, ...divisionFilter(req) }, {
@@ -432,7 +449,7 @@ export async function createFamily(req: Request, res: Response): Promise<void> {
   );
   for (const grade of grades) {
     if (familyGrades.has(grade.grade.toLowerCase())) {
-      res.status(409).json({ error: `Grade "${grade.grade}" already exists for ${name}` });
+      res.status(409).json({ error: `Grade "${grade.grade}" already exists for product : ${name}` });
       return;
     }
     if (grade.sku) {

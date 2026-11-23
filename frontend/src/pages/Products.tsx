@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../services/api";
-import { EntityId, Product } from "../types";
+import { Division, EntityId, Product } from "../types";
 import { useAuth } from "../contexts/AuthContext";
 import DivisionContextNote from "../components/DivisionContextNote";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
@@ -56,6 +56,7 @@ type FamilySummary = {
   description: string | null;
   manufacturer: string | null;
   count: number;
+  divisionIds?: Array<EntityId | null>;
 };
 
 function newGradeDraft(): GradeDraft {
@@ -83,6 +84,35 @@ function usableMasters(rows: MasterOption[]): MasterOption[] {
   );
 }
 
+// "SELF (KLJ)" is always offered as a built-in manufacturer option. Compare
+// names loosely so vendors like "Self" or "SELF (KLJ)" don't appear twice.
+function normalizeManufacturer(name: unknown): string {
+  return String(name ?? "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function familyDivisionLabels(
+  family: FamilySummary,
+  divisions: Division[],
+): string[] {
+  const ids = family.divisionIds || [];
+  if (ids.length === 0) return [];
+  return ids.map((id) =>
+    id == null
+      ? "Shared (all divisions)"
+      : divisions.find((division) => String(division.id) === String(id))?.name ||
+        `Division ${id}`,
+  );
+}
+
+function displayManufacturer(name: unknown): string {
+  const key = normalizeManufacturer(name);
+  return !key || key === "self" ? "SELF (KLJ)" : String(name ?? "");
+}
+
 function uomLabel(
   uoms: MasterOption[],
   bagQuantities: MasterOption[],
@@ -97,8 +127,10 @@ function uomLabel(
 }
 
 export default function Products({ embedded = false }: { embedded?: boolean }) {
-  const { user } = useAuth();
+  const { user, adminDivisionId } = useAuth();
   const canManage = user?.role === "ADMIN";
+  // Only meaningful when an admin is looking across every division.
+  const showDivisionBadges = user?.role === "ADMIN" && adminDivisionId === "all";
 
   const [families, setFamilies] = useState<FamilySummary[]>([]);
   // The full list above powers pickers/typeahead; the table shows one page.
@@ -113,6 +145,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
   const [uoms, setUoms] = useState<MasterOption[]>([]);
   const [bagQuantities, setBagQuantities] = useState<MasterOption[]>([]);
   const [manufacturers, setManufacturers] = useState<any[]>([]);
+  const [divisions, setDivisions] = useState<Division[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 250);
@@ -144,6 +177,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
   const [renameForm, setRenameForm] = useState({ name: "", description: "" });
 
   const [editGrade, setEditGrade] = useState<Product | null>(null);
+  const [gradeError, setGradeError] = useState("");
   const [gradeForm, setGradeForm] = useState({
     grade: "",
     sku: "",
@@ -162,9 +196,11 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
       result = await api.products.familiesPaged(result.pages, pageSize);
     }
     setPagedFamilies(result.items || []);
+    if (result.allFamilies) setFamilies(result.allFamilies);
     setFamilyTotal(result.total);
     setFamilyPages(result.pages);
     setFamilyPage(result.page);
+    return result;
   };
 
   const changePage = (page: number) => {
@@ -195,28 +231,39 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     setLoading(true);
     setError("");
     try {
-      const [familyRows, uomRows, bagQuantityRows, vendorRows] = await Promise.all([
-        api.products.families(),
+      const [uomRows, bagQuantityRows, vendorRows, divisionRows] = await Promise.all([
         api.masters.list("uoms"),
         api.masters.list("bag-quantities"),
         api.vendors.list({ status: "active" }),
+        api.divisions.list(),
       ]);
-      setFamilies(familyRows || []);
-      await loadFamiliesPage();
-      setTotalProducts((familyRows || []).reduce((sum: number, f: any) => sum + Number(f.count || 0), 0));
+      setDivisions(divisionRows || []);
+      // The paged endpoint now returns all families too — one aggregation pass
+      // instead of running the full catalogue scan a second time.
+      const familyResult = await loadFamiliesPage();
+      const familyRows = familyResult?.allFamilies ?? [];
+      setTotalProducts(familyRows.reduce((sum: number, f: any) => sum + Number(f.count || 0), 0));
       // Keep families the user has expanded — only drop ones that no longer exist (renamed/deleted for good)
-      const familyNames = new Set((familyRows || []).map((f: any) => String(f.name || "").trim().toLowerCase()));
+      const familyNames = new Set(familyRows.map((f: any) => String(f.name || "").trim().toLowerCase()));
       setExpanded((current) => new Set([...current].filter((key) => familyNames.has(key))));
       setRefreshKey((key) => key + 1);
       setUoms(usableMasters(uomRows || []));
       setBagQuantities(usableMasters(bagQuantityRows || []));
+      const seenManufacturers = new Set<string>();
       setManufacturers(
-        (vendorRows || []).filter(
-          (vendor: any) =>
-            ((typeof vendor.id === "string" && vendor.id.trim().length > 0) ||
-              (typeof vendor.id === "number" && Number.isSafeInteger(vendor.id) && vendor.id > 0)) &&
-            (vendor.is_active === true || Number(vendor.is_active) === 1)
-        )
+        (vendorRows || []).filter((vendor: any) => {
+          const hasId =
+            (typeof vendor.id === "string" && vendor.id.trim().length > 0) ||
+            (typeof vendor.id === "number" && Number.isSafeInteger(vendor.id) && vendor.id > 0);
+          const isActive = vendor.is_active === true || Number(vendor.is_active) === 1;
+          if (!hasId || !isActive) return false;
+          const key = normalizeManufacturer(vendor.name);
+          // Skip vendors that are just another spelling of the built-in
+          // "SELF (KLJ)" option, and any duplicate names among vendors.
+          if (!key || key === "self" || seenManufacturers.has(key)) return false;
+          seenManufacturers.add(key);
+          return true;
+        })
       );
     } catch (err: any) {
       setError(err.message || "Could not load products");
@@ -427,7 +474,9 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
       ...current,
       name: family.name,
       description: family.description ?? current.description,
-      manufacturer: family.manufacturer ?? current.manufacturer,
+      manufacturer: family.manufacturer
+        ? displayManufacturer(family.manufacturer)
+        : current.manufacturer,
     }));
     skuFillFromServer(family.name); // immediate proposal — explicit pick is a commit
     setFamilySuggestOpen(false);
@@ -505,7 +554,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     setFamilyForm({
       name: family.name,
       description: family.description || "",
-      manufacturer: family.manufacturer || "SELF (KLJ)",
+      manufacturer: displayManufacturer(family.manufacturer),
     });
     const draft = newGradeDraft();
     setGradeDrafts([draft]);
@@ -693,6 +742,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
 
   const openEditGrade = (product: Product) => {
     setEditGrade(product);
+    setGradeError("");
     setGradeForm({
       grade: product.grade || "",
       sku: product.sku || "",
@@ -708,12 +758,12 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
     const grade = gradeForm.grade.trim();
     const sku = gradeForm.sku.trim();
     if (!grade || !sku) {
-      setError("Grade and SKU are required.");
+      setGradeError("Grade and SKU are required.");
       return;
     }
 
     setSaving(true);
-    setError("");
+    setGradeError("");
     try {
       await api.products.update(editGrade.id, {
         name: editGrade.name,
@@ -730,7 +780,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
       await load();
       setRefreshKey((k) => k + 1);
     } catch (err: any) {
-      setError(err.message || "Could not save the grade");
+      setGradeError(err.message || "Could not save the grade");
     } finally {
       setSaving(false);
     }
@@ -810,7 +860,8 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
           <div className="flex flex-col gap-1 max-w-xl">
             <h2 className="text-xl font-bold text-slate-900">Product catalogue</h2>
             <p className="mt-0.5 text-sm text-slate-500">
-            One product can have many grades. </p> 
+            One product can have many grades. </p>
+            {canManage && <DivisionContextNote />}
             {/* Batches and sales use the grade.
             {isSearching
               ? ` Showing up to 100 matches for “${debouncedSearch.trim()}”.`
@@ -826,7 +877,7 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
               className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-100"
               title="View and restore deactivated families"
             >
-              <EyeOff size={16} /> Deactivated{deactivatedFamilies !== null && deactivatedFamilies.length > 0 ? ` (${deactivatedFamilies.length})` : ""}
+              <EyeOff size={16} />View Deactivated{deactivatedFamilies !== null && deactivatedFamilies.length > 0 ? ` (${deactivatedFamilies.length})` : ""}
             </button>
             <button
               type="button"
@@ -869,149 +920,6 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
       {notice && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
           <p role="status" className="text-sm font-semibold text-emerald-700">{notice}</p>
-        </div>
-      )}
-
-      {loading && familyTotal === 0 ? (
-        <div className="rounded-2xl flex flex-col items-center gap-4 border-2 border-slate-200 bg-white p-12 text-center text-sm font-semibold text-slate-500">
-          <LoaderCircle size={28} className="animate-spin"/>
-          <span>
-          Loading products...
-          </span>
-        </div>
-      ) : isSearching ? (
-        searchLoading ? (
-          <div className="rounded-2xl border-2 border-slate-200 bg-white p-10 text-center text-sm font-semibold text-slate-500">Searching…</div>
-        ) : searchHits.length === 0 ? (
-          <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
-            <p className="text-base font-bold text-slate-700">No products found</p>
-            <p className="mt-0.5 text-sm text-slate-500">Try a different search term.</p>
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b-2 border-slate-200 bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-600">
-                <tr>
-                  <th className="px-5 py-3">Product</th>
-                  <th className="px-5 py-3">Grade</th>
-                  <th className="px-5 py-3">SKU</th>
-                  <th className="px-5 py-3">UOM</th>
-                  <th className="px-5 py-3">Manufacturer</th>
-                  {canManage && <th className="px-5 py-3 text-right">Actions</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {searchHits.map((product) => (
-                  <tr key={product.id} className="transition-colors hover:bg-slate-50/80">
-                    <td className="px-5 py-3.5 font-bold text-slate-900">{product.name}</td>
-                    <td className="px-5 py-3.5 font-medium text-slate-800">{product.grade}</td>
-                    <td className="px-5 py-3.5"><span className="rounded border border-slate-200 bg-slate-100 px-2 py-1 font-mono text-xs font-bold text-slate-800">{product.sku}</span></td>
-                    <td className="px-5 py-3.5"><span className="inline-block rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700">{uomLabel(uoms, bagQuantities, product.bag_quantity_id)}</span></td>
-                    <td className="px-5 py-3.5 text-sm font-medium text-slate-700">{product.manufacturer}</td>
-                    {canManage && (
-                      <td className="px-5 py-3.5 text-right">
-                        <button type="button" onClick={() => openEditGrade(product)} className="mr-2 p-2 text-slate-500 hover:text-slate-800"><Pencil size={16} /></button>
-                        <button type="button" onClick={() => void handleDelete(product)} className="p-2 text-slate-500 hover:text-rose-600"><Trash2 size={16} /></button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-      ) : familyTotal === 0 ? (
-        <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
-            <Package size={24} />
-          </div>
-          <p className="text-base font-bold text-slate-700">No products found</p>
-          <p className="mt-0.5 text-sm text-slate-500">Add your first product and its grades to get started.</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {filteredFamilies.map((family) => {
-            const key = family.name.toLowerCase();
-            const open = expanded.has(key);
-            return (
-              <section
-                key={key}
-                className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs"
-              >
-                <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-                      <Package size={22} />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-extrabold text-slate-900">{family.name}</h3>
-                      {family.description && (
-                        <p className="text-sm text-slate-500">{family.description}</p>
-                      )}
-                      <p className="mt-0.5 text-xs font-semibold text-slate-400">
-                        {family.count.toLocaleString()} grade{family.count === 1 ? "" : "s"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => toggleFamily(family.name)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
-                    >
-                      {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                      {open ? "Hide grades" : "Show grades"}
-                    </button>
-                    {canManage && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => openAddGrade(family)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-bold text-white transition-colors hover:bg-brand-700"
-                        >
-                          <Plus size={16} /> Add grade
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openRename(family)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
-                        >
-                          <Pencil size={16} /> Rename
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void deactivateFamily(family)}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-100"
-                          title={family.count > 0 ? `Deactivate "${family.name}" and all ${family.count.toLocaleString()} grades — kept in the database, hidden from every screen` : `Deactivate empty "${family.name}"`}
-                        >
-                          <EyeOff size={16} /> Deactivate
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void deleteFamily(family)}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm font-bold text-rose-700 transition-colors hover:bg-rose-100"
-                          title={family.count > 0 ? `Delete "${family.name}" and all ${family.count.toLocaleString()} grades` : `Delete empty "${family.name}"`}
-                        >
-                          <Trash2 size={16} /> Delete
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {open && (
-                  <FamilyGradesPanel
-                    familyName={family.name}
-                    refreshKey={refreshKey}
-                    canManage={canManage}
-                    formatUom={(id) => uomLabel(uoms, bagQuantities, id)}
-                    onEdit={openEditGrade}
-                    onDelete={handleDelete}
-                  />
-                )}
-              </section>
-            );
-          })}
         </div>
       )}
 
@@ -1074,6 +982,172 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
               Page {familyPage} of {familyPages}
             </span>
           </div>
+        </div>
+      )}
+
+      {loading && familyTotal === 0 ? (
+        <div className="rounded-2xl flex flex-col items-center gap-4 border-2 border-slate-200 bg-white p-12 text-center text-sm font-semibold text-slate-500">
+          <LoaderCircle size={28} className="animate-spin"/>
+          <span>
+          Loading products...
+          </span>
+        </div>
+      ) : isSearching ? (
+        searchLoading ? (
+          <div className="rounded-2xl border-2 border-slate-200 bg-white p-10 text-center text-sm font-semibold text-slate-500">Searching…</div>
+        ) : searchHits.length === 0 ? (
+          <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
+            <p className="text-base font-bold text-slate-700">No products found</p>
+            <p className="mt-0.5 text-sm text-slate-500">Try a different search term.</p>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b-2 border-slate-200 bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-600">
+                <tr>
+                  <th className="px-5 py-3">Product</th>
+                  <th className="px-5 py-3">Grade</th>
+                  <th className="px-5 py-3">SKU</th>
+                  <th className="px-5 py-3">UOM</th>
+                  <th className="px-5 py-3">Manufacturer</th>
+                  {showDivisionBadges && <th className="px-5 py-3">Division</th>}
+                  {canManage && <th className="px-5 py-3 text-right">Actions</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {searchHits.map((product) => (
+                  <tr key={product.id} className="transition-colors hover:bg-slate-50/80">
+                    <td className="px-5 py-3.5 font-bold text-slate-900">{product.name}</td>
+                    <td className="px-5 py-3.5 font-medium text-slate-800">{product.grade}</td>
+                    <td className="px-5 py-3.5"><span className="rounded border border-slate-200 bg-slate-100 px-2 py-1 font-mono text-xs font-bold text-slate-800">{product.sku}</span></td>
+                    <td className="px-5 py-3.5"><span className="inline-block rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700">{uomLabel(uoms, bagQuantities, product.bag_quantity_id)}</span></td>
+                    <td className="px-5 py-3.5 text-sm font-medium text-slate-700">{product.manufacturer}</td>
+                    {showDivisionBadges && (
+                      <td className="px-5 py-3.5">
+                        <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-[11px] font-bold text-violet-700">
+                          {product.division_id == null
+                            ? "Shared (all divisions)"
+                            : divisions.find((d) => String(d.id) === String(product.division_id))?.name || `Division ${product.division_id}`}
+                        </span>
+                      </td>
+                    )}
+                    {canManage && (
+                      <td className="px-5 py-3.5 text-right">
+                        <button type="button" onClick={() => openEditGrade(product)} className="mr-2 p-2 text-slate-500 hover:text-slate-800"><Pencil size={16} /></button>
+                        <button type="button" onClick={() => void handleDelete(product)} className="p-2 text-slate-500 hover:text-rose-600"><Trash2 size={16} /></button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : familyTotal === 0 ? (
+        <div className="rounded-2xl border-2 border-slate-200 bg-white p-12 text-center">
+          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+            <Package size={24} />
+          </div>
+          <p className="text-base font-bold text-slate-700">No products found</p>
+          <p className="mt-0.5 text-sm text-slate-500">Add your first product and its grades to get started.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredFamilies.map((family) => {
+            const key = family.name.toLowerCase();
+            const open = expanded.has(key);
+            return (
+              <section
+                key={key}
+                className="overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-xs"
+              >
+                <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    {/* <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
+                      <Package size={22} />
+                    </div> */}
+                    <div>
+                      <h3 className="text-lg font-extrabold text-slate-900">{family.name}</h3>
+                      {family.description && (
+                        <p className="text-sm text-slate-500">{family.description}</p>
+                      )}
+                      <p className="mt-0.5 text-xs font-semibold text-slate-400">
+                        {family.count.toLocaleString()} grade{family.count === 1 ? "" : "s"}
+                      </p>
+                      {showDivisionBadges &&
+                        familyDivisionLabels(family, divisions).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {familyDivisionLabels(family, divisions).map((label) => (
+                              <span
+                                key={label}
+                                className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-[11px] font-bold text-violet-700"
+                              >
+                                <Layers size={11} /> {label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleFamily(family.name)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
+                    >
+                      {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      {open ? "Hide grades" : "Show grades"}
+                    </button>
+                    {canManage && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openAddGrade(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-bold text-white transition-colors hover:bg-brand-700"
+                        >
+                          <Plus size={16} /> Add grade
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openRename(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200"
+                        >
+                          <Pencil size={16} /> Rename
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deactivateFamily(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-100"
+                          title={family.count > 0 ? `Deactivate "${family.name}" and all ${family.count.toLocaleString()} grades — kept in the database, hidden from every screen` : `Deactivate empty "${family.name}"`}
+                        >
+                          <EyeOff size={16} /> Deactivate
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteFamily(family)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm font-bold text-rose-700 transition-colors hover:bg-rose-100"
+                          title={family.count > 0 ? `Delete "${family.name}" and all ${family.count.toLocaleString()} grades` : `Delete empty "${family.name}"`}
+                        >
+                          <Trash2 size={16} /> Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {open && (
+                  <FamilyGradesPanel
+                    familyName={family.name}
+                    refreshKey={refreshKey}
+                    canManage={canManage}
+                    formatUom={(id) => uomLabel(uoms, bagQuantities, id)}
+                    onEdit={openEditGrade}
+                    onDelete={handleDelete}
+                  />
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
 
@@ -1549,6 +1623,14 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
             </div>
 
             <form onSubmit={handleGradeSubmit} className="space-y-4 p-6">
+              {gradeError && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-sm font-semibold text-rose-700"
+                >
+                  {gradeError}
+                </div>
+              )}
               <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-700">
                   Grade name *
@@ -1556,7 +1638,10 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
                 <input
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   value={gradeForm.grade}
-                  onChange={(event) => setGradeForm((current) => ({ ...current, grade: event.target.value }))}
+                  onChange={(event) => {
+                    setGradeError("");
+                    setGradeForm((current) => ({ ...current, grade: event.target.value }));
+                  }}
                   placeholder="e.g. XLPE BK 9406"
                   required
                 />
@@ -1568,7 +1653,10 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
                 <input
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 font-mono text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   value={gradeForm.sku}
-                  onChange={(event) => setGradeForm((current) => ({ ...current, sku: event.target.value }))}
+                  onChange={(event) => {
+                    setGradeError("");
+                    setGradeForm((current) => ({ ...current, sku: event.target.value }));
+                  }}
                   required
                 />
               </div>
@@ -1677,8 +1765,6 @@ export default function Products({ embedded = false }: { embedded?: boolean }) {
         </div>
       )}
 
-      {/* Division context indicator when ADMIN picks a division at the top */}
-      {canManage && <DivisionContextNote />}
     </div>
   );
 }
