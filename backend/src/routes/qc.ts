@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { decideBatchGroup, decideBatchGroupsBulk, pending, records, stats, submit, submitBulk, reopenFailedBatch } from '../controllers/qcController';
-import { create, getById, list, printInitial, reprint } from '../controllers/qrLabelController';
+import { create, getById, list, printInitial, reportPrintResult, reprint } from '../controllers/qrLabelController';
 import { authenticate, authorize } from '../middleware/auth';
 import { rateLimit } from '../middleware/rateLimit';
 import { upload } from '../config/upload';
@@ -19,6 +19,7 @@ router.get('/records', authorize('ADMIN', 'QC'), records);
 
 router.post('/qr-jobs', authorize('ADMIN'), create);
 router.get('/qr-jobs', authorize('ADMIN', 'DISPATCH'), list);
+router.post('/qr-jobs/print-result', authorize('ADMIN', 'DISPATCH'), reportPrintResult);
 router.post('/qr-jobs/:id/print', authorize('ADMIN', 'DISPATCH'), printInitial);
 // Printing and reprinting are rate limited: each call drives a physical
 // printer, so a stuck client must not flood the queue.

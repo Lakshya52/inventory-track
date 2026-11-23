@@ -640,6 +640,8 @@ export async function ensureAdminSchema(): Promise<void> {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   await addColumnIfMissing("qr_print_jobs", "tenant_id", "BIGINT UNSIGNED NULL");
   await addIndexIfMissing("qr_print_jobs", "idx_qr_jobs_tenant", "tenant_id");
+  await addColumnIfMissing("qr_print_jobs", "print_outcome", "VARCHAR(20) NULL");
+  await addColumnIfMissing("qr_print_jobs", "print_confirmed_at", "DATETIME NULL");
 
   await execute(`CREATE TABLE IF NOT EXISTS uoms (
     id INT AUTO_INCREMENT PRIMARY KEY,

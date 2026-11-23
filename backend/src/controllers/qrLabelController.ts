@@ -6,6 +6,7 @@ const implementation = useMongo ? mongoImpl : mysqlImpl;
 
 export const create = implementation.create;
 export const printInitial = implementation.printInitial;
+export const reportPrintResult = implementation.reportPrintResult;
 export const list = implementation.list;
 export const getById = implementation.getById;
 export const reprint = implementation.reprint;

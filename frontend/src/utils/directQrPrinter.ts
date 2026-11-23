@@ -1,7 +1,12 @@
 import qz from 'qz-tray';
-import QRCode from 'qrcode';
 import { api } from '../services/api';
-import type { QrJob, QrLabel, QrLabelSize } from './qrPdf';
+import { createQrLabelPdfBlob, type QrJob, type QrLabel, type QrLabelSize } from './qrPdf';
+
+/** Terminal outcome of a Windows print queue job. */
+export type QrPrintOutcome = {
+  status: 'PRINTED' | 'CANCELLED' | 'FAILED';
+  message?: string;
+};
 
 let signingConfigured = false;
 let activeCertificate: string | null = null;
@@ -17,38 +22,53 @@ function listenForPrinterEvents(): void {
 
 function watchQueueJob(jobName: string, printerName: string, onProgress?: (sent: number, total: number, status?: string) => void) {
   let latest: QzPrinterEvent | null = null;
-  let resolveWait: (() => void) | null = null;
-  let rejectWait: ((error: Error) => void) | null = null;
-  const isFinished = (event: QzPrinterEvent) => event.statusText === 'COMPLETE' || event.statusText === 'DELETED';
-  const isFailed = (event: QzPrinterEvent) =>
-    event.severity === 'ERROR' ||
-    event.severity === 'FATAL' ||
-    ['ABORTED', 'ERROR', 'OFFLINE', 'PAPEROUT', 'USER_INTERVENTION'].includes(event.statusText || '');
-  const failure = (event: QzPrinterEvent) =>
-    new Error(`Windows printer queue reported ${event.statusText || event.severity}${event.message ? `: ${event.message}` : ''}.`);
+  let resolveWait: ((outcome: QrPrintOutcome) => void) | null = null;
+  const statusOf = (event: QzPrinterEvent): QrPrintOutcome | null => {
+    const status = String(event.statusText || '').toUpperCase();
+    // Windows reports DELETED/CANCELLED when the operator cancels the job in
+    // the print queue. That is NOT a successful print.
+    if (status === 'COMPLETE') return { status: 'PRINTED' };
+    if (status === 'DELETED' || status === 'CANCELLED' || status === 'CANCELED') {
+      return { status: 'CANCELLED', message: `Print job ${jobName} was cancelled in the Windows queue.` };
+    }
+    if (
+      event.severity === 'ERROR' ||
+      event.severity === 'FATAL' ||
+      ['ABORTED', 'ERROR', 'OFFLINE', 'PAPEROUT', 'USER_INTERVENTION'].includes(status)
+    ) {
+      return {
+        status: 'FAILED',
+        message: `Windows printer queue reported ${status || event.severity}${event.message ? `: ${event.message}` : ''}.`,
+      };
+    }
+    return null;
+  };
   const handler = (event: QzPrinterEvent) => {
     if (event.printerName && event.printerName !== printerName) return;
     if (event.jobName !== jobName) return;
     latest = event;
     if (event.statusText) onProgress?.(0, 0, `Windows queue ${jobName}: ${event.statusText}${event.message ? ` — ${event.message}` : ''}`);
-    if (isFinished(event)) resolveWait?.();
-    else if (isFailed(event)) rejectWait?.(failure(event));
+    const outcome = statusOf(event);
+    if (outcome) resolveWait?.(outcome);
   };
   printerEventListeners.add(handler);
   return {
-    wait: () => new Promise<void>((resolve, reject) => {
-      if (latest && isFinished(latest)) { resolve(); return; }
-      if (latest && isFailed(latest)) { reject(failure(latest)); return; }
+    wait: () => new Promise<QrPrintOutcome>((resolve) => {
+      if (latest) {
+        const outcome = statusOf(latest);
+        if (outcome) { resolve(outcome); return; }
+      }
       const timer = window.setTimeout(() => {
-        // qz.print() already resolved, so Windows has accepted the job. Some
-        // label printers never report a terminal queue status, and treating
-        // that silence as failure made the UI report a successful print as
-        // lost, which encouraged duplicate reprints. Report it as unconfirmed.
+        // qz.print() resolved, so Windows accepted the job. Many label printers
+        // never emit a terminal queue status — report it as accepted but
+        // unconfirmed so the UI does not claim a confirmed print.
         onProgress?.(0, 0, `Windows accepted ${jobName}, but the ${printerName} queue did not report completion. Check the queue before reprinting.`);
-        resolve();
+        resolve({
+          status: 'PRINTED',
+          message: `Windows accepted ${jobName} but did not report completion — check the ${printerName} queue.`,
+        });
       }, 20_000);
-      resolveWait = () => { window.clearTimeout(timer); resolve(); };
-      rejectWait = (error) => { window.clearTimeout(timer); reject(error); };
+      resolveWait = (outcome) => { window.clearTimeout(timer); resolve(outcome); };
     }),
     close: () => printerEventListeners.delete(handler),
   };
@@ -106,165 +126,46 @@ export async function prepareDirectQrPrinter(): Promise<string> {
   }
 }
 
-export async function printQrLabelsDirect(
+export async function printQrPdfDirect(
   labels: QrLabel[],
   job: QrJob,
   labelSize: QrLabelSize,
   printerName: string,
+  jobName: string,
   onProgress?: (sent: number, total: number, status?: string) => void,
-): Promise<void> {
-  if (labels.length === 0) return;
-  const widthMm = Math.max(30, Math.min(200, Math.round(labelSize.widthMm || 60)));
-  const heightMm = Math.max(30, Math.min(250, Math.round(labelSize.heightMm || 64)));
+): Promise<QrPrintOutcome> {
+  if (labels.length === 0) return { status: 'PRINTED' };
   listenForPrinterEvents();
   const queueStatusEnabled = await qz.printers.startListening(printerName).then(() => true).catch(() => false);
-
-  // Rasterize each label in the browser and send it as a PNG image. This avoids
-  // QZ's embedded HTML renderer and gives the printer driver a fixed-size page.
-  const pageWidth = Math.round(widthMm * 8);
-  const pageHeight = Math.round(heightMm * 8);
-  const qrSide = Math.max(96, Math.min(pageWidth - 48, Math.round(pageHeight * 0.46)));
-  const queueJobs: ReturnType<typeof watchQueueJob>[] = [];
+  const queueJob = watchQueueJob(jobName, printerName, onProgress);
   try {
-  for (let start = 0; start < labels.length; start += 6) {
-    const chunkEnd = Math.min(start + 6, labels.length);
-    const jobName = `QR-${job.job_code}-${start + 1}-${chunkEnd}`;
-    const queueJob = watchQueueJob(jobName, printerName, onProgress);
-    queueJobs.push(queueJob);
+    // One label-sized PDF for every label. QZ sends the whole document as a
+    // single Windows print job — no 6-label chunks and no per-label PNG payload.
+    const pdf = await createQrLabelPdfBlob(labels, job, labelSize);
+    const bytes = new Uint8Array(await pdf.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
     const config = qz.configs.create(printerName, {
-      units: 'mm',
-      // `custom` is required to keep the requested size for media that is not
-      // in the printer driver's list (60x64 mm labels are not a standard size).
-      // Without it QZ validates the page against the driver and silently falls
-      // back to the driver default, so labels print offset or on the wrong size.
-      size: { width: widthMm, height: heightMm, custom: true },
+      size: {
+        width: Math.max(30, Math.min(200, Math.round(labelSize.widthMm || 60))),
+        height: Math.max(30, Math.min(250, Math.round(labelSize.heightMm || 64))),
+        custom: true,
+      },
       margins: 0,
       copies: 1,
       colorType: 'grayscale',
-      interpolation: 'nearest-neighbor',
-      // QZ runs `breakupOverPages` for non-scaled images, which can split one
-      // label across several pages when the printer resolution differs from the
-      // requested size. Scaling keeps exactly one image per page.
-      scaleContent: true,
       jobName,
     });
-      const pages = await Promise.all(labels.slice(start, start + 6).map(async (label) => {
-        const qrDataUrl = await QRCode.toDataURL(label.qr_value, {
-          width: Math.max(320, qrSide), margin: 1, errorCorrectionLevel: 'M',
-        });
-        const payload = parseQrPayload(label.qr_value);
-        const productName = label.product_name || payload?.product_name || job.product_name;
-        const batchNumber = label.batch_number || payload?.batch_number || '';
-        const bagSerial = payload?.bag_serial ?? label.serial_no;
-        const packageQuantity = label.package_quantity ?? payload?.package_quantity;
-        const packageUnit = label.uom || payload?.uom || '';
-        const bagCount = label.quantity ?? payload?.bag_count;
-        const godown = label.warehouse_name || payload?.godown;
-        const storageLocation = label.storage_location || payload?.storage_location;
-        const qrImage = await loadImage(qrDataUrl);
-        const canvas = document.createElement('canvas');
-        canvas.width = pageWidth;
-        canvas.height = pageHeight;
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('Could not prepare the QR label image.');
-        context.fillStyle = '#fff';
-        context.fillRect(0, 0, pageWidth, pageHeight);
-        context.strokeStyle = '#cbd5e1';
-        context.lineWidth = Math.max(1, Math.round(pageWidth * 0.003));
-        context.beginPath();
-        context.roundRect(
-          context.lineWidth,
-          context.lineWidth,
-          pageWidth - context.lineWidth * 2,
-          pageHeight - context.lineWidth * 2,
-          Math.round(pageWidth * 0.025),
-        );
-        context.stroke();
-        const drawnQrSide = Math.min(qrSide, pageWidth - 48);
-        context.imageSmoothingEnabled = false;
-        const qrTop = Math.round(pageHeight * 0.06);
-        context.drawImage(qrImage, (pageWidth - drawnQrSide) / 2, qrTop, drawnQrSide, drawnQrSide);
-        const inset = Math.round(pageWidth * 0.045);
-        const maxTextWidth = pageWidth - inset * 2;
-        const textX = inset;
-        const qrBottom = qrTop + drawnQrSide;
-        // The raw QR value goes directly below the code in large bold type.
-        // Shrink the font just enough to keep the full raw value on one line.
-        const bigValue = String(label.qr_value);
-        context.textAlign = 'center';
-        context.fillStyle = '#0f172a';
-        let bigFont = Math.max(22, Math.round(pageWidth * 0.062));
-        context.font = `bold ${bigFont}px Arial`;
-        while (bigFont > 12 && context.measureText(bigValue).width > maxTextWidth) {
-          bigFont -= 2;
-          context.font = `bold ${bigFont}px Arial`;
-        }
-        const bigValueY = qrBottom + Math.round(pageHeight * 0.068);
-        context.fillText(fitText(context, bigValue, maxTextWidth), pageWidth / 2, bigValueY);
-        context.textAlign = 'left';
-        const detailY = bigValueY + Math.round(pageHeight * 0.062);
-        context.fillStyle = '#0f172a';
-        context.font = `bold ${Math.max(20, Math.round(pageWidth * 0.042))}px Arial`;
-        context.fillText(fitText(context, productName, maxTextWidth), textX, detailY);
-        context.fillStyle = '#334155';
-        context.font = `${Math.max(17, Math.round(pageWidth * 0.035))}px Arial`;
-        context.fillText(fitText(context, `Batch: ${batchNumber}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.055));
-        context.fillStyle = '#334155';
-        context.font = `${Math.max(17, Math.round(pageWidth * 0.035))}px Arial`;
-        const packageLabel = packageQuantity == null
-          ? ''
-          : `Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`;
-        if (packageLabel) {
-          context.fillText(fitText(context, packageLabel, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.11));
-        }
-        if (godown) {
-          context.fillText(fitText(context, `Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, maxTextWidth), textX, detailY + Math.round(pageHeight * 0.165));
-        }
-        context.fillStyle = '#64748b';
-        context.font = `${Math.max(14, Math.round(pageWidth * 0.029))}px Arial`;
-        context.fillText(fitText(context, `Bag ${String(bagSerial).padStart(4, '0')}`, maxTextWidth), textX, Math.min(pageHeight - 10, detailY + Math.round(pageHeight * 0.22)));
-        return {
-          type: 'pixel' as const,
-          format: 'image' as const,
-          flavor: 'base64' as const,
-          data: canvas.toDataURL('image/png').split(',')[1],
-        };
-      }));
-      await qz.print(config, pages);
-      onProgress?.(chunkEnd, labels.length, `Sent ${chunkEnd} / ${labels.length} label images to the ${printerName} queue…`);
-  }
-  if (queueStatusEnabled) {
-    await Promise.all(queueJobs.map((queueJob) => queueJob.wait()));
-  } else {
-    onProgress?.(labels.length, labels.length, 'QZ Tray accepted the print job. Windows queue status is unavailable.');
-  }
+    await qz.print(config, [{ type: 'pdf', flavor: 'base64', data: btoa(binary) }]);
+    onProgress?.(labels.length, labels.length, `Sent ${labels.length} label(s) as one print job to ${printerName}…`);
+    if (!queueStatusEnabled) {
+      onProgress?.(labels.length, labels.length, 'QZ Tray accepted the print job. Windows queue status is unavailable.');
+      return { status: 'PRINTED', message: 'Windows queue status unavailable — check the printer.' };
+    }
+    return await queueJob.wait();
   } finally {
-    queueJobs.forEach((queueJob) => queueJob.close());
-  }
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('Could not encode a QR label for printing.'));
-    image.src = src;
-  });
-}
-
-function fitText(context: CanvasRenderingContext2D, value: unknown, maxWidth: number): string {
-  const text = String(value ?? '');
-  if (context.measureText(text).width <= maxWidth) return text;
-  let shortened = text;
-  while (shortened.length > 1 && context.measureText(`${shortened}…`).width > maxWidth) shortened = shortened.slice(0, -1);
-  return `${shortened}…`;
-}
-
-function parseQrPayload(value: string): Record<string, any> | null {
-  try {
-    const payload = JSON.parse(value);
-    return payload && typeof payload === 'object' ? payload : null;
-  } catch {
-    return null;
+    queueJob.close();
   }
 }

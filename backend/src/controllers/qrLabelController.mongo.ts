@@ -217,6 +217,10 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
       return { notReady: true as const, status: batchStatus || 'PENDING_QC' };
     }
 
+    // Print accounting is provisional until the Windows queue confirms the job.
+    await ctx.updateOne('qr_print_jobs', { id, tenant_id: req.user!.tenantId, ...divisionScope }, {
+      $set: { print_outcome: 'PENDING', print_confirmed_at: null },
+    });
     for (const label of labels) {
       await ctx.updateOne('qr_labels', { id: label.id, tenant_id: req.user!.tenantId, ...divisionScope }, {
         $set: { print_count: 1, last_printed_at: now() },
@@ -273,6 +277,59 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
     selected_ids: result.selectedIds,
     selected_count: result.selectedIds.length,
   });
+}
+
+/** Confirm the terminal outcome of print jobs after the Windows queue reports back. */
+export async function reportPrintResult(req: Request, res: Response): Promise<void> {
+  const rawIds = Array.isArray(req.body?.job_ids) ? req.body.job_ids : [];
+  const jobIds = [...new Set(rawIds.map((value: unknown) => String(value).trim()).filter(Boolean))].slice(0, 500);
+  const outcome = String(req.body?.outcome || '').toUpperCase();
+  if (jobIds.length === 0 || !['PRINTED', 'CANCELLED', 'FAILED'].includes(outcome)) {
+    res.status(400).json({ error: 'Provide job_ids and an outcome of PRINTED, CANCELLED or FAILED.' });
+    return;
+  }
+  const ctx = await getContext();
+  const tenantId = req.user!.tenantId;
+  const divisionScope = divisionFilter(req);
+  const jobs = await ctx.find('qr_print_jobs', {
+    tenant_id: tenantId, id: { $in: jobIds }, ...divisionScope,
+  }, { projection: { _id: 0, id: 1, job_code: 1 } });
+  if (jobs.length === 0) { res.status(404).json({ error: 'Print jobs not found' }); return; }
+  const foundIds = jobs.map((job: any) => job.id);
+
+  await ctx.updateMany('qr_print_jobs', {
+    tenant_id: tenantId, id: { $in: foundIds }, ...divisionScope,
+  }, { $set: { print_outcome: outcome, print_confirmed_at: now() } });
+
+  if (outcome !== 'PRINTED') {
+    // No paper was produced — release the labels so the job can be printed again.
+    const labels = await ctx.find('qr_labels', {
+      tenant_id: tenantId, print_job_id: { $in: foundIds }, ...divisionScope,
+    }, { projection: { _id: 0, id: 1, batch_id: 1 } });
+    const batchIds = [...new Set(labels.map((label: any) => label.batch_id).filter(Boolean))];
+    await ctx.updateMany('qr_labels', {
+      tenant_id: tenantId, print_job_id: { $in: foundIds }, ...divisionScope,
+    }, { $set: { print_count: 0, last_printed_at: null } });
+    for (const batchId of batchIds) {
+      const stillPrinted = await ctx.count('qr_labels', {
+        tenant_id: tenantId, batch_id: batchId, print_count: { $gt: 0 }, ...divisionScope,
+      });
+      if (stillPrinted === 0) {
+        await ctx.updateOne('batches', { id: batchId, tenant_id: tenantId, ...divisionScope }, { $set: { qr_printed_at: null } });
+      }
+    }
+  }
+
+  await ctx.insert('activity_logs', {
+    tenant_id: tenantId,
+    division_id: divisionStamp(req),
+    user_id: req.user!.userId,
+    user_name: req.user!.name,
+    user_role: req.user!.role,
+    action: outcome === 'PRINTED' ? 'QR_PRINT_CONFIRMED' : outcome === 'CANCELLED' ? 'QR_PRINT_CANCELLED' : 'QR_PRINT_FAILED',
+    description: `${outcome}: ${jobs.map((job: any) => job.job_code).join(', ')}`,
+  });
+  res.json({ updated: foundIds.length, outcome });
 }
 
 export async function list(req: Request, res: Response): Promise<void> {

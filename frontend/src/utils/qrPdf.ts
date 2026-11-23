@@ -138,6 +138,68 @@ function parseQrPayload(value: string): Record<string, any> | null {
   }
 }
 
+/**
+ * One page per label at the physical label size. Used for direct printing:
+ * QZ Tray sends the whole document to the printer as a single Windows job.
+ */
+export async function createQrLabelPdfBlob(
+  labels: QrLabel[],
+  job: QrJob,
+  size: QrLabelSize,
+): Promise<Blob> {
+  if (labels.length === 0) return new Blob([], { type: 'application/pdf' });
+  const width = Math.max(30, Math.min(200, Math.round(size.widthMm || 60)));
+  const height = Math.max(30, Math.min(250, Math.round(size.heightMm || 64)));
+  const images = await qrDataUrls(labels);
+  const doc = new jsPDF({ unit: 'mm', format: [width, height], orientation: 'portrait' });
+  const margin = Math.max(1.5, Math.min(width, height) * 0.05);
+  const qrSize = Math.min(width - margin * 2, (height - margin * 2) * 0.55);
+
+  labels.forEach((label, index) => {
+    if (index > 0) doc.addPage([width, height], 'portrait');
+    const payload = parseQrPayload(label.qr_value);
+    const productName = label.product_name || payload?.product_name || job.product_name || '';
+    const packageQuantity = label.package_quantity ?? payload?.package_quantity;
+    const packageUnit = label.uom || payload?.uom || '';
+    const bagCount = label.quantity ?? payload?.bag_count;
+    const godown = label.warehouse_name || payload?.godown;
+    const storageLocation = label.storage_location || payload?.storage_location;
+
+    doc.addImage(images[index], 'PNG', (width - qrSize) / 2, margin, qrSize, qrSize);
+
+    const maxWidth = width - margin * 2;
+    let y = margin + qrSize + 2.5;
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    let valueFont = 8;
+    doc.setFontSize(valueFont);
+    while (valueFont > 3 && doc.getTextWidth(String(label.qr_value)) > maxWidth) {
+      valueFont -= 0.5;
+      doc.setFontSize(valueFont);
+    }
+    doc.text(String(label.qr_value), width / 2, y, { align: 'center', maxWidth });
+    y += 3.5;
+
+    const line = (text: string, font = 5, bold = false) => {
+      doc.setFont('helvetica', bold ? 'bold' : 'normal');
+      doc.setFontSize(font);
+      doc.setTextColor(bold ? 15 : 71, bold ? 23 : 85, bold ? 42 : 105);
+      doc.text(text, margin, y, { maxWidth });
+      y += Math.max(2.4, font * 0.45);
+    };
+    line(String(productName).slice(0, 80), 5, true);
+    line(`Batch: ${label.batch_number}`, 4.2);
+    if (packageQuantity != null) line(`Package: ${packageQuantity} ${packageUnit} × ${bagCount || 1} bags`, 4.2);
+    if (godown) line(`Godown: ${godown}${storageLocation ? ` · ${storageLocation}` : ''}`, 4);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(4);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Bag ${String(payload?.bag_serial ?? label.serial_no).padStart(4, '0')}`, margin, Math.min(height - margin, y + 1), { maxWidth });
+  });
+
+  return doc.output('blob');
+}
+
 export async function downloadQrPdf(labels: QrLabel[], job: QrJob): Promise<void> {
   if (labels.length === 0) return;
   const blob = await createQrPdfBlob(labels, job);

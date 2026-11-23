@@ -118,6 +118,72 @@ export async function create(req: Request, res: Response): Promise<void> {
   });
 }
 
+/** Confirm the terminal outcome of print jobs after the Windows queue reports back. */
+export async function reportPrintResult(req: Request, res: Response): Promise<void> {
+  const rawIds = Array.isArray(req.body?.job_ids) ? req.body.job_ids : [];
+  const jobIds = [...new Set(rawIds.map((value: unknown) => String(value).trim()).filter(Boolean))].slice(0, 500);
+  const outcome = String(req.body?.outcome || '').toUpperCase();
+  if (jobIds.length === 0 || !['PRINTED', 'CANCELLED', 'FAILED'].includes(outcome)) {
+    res.status(400).json({ error: 'Provide job_ids and an outcome of PRINTED, CANCELLED or FAILED.' });
+    return;
+  }
+  const tenantId = req.user!.tenantId;
+  const dvJ = divisionWhere(req, 'division_id');
+  const dvB = divisionWhere(req, 'division_id');
+  const marks = jobIds.map(() => '?').join(',');
+  const jobs = await query<RowDataPacket[]>(
+    `SELECT id, job_code FROM qr_print_jobs WHERE tenant_id = ? AND id IN (${marks})${dvJ.sql}`,
+    [tenantId, ...jobIds, ...dvJ.params] as any[]
+  );
+  if (jobs.length === 0) { res.status(404).json({ error: 'Print jobs not found' }); return; }
+  const foundIds = jobs.map((job) => Number(job.id));
+  const foundMarks = foundIds.map(() => '?').join(',');
+
+  await query(
+    `UPDATE qr_print_jobs SET print_outcome = ?, print_confirmed_at = NOW()
+     WHERE tenant_id = ? AND id IN (${foundMarks})${dvJ.sql}`,
+    [outcome, tenantId, ...foundIds, ...dvJ.params] as any[]
+  );
+
+  if (outcome !== 'PRINTED') {
+    const dvL = divisionWhere(req, 'l.division_id');
+    const labels = await query<RowDataPacket[]>(
+      `SELECT l.id, l.batch_id FROM qr_labels l WHERE l.tenant_id = ? AND l.print_job_id IN (${foundMarks})${dvL.sql}`,
+      [tenantId, ...foundIds, ...dvL.params] as any[]
+    );
+    const batchIds = [...new Set(labels.map((label) => Number(label.batch_id)).filter(Boolean))];
+    const dvLabelUpdate = divisionWhere(req, 'division_id');
+    await query(
+      `UPDATE qr_labels SET print_count = 0, last_printed_at = NULL
+       WHERE tenant_id = ? AND print_job_id IN (${foundMarks})${dvLabelUpdate.sql}`,
+      [tenantId, ...foundIds, ...dvLabelUpdate.params] as any[]
+    );
+    for (const batchId of batchIds) {
+      const labelDivision = divisionWhere(req, 'division_id');
+      const [remaining] = await query<RowDataPacket[]>(
+        `SELECT COUNT(*) AS total FROM qr_labels WHERE tenant_id = ? AND batch_id = ? AND print_count > 0${labelDivision.sql}`,
+        [tenantId, batchId, ...labelDivision.params] as any[]
+      );
+      if (Number(remaining[0]?.total || 0) === 0) {
+        await query(
+          `UPDATE batches SET qr_printed_at = NULL WHERE id = ? AND tenant_id = ?${dvB.sql}`,
+          [batchId, tenantId, ...dvB.params] as any[]
+        );
+      }
+    }
+  }
+
+  await query(
+    `INSERT INTO activity_logs (user_id, user_name, user_role, action, description, tenant_id, division_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [req.user!.userId, req.user!.name, req.user!.role,
+      outcome === 'PRINTED' ? 'QR_PRINT_CONFIRMED' : outcome === 'CANCELLED' ? 'QR_PRINT_CANCELLED' : 'QR_PRINT_FAILED',
+      `${outcome}: ${jobs.map((job) => job.job_code).join(', ')}`,
+      tenantId, divisionStamp(req)] as any[]
+  );
+  res.json({ updated: foundIds.length, outcome });
+}
+
 export async function list(req: Request, res: Response): Promise<void> {
   const q = String(req.query.q || '').trim();
   // Product names are excluded because one product can own thousands of QR
@@ -230,6 +296,12 @@ export async function printInitial(req: Request, res: Response): Promise<void> {
       return { notReady: true as const, status: batchStatus || 'PENDING_QC' };
     }
 
+    // Print accounting is provisional until the Windows queue confirms the job.
+    await conn.execute(
+      `UPDATE qr_print_jobs SET print_outcome = 'PENDING', print_confirmed_at = NULL
+       WHERE id = ? AND tenant_id = ?`,
+      [id, req.user!.tenantId] as any[]
+    );
     await conn.execute(
       `UPDATE qr_labels
        SET print_count = 1, last_printed_at = CURRENT_TIMESTAMP(3)

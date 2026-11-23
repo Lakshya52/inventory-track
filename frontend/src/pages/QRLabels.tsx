@@ -6,7 +6,7 @@ import {
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { downloadQrPdf, QrJob, QrLabel } from '../utils/qrPdf';
-import { prepareDirectQrPrinter, printQrLabelsDirect } from '../utils/directQrPrinter';
+import { prepareDirectQrPrinter, printQrPdfDirect, type QrPrintOutcome } from '../utils/directQrPrinter';
 import type { EntityId } from '../types';
 import {
   formatDate as formatIsoDate,
@@ -25,7 +25,23 @@ type QrJobRow = QrJob & {
   labels_printed?: boolean;
   qc_ready?: boolean;
   can_print_initial?: boolean;
+  print_outcome?: 'PENDING' | 'PRINTED' | 'CANCELLED' | 'FAILED' | null;
 };
+
+function safeJobName(value: unknown): string {
+  return String(value ?? 'job').replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 40);
+}
+
+function printOutcomeMessage(outcome: QrPrintOutcome, count: number, printer: string): string {
+  const prefix = `${count} QR label${count === 1 ? '' : 's'}`;
+  if (outcome.status === 'CANCELLED') {
+    return `${prefix} print was CANCELLED in the Windows queue — the labels were released so you can print again. ${outcome.message || ''}`;
+  }
+  if (outcome.status === 'FAILED') {
+    return `${prefix} print FAILED — the labels were released so you can print again. ${outcome.message || 'Check the printer.'}`;
+  }
+  return `${prefix} printed as one job on ${printer}.${outcome.message ? ` ${outcome.message}` : ''}`;
+}
 
 type BatchGroup = {
   key: string;
@@ -115,6 +131,12 @@ export default function QRLabels() {
   const [reprintLoading, setReprintLoading] = useState(false);
   const [reprinting, setReprinting] = useState(false);
   const [batchPrintingKey, setBatchPrintingKey] = useState<string | null>(null);
+  const [printReport, setPrintReport] = useState<{
+    outcome: QrPrintOutcome;
+    count: number;
+    jobCodes: string[];
+    label: string;
+  } | null>(null);
   const [reprintMode, setReprintMode] = useState<'LABELS' | 'SKU'>('LABELS');
   const [skuQuery, setSkuQuery] = useState('');
   const [skuCount, setSkuCount] = useState('1');
@@ -236,8 +258,18 @@ export default function QRLabels() {
       } else {
         let labelSize = { widthMm: 60, heightMm: 64 };
         try { labelSize = await api.auth.printerLabelSize(); } catch { /* Use the default label size if settings cannot load. */ }
-        await printQrLabelsDirect(result.labels, result.job, labelSize, printerName!, (sent, total, status) => setSuccess(status || `Sending labels to ${printerName}: ${sent} / ${total} queued…`));
-        setSuccess(`${result.labels.length} QR label${result.labels.length === 1 ? '' : 's'} sent to the ${printerName} print queue.`);
+        const outcome = await printQrPdfDirect(
+          result.labels, result.job, labelSize, printerName!,
+          `QR-REPRINT-${result.job.job_code}-${Date.now()}`,
+          (sent, total, status) => setSuccess(status || `Sending ${sent} / ${total} labels to ${printerName}…`),
+        );
+        setSuccess(printOutcomeMessage(outcome, result.labels.length, printerName!));
+        setPrintReport({
+          outcome,
+          count: result.labels.length,
+          jobCodes: [result.job.job_code],
+          label: 'Reprint',
+        });
       }
       if (fulfillingRequestId !== null) {
         await api.qc.qrJobs.completeReprintRequest(fulfillingRequestId);
@@ -268,6 +300,7 @@ export default function QRLabels() {
     }
     setError('');
     setSuccess('');
+    setPrintReport(null);
     setBatchPrintingKey(group.key);
     try {
       const printerName = mode === 'print' ? await prepareDirectQrPrinter() : undefined;
@@ -285,9 +318,26 @@ export default function QRLabels() {
       } else {
         let labelSize = { widthMm: 60, heightMm: 64 };
         try { labelSize = await api.auth.printerLabelSize(); } catch { /* default size */ }
-        await printQrLabelsDirect(allLabels, firstJob, labelSize, printerName!, (sent, total, status) =>
-          setSuccess(status || `Sending ${group.batchNumber}: ${sent} / ${total} queued…`));
-        setSuccess(`${allLabels.length} QR labels from ${group.batchNumber} sent to the ${printerName} print queue.`);
+        const outcome = await printQrPdfDirect(
+          allLabels, firstJob, labelSize, printerName!,
+          `QR-${safeJobName(group.batchNumber)}-${Date.now()}`,
+          (sent, total, status) =>
+            setSuccess(status || `Sending ${group.batchNumber}: ${sent} / ${total} labels…`),
+        );
+        const jobIds = pendingJobs.map((job) => job.id);
+        try {
+          await api.qc.qrJobs.reportPrintResult(jobIds, outcome.status);
+        } catch {
+          // The print itself already finished — a failed status write must not
+          // turn a successful print into an error in the UI.
+        }
+        setSuccess(printOutcomeMessage(outcome, allLabels.length, printerName!));
+        setPrintReport({
+          outcome,
+          count: allLabels.length,
+          jobCodes: pendingJobs.map((job) => job.job_code),
+          label: group.batchNumber,
+        });
       }
       await load();
     } catch (err: any) {
@@ -487,6 +537,15 @@ export default function QRLabels() {
         <td>
           <div className="flex flex-wrap gap-1">
             <span className={`badge ${status.className}`}>{status.label}</span>
+            {job.print_outcome === 'PENDING' && (
+              <span className="badge badge-warning" title="The printer has not confirmed this job yet">Awaiting confirmation</span>
+            )}
+            {job.print_outcome === 'CANCELLED' && (
+              <span className="badge badge-warning" title="The print job was cancelled in the Windows queue — labels were released for reprinting">Print cancelled</span>
+            )}
+            {job.print_outcome === 'FAILED' && (
+              <span className="badge badge-danger" title="The print job failed — labels were released for reprinting">Print failed</span>
+            )}
             {job.label_count ? <span className="badge badge-neutral">{job.printed_count ?? 0}/{job.label_count} printed</span> : null}
           </div>
         </td>
@@ -562,6 +621,32 @@ export default function QRLabels() {
       {success && (
         <div className="mb-4 p-3 rounded-xl flex items-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 text-sm">
           <CheckCircle size={16} className="flex-shrink-0" /> {success}
+        </div>
+      )}
+      {printReport && (
+        <div className={`mb-4 rounded-xl border p-4 text-sm ${
+          printReport.outcome.status === 'PRINTED'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : printReport.outcome.status === 'CANCELLED'
+              ? 'border-amber-200 bg-amber-50 text-amber-900'
+              : 'border-rose-200 bg-rose-50 text-rose-800'
+        }`}>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-bold">
+            <span>{printReport.label}</span>
+            <span>
+              {printReport.outcome.status === 'PRINTED'
+                ? `${printReport.count} printed · 0 cancelled · 0 failed`
+                : printReport.outcome.status === 'CANCELLED'
+                  ? `0 printed · ${printReport.count} cancelled · 0 failed`
+                  : `0 printed · 0 cancelled · ${printReport.count} failed`}
+            </span>
+          </div>
+          <p className="mt-1 text-xs font-medium opacity-90">
+            Print jobs: {printReport.jobCodes.join(', ') || '—'}
+          </p>
+          {printReport.outcome.message && (
+            <p className="mt-1 text-xs font-medium opacity-90">{printReport.outcome.message}</p>
+          )}
         </div>
       )}
 
