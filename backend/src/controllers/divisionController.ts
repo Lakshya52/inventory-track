@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { execute, getContext, isDuplicateKey, query, useMongo } from '../config/database';
+import { execute, getContext, isDuplicateKey, query, useMongo, withTransaction } from '../config/database';
 import { RowDataPacket } from 'mysql2';
 
 function cleanName(value: unknown): string {
@@ -131,35 +131,67 @@ export async function updateDivision(req: Request, res: Response): Promise<void>
   }
 }
 
-/** DELETE /api/divisions/:id — remove an unused empty division (ADMIN only). */
+/** DELETE /api/divisions/:id — remove an empty division (ADMIN only).
+ *  Users assigned to the division are DEACTIVATED, so they can no longer log in
+ *  (the login page tells them to contact an administrator). Their division_id
+ *  is left pointing at the removed division on purpose — that dangling link is
+ *  what the login check uses to give the division-specific message. Activity
+ *  history is kept as-is. Only real business records prevent deletion. */
 export async function deleteDivision(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenantId;
   const id = req.params.id;
-  const scopedTables = ['admins', 'qc_users', 'dispatch_users', 'products', 'batches', 'batch_groups', 'qc_records', 'dispatch_records', 'dispatch_orders', 'fix_records', 'packing_list_items', 'qr_labels', 'qr_print_jobs', 'warehouses', 'storage_racks', 'shelf_locations', 'loading_sessions', 'loading_scan_events', 'activity_logs'];
+  const userTables = ['admins', 'qc_users', 'dispatch_users'];
+  // Historical logs are intentionally NOT blockers — old activity must not
+  // prevent an admin from cleaning up an otherwise empty division.
+  const blockingTables = [
+    'products', 'batches', 'batch_groups', 'qc_records', 'dispatch_records',
+    'dispatch_orders', 'fix_records', 'packing_list_items', 'qr_labels',
+    'qr_print_jobs', 'warehouses', 'storage_racks', 'shelf_locations',
+    'loading_sessions', 'loading_scan_events',
+  ];
   try {
     if (useMongo) {
       const ctx = await getContext();
       const division = await ctx.findOne('divisions', { id, tenant_id: tenantId }, { projection: { _id: 0, id: 1, name: 1 } });
       if (!division) { res.status(404).json({ error: 'Division not found.' }); return; }
-      for (const table of scopedTables) {
+      const blockers: string[] = [];
+      for (const table of blockingTables) {
         const refs = await ctx.count(table, { tenant_id: tenantId, division_id: id });
-        if (refs > 0) { res.status(409).json({ error: `Division "${division.name}" is in use (${refs} record${refs === 1 ? '' : 's'}). Deactivate it instead of deleting.` }); return; }
+        if (refs > 0) blockers.push(`${refs} ${table.replace(/_/g, ' ')}`);
       }
-      await ctx.deleteOne('divisions', { id, tenant_id: tenantId });
-      res.json({ message: 'Division deleted' });
+      if (blockers.length > 0) {
+        res.status(409).json({ error: `Division "${division.name}" is in use (${blockers.join(', ')}). Move or delete those records first.` });
+        return;
+      }
+      await withTransaction(async (tx) => {
+        for (const table of userTables) {
+          await tx.updateMany(table, { tenant_id: tenantId, division_id: id }, { $set: { is_active: 0 } });
+        }
+        await tx.deleteOne('divisions', { id, tenant_id: tenantId });
+      });
+      res.json({ message: 'Division deleted. Users assigned to it were deactivated.' });
       return;
     }
     const division = await query<RowDataPacket[]>('SELECT id, name FROM divisions WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (division.length === 0) { res.status(404).json({ error: 'Division not found.' }); return; }
-    for (const table of scopedTables.filter((table) => !['loading_sessions', 'loading_scan_events'].includes(table))) {
+    const tables = blockingTables.filter((table) => !['loading_sessions', 'loading_scan_events'].includes(table));
+    const blockers: string[] = [];
+    for (const table of tables) {
       const refs = await query<RowDataPacket[]>(`SELECT COUNT(*) AS total FROM \`${table}\` WHERE tenant_id = ? AND division_id = ?`, [tenantId, id]);
-      if (Number(refs[0]?.total || 0) > 0) {
-        res.status(409).json({ error: `Division "${division[0].name}" is in use (${refs[0].total} record${Number(refs[0].total) === 1 ? '' : 's'}). Deactivate it instead of deleting.` });
-        return;
-      }
+      const count = Number(refs[0]?.total || 0);
+      if (count > 0) blockers.push(`${count} ${table.replace(/_/g, ' ')}`);
     }
-    await execute('DELETE FROM divisions WHERE id = ? AND tenant_id = ?', [id, tenantId]);
-    res.json({ message: 'Division deleted' });
+    if (blockers.length > 0) {
+      res.status(409).json({ error: `Division "${division[0].name}" is in use (${blockers.join(', ')}). Move or delete those records first.` });
+      return;
+    }
+    await withTransaction(async (conn) => {
+      for (const table of userTables) {
+        await (conn as any).execute(`UPDATE \`${table}\` SET is_active = 0 WHERE tenant_id = ? AND division_id = ?`, [tenantId, id]);
+      }
+      await (conn as any).execute('DELETE FROM divisions WHERE id = ? AND tenant_id = ?', [id, tenantId]);
+    });
+    res.json({ message: 'Division deleted. Users assigned to it were deactivated.' });
   } catch (error) {
     throw error;
   }

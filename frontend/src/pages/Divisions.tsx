@@ -340,7 +340,7 @@ export default function Divisions({ embedded = false }: { embedded?: boolean }) 
                         <div className="flex items-center gap-3 flex-wrap">
                           <span className="flex items-center gap-2 text-sm font-medium text-rose-800">
                             <AlertTriangle size={16} />
-                            Delete division “{division.name}”? This works only if it has no members, products or other records.
+                            Delete division “{division.name}”? This works only if it has no products, batches or other business records. Any QC/dispatch users assigned to it will be deactivated — they will not be able to log in until an administrator assigns them to another division.
                           </span>
                           <div className="flex items-center gap-2 ml-auto">
                             <button

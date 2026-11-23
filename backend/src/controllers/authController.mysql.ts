@@ -60,6 +60,18 @@ export async function login(req: Request, res: Response): Promise<void> {
         res.status(401).json({ error: 'Invalid credentials' });
         return;
       }
+      // A division deleted by an admin deactivates its users and leaves a
+      // dangling division_id. Give them a specific, actionable message.
+      if (c.role !== 'ADMIN' && user.division_id) {
+        const divisionRows = await query<RowDataPacket[]>(
+          'SELECT id FROM divisions WHERE id = ? AND tenant_id = ? LIMIT 1',
+          [user.division_id, user.tenant_id],
+        );
+        if (divisionRows.length === 0) {
+          res.status(403).json({ error: 'You are not assigned to any division. Contact Administrator.' });
+          return;
+        }
+      }
       if (Number(user.is_active) !== 1) {
         res.status(403).json({ error: 'Account is deactivated. Contact an administrator.' });
         return;
