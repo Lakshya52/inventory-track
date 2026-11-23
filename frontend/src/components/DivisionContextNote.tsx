@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Building2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../services/api';
 import type { Division } from '../types';
@@ -37,7 +36,7 @@ export default function DivisionContextNote() {
       className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-brand-200 bg-brand-50 px-2.5 py-1.5 text-[11px] font-semibold text-brand-800"
       title="You see this division's data (plus shared rows) and new records are stamped with it. Change it from the division switcher at the top-right — pick 'All divisions' to see everything"
     >
-      <Building2 size={13} className="shrink-0" />
+      {/* <Building2 size={13} className="shrink-0" /> */}
       <span className="truncate">Viewing &amp; creating in: <span className="text-brand-900">{label}</span></span>
     </div>
   );

@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AppLayout } from './components/AppLayout';
+import { PageLoader } from './components/PageLoader';
 
 const Login = lazy(() => import('./pages/Login'));
 const Register = lazy(() => import('./pages/Register'));
@@ -29,21 +30,11 @@ const StorageLocation = lazy(() => import('./pages/StorageLocation'));
 const StorageRack = lazy(() => import('./pages/StorageRack'));
 const Inventory = lazy(() => import('./pages/Inventory'));
 
+// Only used for the standalone auth screens, which have no app shell.
+const FullPageLoader = () => <PageLoader label="Loading…" className="min-h-screen bg-surface-50" />;
+
 export default function App() {
   const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-surface-50">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-linear-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold animate-pulse">
-            A
-          </div>
-          <span className="text-sm text-surface-400 font-medium">Loading...</span>
-        </div>
-      </div>
-    );
-  }
 
   const redirectHome = () => {
     if (user?.role === 'QC') return '/qc-dashboard';
@@ -52,14 +43,10 @@ export default function App() {
   };
 
   return (
-    <Suspense fallback={(
-      <div className="flex min-h-[40vh] items-center justify-center text-sm font-medium text-surface-500" role="status">
-        Loading page...
-      </div>
-    )}>
+    <Suspense fallback={<FullPageLoader />}>
     <Routes>
-      <Route path="/login" element={user ? <Navigate to={redirectHome()} replace /> : <Login />} />
-      <Route path="/register" element={user ? <Navigate to={redirectHome()} replace /> : <Register />} />
+      <Route path="/login" element={user ? <Navigate to={redirectHome()} replace /> : loading ? <FullPageLoader /> : <Login />} />
+      <Route path="/register" element={user ? <Navigate to={redirectHome()} replace /> : loading ? <FullPageLoader /> : <Register />} />
 
       <Route element={<AppLayout />}>
         <Route path="/" element={<ProtectedRoute roles={['ADMIN']}><Dashboard /></ProtectedRoute>} />

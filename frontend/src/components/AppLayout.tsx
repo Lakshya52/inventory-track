@@ -2,13 +2,13 @@ import { useAuth } from "../contexts/AuthContext";
 import { resolveUploadUrl, api } from "../services/api";
 import { startRealtime } from "../services/realtime";
 import { useNavigate, useLocation, Link, Outlet } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { Division } from "../types";
+import { PageLoader } from "./PageLoader";
 import {
   LayoutDashboard,
   Package,
   PackagePlus,
-  Users,
   BarChart3,
   Camera,
   ClipboardList,
@@ -81,12 +81,6 @@ const navSections: { title: string; items: NavItem[] }[] = [
         label: "Reports",
         path: "/reports",
         icon: <FileBarChart size={20} />,
-        roles: ["ADMIN"],
-      },
-      {
-        label: "User Management",
-        path: "/users",
-        icon: <Users size={20} />,
         roles: ["ADMIN"],
       },
       {
@@ -265,7 +259,7 @@ const navSections: { title: string; items: NavItem[] }[] = [
 ];
 
 export function AppLayout() {
-  const { user, tenant, logout, adminDivisionId, setAdminDivisionId } = useAuth();
+  const { user, loading, tenant, logout, adminDivisionId, setAdminDivisionId } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -380,7 +374,9 @@ export function AppLayout() {
     });
   }, [location.pathname, location.search]);
 
-  if (!user) return <Outlet />;
+  // While auth is restoring on refresh, keep the shell on screen and show the
+  // loader inside the content panel instead of blanking out the whole app.
+  if (!user && !loading) return <Outlet />;
 
   const handleLogout = () => {
     logout();
@@ -399,11 +395,11 @@ export function AppLayout() {
     .map((s) => ({
       ...s,
       items: s.items
-        .filter((item) => item.roles.includes(user.role))
+        .filter((item) => user ? item.roles.includes(user.role) : false)
         .map((item) => ({
           ...item,
           subItems: item.subItems?.filter(
-            (sub) => !sub.roles || sub.roles.includes(user.role),
+            (sub) => !user || !sub.roles || sub.roles.includes(user.role),
           ),
         })),
     }))
@@ -669,20 +665,20 @@ export function AppLayout() {
         <div className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5">
           <div className="w-9 h-9 rounded-full bg-brand-500/30 border border-brand-400/40 flex items-center justify-center shrink-0">
             <span className="text-sm font-bold text-brand-200">
-              {user.name ? user.name.slice(0, 2).toUpperCase() : "AD"}
+              {user?.name ? user.name.slice(0, 2).toUpperCase() : "AD"}
             </span>
           </div>
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-white truncate">
-                {user.name}
+                {user?.name ?? "Working…"}
               </p>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 <span className="text-xs text-slate-400 font-mono tracking-wide uppercase">
-                  {user.role}
+                  {user?.role ?? "—"}
                 </span>
-                {user.divisionName && (
+                {user?.divisionName && (
                   <span
                     className="text-[10px] leading-4 text-brand-300 font-semibold bg-brand-500/10 border border-brand-500/20 rounded px-1.5 py-0.5 truncate max-w-[120px]"
                     title={`Division: ${user.divisionName}`}
@@ -708,7 +704,7 @@ export function AppLayout() {
   );
 
   return (
-    <div className="min-h-screen w-full bg-slate-50 flex">
+    <div className="flex min-h-screen w-full bg-slate-50 lg:h-screen lg:overflow-hidden lg:bg-slate-900 lg:p-5">
       {/* Mobile Backdrop */}
       {mobileOpen && (
         <div
@@ -728,12 +724,12 @@ export function AppLayout() {
 
       {/* Main Content Area */}
       <div
-        className={`flex min-w-0 flex-1 flex-col transition-all duration-300 ${
+        className={`flex min-w-0 flex-1 flex-col transition-all duration-300 lg:min-h-0 lg:overflow-hidden lg:rounded-[20px] lg:bg-white lg:shadow-2xl lg:shadow-black/40 ${
           collapsed ? "lg:ml-20" : "lg:ml-72"
         }`}
       >
         {/* Top Header */}
-        <header className="h-16 flex items-center justify-between px-4 sm:px-6 lg:px-8 bg-white border-b border-slate-200 sticky top-0 z-30 shrink-0">
+        <header className="h-16 flex items-center justify-between px-4 sm:px-6 lg:px-8 bg-white border-b border-slate-200 sticky top-0 z-30 shrink-0 lg:rounded-t-[20px]">
           <div className="flex items-center gap-3">
             <button
               className="lg:hidden p-2 rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
@@ -751,7 +747,7 @@ export function AppLayout() {
 
           <div className="flex items-center gap-4">
             {/* ADMIN-only division switcher */}
-            {user.role === "ADMIN" && (
+            {user?.role === "ADMIN" && (
               <div className="relative" ref={divisionRef}>
                 <button
                   type="button"
@@ -788,20 +784,25 @@ export function AppLayout() {
                     {!divisionLoading && divisions.length === 0 && (
                       <p className="px-3 py-2 text-xs text-slate-500">No divisions yet. Create them from the Divisions page.</p>
                     )}
-                    {divisions.filter((division) => division.is_active === 1).map((division) => (
-                      <button
-                        key={division.id}
-                        type="button"
-                        role="option"
-                        aria-selected={String(adminDivisionId) === String(division.id)}
-                        onClick={() => { setAdminDivisionId(division.id); setDivisionPickerOpen(false); }}
-                        className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-left transition-colors ${String(adminDivisionId) === String(division.id) ? "bg-brand-50 text-brand-800" : "text-slate-700 hover:bg-slate-50"}`}
-                      >
-                        <Building2 size={16} className="text-slate-400" />
-                        <span className="flex-1 truncate">{division.name}</span>
-                        {String(adminDivisionId) === String(division.id) && <Check size={16} className="text-brand-600" />}
-                      </button>
-                    ))}
+                    {divisions.map((division) => {
+                      const inactive = Number(division.is_active) !== 1;
+                      const selected = String(adminDivisionId) === String(division.id);
+                      return (
+                        <button
+                          key={division.id}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          onClick={() => { setAdminDivisionId(division.id); setDivisionPickerOpen(false); }}
+                          className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-left transition-colors ${selected ? "bg-brand-50 text-brand-800" : "text-slate-700 hover:bg-slate-50"} ${inactive ? "opacity-70" : ""}`}
+                        >
+                          <Building2 size={16} className="text-slate-400" />
+                          <span className="flex-1 truncate">{division.name}</span>
+                          {inactive && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">Inactive</span>}
+                          {selected && <Check size={16} className="text-brand-600" />}
+                        </button>
+                      );
+                    })}
                     <div className="border-t border-slate-100 my-1.5" />
                     <Link
                       to="/masters?tab=divisions"
@@ -834,8 +835,14 @@ export function AppLayout() {
         </header>
 
         {/* Page Content — remount on ADMIN division switch so every page refetches its data */}
-        <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8" key={user?.role === "ADMIN" ? String(adminDivisionId) : "static"}>
-          <Outlet />
+        <main className="min-w-0 flex-1 p-4 sm:p-6 lg:min-h-0 lg:overflow-x-hidden lg:overflow-y-auto lg:p-8" key={user?.role === "ADMIN" ? String(adminDivisionId) : "static"}>
+          {loading ? (
+            <PageLoader label="Restoring your workspace…" />
+          ) : (
+            <Suspense fallback={<PageLoader label="Loading page…" />}>
+              <Outlet />
+            </Suspense>
+          )}
         </main>
       </div>
     </div>
