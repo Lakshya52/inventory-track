@@ -5,6 +5,7 @@ import * as mongoImpl from './userController.mongo';
 const implementation = useMongo ? mongoImpl : mysqlImpl;
 
 export const listAllUsers = implementation.listAllUsers;
+export const listUsersPage = implementation.listUsersPage;
 export const listUsers = implementation.listUsers;
 export const addUser = implementation.addUser;
 export const updateUser = implementation.updateUser;

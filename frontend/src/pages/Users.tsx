@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, FormEvent } from 'react';
+import { useEffect, useState, FormEvent } from 'react';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Division, EntityId, User } from '../types';
@@ -19,13 +19,18 @@ import {
   Mail,
   Shield,
   UserPlus,
+  Upload,
 } from 'lucide-react';
+import ImportWizard from '../components/ImportWizard';
 
 const ROLE_OPTIONS = [
   { value: 'ADMIN', label: 'Admin (Full Access)' },
   { value: 'QC', label: 'QC Person (Quality Control)' },
   { value: 'DISPATCH', label: 'Dispatch Person (Loading & Shipping)' },
 ] as const;
+
+/** The single admin account is managed separately — not in the team list filter. */
+const FILTER_ROLE_OPTIONS = ROLE_OPTIONS.filter((option) => option.value !== 'ADMIN');
 
 type RoleValue = typeof ROLE_OPTIONS[number]['value'];
 
@@ -39,9 +44,14 @@ function apiType(role: string): string {
   return role.toLowerCase();
 }
 
-export default function Users() {
+export default function Users({ embedded = false }: { embedded?: boolean }) {
   const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [stats, setStats] = useState({ total: 0, active: 0, qc: 0, dispatch: 0 });
+  const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 250);
   const [roleFilter, setRoleFilter] = useState('ALL');
@@ -52,6 +62,7 @@ export default function Users() {
   const [divisions, setDivisions] = useState<Division[]>([]);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', email: '', password: '', role: 'QC' as RoleValue, division_id: '' as EntityId | '' });
   const [addError, setAddError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -66,7 +77,18 @@ export default function Users() {
 
   const loadUsers = async () => {
     try {
-      setUsers(await api.users.list());
+      const result = await api.users.listPage({
+        q: debouncedSearch,
+        role: roleFilter,
+        status: statusFilter,
+        page,
+        limit: pageSize,
+      });
+      if (result.page > result.pages && result.pages > 0) setPage(result.pages);
+      setUsers(result.items || []);
+      setTotal(result.total);
+      setPages(result.pages);
+      setStats(result.stats);
       setError('');
     } catch (err: any) {
       setError(err.message || 'Unable to load users');
@@ -84,6 +106,8 @@ export default function Users() {
 
   useEffect(() => {
     void loadUsers();
+  }, [debouncedSearch, roleFilter, statusFilter, page, pageSize]);
+  useEffect(() => {
     void loadDivisions();
   }, []);
 
@@ -94,27 +118,14 @@ export default function Users() {
         setShowAdd(false);
         setEditUser(null);
         setPasswordUser(null);
+        setShowImport(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = debouncedSearch.trim().toLowerCase();
-    return users.filter((u) => {
-      const matchesSearch = !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
-      const matchesRole = roleFilter === 'ALL' || u.role === roleFilter;
-      const matchesStatus =
-        statusFilter === 'all' ||
-        (statusFilter === 'active' && u.is_active === 1) ||
-        (statusFilter === 'inactive' && u.is_active === 0);
-      return matchesSearch && matchesRole && matchesStatus;
-    });
-  }, [users, debouncedSearch, roleFilter, statusFilter]);
-
-  const activeCount = users.filter((u) => u.is_active === 1).length;
-  const adminCount = users.filter((u) => u.role === 'ADMIN').length;
+  const activeCount = stats.active;
 
   const isSelf = (u: User) => u.role === currentUser?.role && String(u.id) === String(currentUser?.id);
 
@@ -210,42 +221,55 @@ export default function Users() {
   };
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
-      {/* 1. PAGE HEADER */}
+    <div className={embedded ? 'space-y-4' : 'space-y-6 max-w-7xl mx-auto'}>
+      {/* 1. PAGE HEADER — compact variant matches the other Masters tabs */}
       <div className="bg-white rounded-2xl border-2 border-slate-200 p-5 sm:p-6 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-2xl bg-brand-100 text-brand-700 flex items-center justify-center shrink-0">
             <UsersIcon size={24} />
           </div>
           <div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-              User Management
-            </h1>
-            <p className="text-sm sm:text-base text-slate-500 mt-0.5">
-              Add team members, assign access roles (Admin, QC, Dispatch), and manage login credentials.
+            {embedded ? (
+              <h2 className="text-xl font-extrabold tracking-tight text-slate-900">Users Master</h2>
+            ) : (
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                User Management
+              </h1>
+            )}
+            <p className={`${embedded ? 'text-sm' : 'text-sm sm:text-base'} text-slate-500 mt-0.5`}>
+              Add team members, assign access roles (QC, Dispatch), and manage login credentials.
             </p>
           </div>
         </div>
 
-        <button
-          onClick={() => {
-            setShowAdd(true);
-            setAddError('');
-          }}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-bold rounded-xl transition-colors shadow-sm shrink-0"
-        >
-          <UserPlus size={18} />
-          <span>Add New User</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowImport(true)}
+            className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            <Upload size={16} /> Import users
+          </button>
+          <button
+            onClick={() => {
+              setShowAdd(true);
+              setAddError('');
+            }}
+            className={`inline-flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl transition-colors shadow-sm shrink-0 ${embedded ? 'h-10 px-4 text-sm' : 'px-5 py-2.5 text-sm'}`}
+          >
+            <UserPlus size={18} />
+            <span>Add New User</span>
+          </button>
+        </div>
       </div>
 
       {/* 2. STATS CARDS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Total Users', value: users.length, icon: <UsersIcon size={20} />, bg: 'bg-blue-100 text-blue-700' },
+          { label: 'Total Users', value: stats.total, icon: <UsersIcon size={20} />, bg: 'bg-blue-100 text-blue-700' },
           { label: 'Active Accounts', value: activeCount, icon: <UserCheck size={20} />, bg: 'bg-emerald-100 text-emerald-700' },
-          { label: 'Deactivated', value: users.length - activeCount, icon: <UserX size={20} />, bg: 'bg-rose-100 text-rose-700' },
-          { label: 'Administrators', value: adminCount, icon: <ShieldCheck size={20} />, bg: 'bg-purple-100 text-purple-700' },
+          { label: 'Deactivated', value: stats.total - activeCount, icon: <UserX size={20} />, bg: 'bg-rose-100 text-rose-700' },
+          { label: 'QC Team', value: stats.qc, icon: <ShieldCheck size={20} />, bg: 'bg-purple-100 text-purple-700' },
         ].map((card) => (
           <div key={card.label} className="bg-white rounded-2xl border-2 border-slate-200 p-5 shadow-xs">
             <div className="flex items-center gap-2.5 mb-2">
@@ -287,17 +311,17 @@ export default function Users() {
             className="w-full pl-10 pr-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm text-slate-800 placeholder-slate-400 font-medium"
             placeholder="Search by user name or email..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
         </div>
 
         <select
           className="px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500"
           value={roleFilter}
-          onChange={(e) => setRoleFilter(e.target.value)}
+          onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
         >
           <option value="ALL">All Roles</option>
-          {ROLE_OPTIONS.map((role) => (
+          {FILTER_ROLE_OPTIONS.map((role) => (
             <option key={role.value} value={role.value}>
               {role.label}
             </option>
@@ -308,7 +332,7 @@ export default function Users() {
           {(['all', 'active', 'inactive'] as const).map((status) => (
             <button
               key={status}
-              onClick={() => setStatusFilter(status)}
+              onClick={() => { setStatusFilter(status); setPage(1); }}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
                 statusFilter === status
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -336,7 +360,7 @@ export default function Users() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.map((u) => {
+              {users.map((u) => {
                 const self = isSelf(u);
                 const roleBadge = roleBadgeStyle[u.role] || {
                   bg: 'bg-slate-100 text-slate-800 border-slate-200',
@@ -450,7 +474,7 @@ export default function Users() {
                 );
               })}
 
-              {filtered.length === 0 && (
+              {users.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-12 text-center text-slate-400">
                     <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-2 text-slate-400">
@@ -463,6 +487,39 @@ export default function Users() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-xs font-semibold text-slate-500">
+          <div className="flex items-center gap-2">
+            <span>Show</span>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            >
+              {[10, 25, 50, 100].map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+            <span>per page · {total.toLocaleString()} user{total === 1 ? '' : 's'} · page {page} of {pages}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page <= 1}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => setPage((current) => current + 1)}
+              disabled={page >= pages}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
 
@@ -766,6 +823,14 @@ export default function Users() {
             </form>
           </div>
         </div>
+      )}
+
+      {showImport && (
+        <ImportWizard
+          kind="users"
+          onClose={() => setShowImport(false)}
+          onImported={() => { void loadUsers(); setNotice('Users imported successfully.'); }}
+        />
       )}
     </div>
   );

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { query, execute } from '../config/database';
 import { withTransaction } from '../config/database.mysql';
 import { ResultSetHeader, RowDataPacket } from 'mysql2';
+import { divisionWhere } from '../utils/division';
 
 type UserTypeInfo = { table: string; role: string };
 
@@ -96,10 +97,11 @@ async function resolveDivision(
 }
 
 export async function listAllUsers(req: Request, res: Response): Promise<void> {
+  const dv = divisionWhere(req);
   const results = await Promise.all(
     Object.values(USER_TYPES).map(async info => {
       const rows = await query<RowDataPacket[]>(
-        `SELECT id, name, email, is_active, created_at, division_id FROM ${info.table} WHERE tenant_id = ? AND LEFT(email, 15) <> '__role_archive_' ORDER BY created_at DESC`, [req.user?.tenantId]
+        `SELECT id, name, email, is_active, created_at, division_id FROM ${info.table} WHERE tenant_id = ? AND LEFT(email, 15) <> '__role_archive_'${dv.sql} ORDER BY created_at DESC`, [req.user?.tenantId, ...dv.params]
       );
       return rows.map(row => publicUser(row, info.role));
     })
@@ -114,12 +116,79 @@ export async function listAllUsers(req: Request, res: Response): Promise<void> {
   res.json(users);
 }
 
+/** GET /api/users/paged — server-side search, filter and pagination for the web UI. */
+export async function listUsersPage(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenantId;
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 25));
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const role = String(req.query.role || 'ALL');
+  const status = String(req.query.status || 'all');
+  const dv = divisionWhere(req);
+
+  // The single ADMIN account is not part of team management — it is never
+  // listed, filtered or paginated alongside QC/Dispatch users.
+  const managedTypes = Object.values(USER_TYPES).filter((info) => info.role !== 'ADMIN');
+  const results = await Promise.all(
+    managedTypes.map(async info => {
+      const rows = await query<RowDataPacket[]>(
+        `SELECT id, name, email, is_active, created_at, division_id FROM ${info.table} WHERE tenant_id = ? AND LEFT(email, 15) <> '__role_archive_'${dv.sql} ORDER BY created_at DESC`,
+        [tenantId, ...dv.params]
+      );
+      return rows.map(row => publicUser(row, info.role));
+    })
+  );
+  const flat = results.flat();
+  const names = await divisionNames(flat, tenantId);
+  // A user in a deactivated division is effectively inactive — show them as
+  // such even if their own account flag was never flipped.
+  const divisionRows = await query<RowDataPacket[]>(
+    'SELECT id, is_active FROM divisions WHERE tenant_id = ?', [tenantId]
+  );
+  const activeDivisionIds = new Set(divisionRows.filter((d) => Number(d.is_active) === 1).map((d) => String(d.id)));
+  const all = flat
+    .map((row: any) => {
+      const divisionActive = !row.division_id || activeDivisionIds.has(String(row.division_id));
+      return {
+        ...row,
+        is_active: Number(row.is_active) === 1 && divisionActive ? 1 : 0,
+        division_active: divisionActive ? 1 : 0,
+        division_name: row.division_id ? names.get(String(row.division_id)) ?? null : null,
+      };
+    })
+    .sort((a: any, b: any) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime());
+
+  const stats = {
+    total: all.length,
+    active: all.filter((user: any) => Number(user.is_active) === 1).length,
+    qc: all.filter((user: any) => user.role === 'QC').length,
+    dispatch: all.filter((user: any) => user.role === 'DISPATCH').length,
+  };
+  const matching = all.filter((user: any) => {
+    const matchesSearch = !q || String(user.name || '').toLowerCase().includes(q)
+      || String(user.email || '').toLowerCase().includes(q)
+      || String(user.division_name || '').toLowerCase().includes(q);
+    const matchesRole = role === 'ALL' || user.role === role;
+    const matchesStatus = status === 'all'
+      || (status === 'active' && Number(user.is_active) === 1)
+      || (status === 'inactive' && Number(user.is_active) === 0);
+    return matchesSearch && matchesRole && matchesStatus;
+  });
+  const total = matching.length;
+  const pages = Math.max(1, Math.ceil(total / limit));
+  res.json({
+    items: matching.slice((page - 1) * limit, page * limit),
+    total, page, limit, pages, stats,
+  });
+}
+
 export async function listUsers(req: Request, res: Response): Promise<void> {
   const info = normalizeType(req.params.type);
   if (!info) { res.status(400).json({ error: 'Invalid user type' }); return; }
 
+  const dv = divisionWhere(req);
   const users = await query<RowDataPacket[]>(
-    `SELECT id, name, email, is_active, created_at, division_id FROM ${info.table} WHERE tenant_id = ? AND LEFT(email, 15) <> '__role_archive_' ORDER BY created_at DESC`, [req.user?.tenantId]
+    `SELECT id, name, email, is_active, created_at, division_id FROM ${info.table} WHERE tenant_id = ? AND LEFT(email, 15) <> '__role_archive_'${dv.sql} ORDER BY created_at DESC`, [req.user?.tenantId, ...dv.params]
   );
   const names = await divisionNames(users, req.user!.tenantId);
   res.json(users.map(row => publicUser(row, info.role, row.division_id ? names.get(String(row.division_id)) ?? null : null)));
@@ -283,6 +352,22 @@ export async function setUserStatus(req: Request, res: Response): Promise<void> 
     return;
   }
 
+  // A user cannot be activated while their division is deactivated — the
+  // division is what gates their access, so this must be fixed first.
+  if (active) {
+    const userRows = await query<RowDataPacket[]>(`SELECT division_id FROM ${info.table} WHERE id = ? AND tenant_id = ?`, [id, req.user!.tenantId]);
+    if (userRows.length === 0) { res.status(404).json({ error: 'User not found' }); return; }
+    if (userRows[0].division_id) {
+      const divisionRows = await query<RowDataPacket[]>(
+        'SELECT name, is_active FROM divisions WHERE id = ? AND tenant_id = ?',
+        [userRows[0].division_id, req.user!.tenantId]
+      );
+      if (divisionRows.length > 0 && Number(divisionRows[0].is_active) !== 1) {
+        res.status(409).json({ error: `Division "${divisionRows[0].name}" is deactivated. Activate the division (or reassign the user) before activating this account.` });
+        return;
+      }
+    }
+  }
   const result = await execute(`UPDATE ${info.table} SET is_active = ? WHERE id = ? AND tenant_id = ?`, [active ? 1 : 0, id, req.user!.tenantId]);
   if (result.affectedRows === 0) { res.status(404).json({ error: 'User not found' }); return; }
 

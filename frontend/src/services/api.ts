@@ -33,6 +33,9 @@ export type MasterImportSummary = {
   defaults: number;
   missingUom: number;
   missingCode: number;
+  /** User imports only — number of rows ready per role. */
+  qcCount?: number;
+  dispatchCount?: number;
 };
 export type MasterImportRow = {
   row: number;
@@ -283,6 +286,22 @@ export const api = {
   },
   users: {
     list: () => request<any[]>('/users'),
+    listPage: (params?: { q?: string; role?: string; status?: string; page?: number; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.role && params.role !== 'ALL') qs.set('role', params.role);
+      if (params?.status && params.status !== 'all') qs.set('status', params.status);
+      if (params?.page) qs.set('page', String(params.page));
+      if (params?.limit) qs.set('limit', String(params.limit));
+      return request<{
+        items: any[];
+        total: number;
+        page: number;
+        limit: number;
+        pages: number;
+        stats: { total: number; active: number; qc: number; dispatch: number };
+      }>(`/users/paged${qs.toString() ? `?${qs}` : ''}`);
+    },
     add: (data: { name: string; email: string; password: string; role: 'ADMIN' | 'QC' | 'DISPATCH'; division_id?: EntityId | null }) =>
       request<any>('/users', { method: 'POST', body: JSON.stringify(data) }),
     update: (type: string, id: EntityId, data: { name: string; email: string; role: Role; division_id?: EntityId | null }) =>
@@ -293,6 +312,9 @@ export const api = {
       request<any>(`/users/${type}/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
     delete: (type: string, id: EntityId) =>
       request<any>(`/users/${type}/${idPath(id)}`, { method: 'DELETE' }),
+    importTemplate: () => masterImportTemplate('/users/import/template'),
+    importValidate: (file: File) => masterImportValidate('/users/import/validate', file),
+    importApply: (file: File) => masterImportApply('/users/import/apply', file),
   },
   masters: {
     list: (kind: 'grades' | 'bag-quantities' | 'uoms') => request<any[]>(`/masters/${kind}`),
@@ -388,6 +410,7 @@ export const api = {
     familiesPaged: (page: number, limit: number) =>
       request<{
         items: Array<{ name: string; description: string | null; manufacturer: string | null; count: number; totalCount: number }>;
+        allFamilies?: Array<{ name: string; description: string | null; manufacturer: string | null; count: number; totalCount: number; divisionIds?: Array<EntityId | null> }>;
         total: number;
         page: number;
         pages: number;
@@ -511,6 +534,11 @@ export const api = {
       get: (id: EntityId) => request<any>(`/qc/qr-jobs/${idPath(id)}`),
       printInitial: (id: EntityId) =>
         request<any>(`/qc/qr-jobs/${idPath(id)}/print`, { method: 'POST', body: '{}' }),
+      reportPrintResult: (jobIds: EntityId[], outcome: 'PRINTED' | 'CANCELLED' | 'FAILED') =>
+        request<{ updated: number; outcome: string }>('/qc/qr-jobs/print-result', {
+          method: 'POST',
+          body: JSON.stringify({ job_ids: jobIds, outcome }),
+        }),
         reprint: (id: EntityId, data: { quantity?: number; label_ids?: EntityId[]; approved_request_id?: EntityId }) =>
         request<any>(`/qc/qr-jobs/${idPath(id)}/reprint`, { method: 'POST', body: JSON.stringify(data) }),
     requestReprint: (id: EntityId, label_ids: EntityId[]) =>
@@ -716,10 +744,30 @@ export const api = {
   },
   storage: {
     list: () => request<any[]>('/storage'),
-    inventory: () => request<any[]>('/storage/inventory'),
+    inventory: (params?: { q?: string; page?: number; limit?: number; refresh?: boolean }) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.page) qs.set('page', String(params.page));
+      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.refresh) qs.set('refresh', '1');
+      return request<{
+        rows: any[];
+        total: number;
+        page: number;
+        limit: number;
+        pages: number;
+        summary: {
+          stockByUom: Array<{ uom: string; quantity: number }>;
+          productCount: number;
+          gradeCount: number;
+          occupiedPositions: number;
+        };
+      }>(`/storage/inventory${qs.toString() ? `?${qs}` : ''}`);
+    },
     get: (id: EntityId) => request<any>(`/storage/${idPath(id)}`),
-    create: (data: { name: string; capacity: number }) => request<any>('/storage', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: EntityId, data: { name: string; capacity: number }) => request<any>(`/storage/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    create: (data: { name: string; capacity: number; division_id: EntityId }) => request<any>('/storage', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: EntityId, data: { name: string; capacity: number; division_id: EntityId }) => request<any>(`/storage/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id: EntityId) => request<any>(`/storage/${idPath(id)}`, { method: 'DELETE' }),
     createRack: (id: EntityId, data: { name: string; rows: number; columns: number }) => request<any>(`/storage/${idPath(id)}/racks`, { method: 'POST', body: JSON.stringify(data) }),
     updateRack: (id: EntityId, rackId: EntityId, data: { name: string; rows: number; columns: number }) => request<any>(`/storage/${idPath(id)}/racks/${idPath(rackId)}`, { method: 'PUT', body: JSON.stringify(data) }),
     removeRack: (id: EntityId, rackId: EntityId) => request<any>(`/storage/${idPath(id)}/racks/${idPath(rackId)}`, { method: 'DELETE' }),
@@ -729,6 +777,8 @@ export const api = {
     create: (data: any) =>
       request<any>('/clients', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: EntityId, data: any) => request<any>(`/clients/${idPath(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    setStatus: (id: EntityId, is_active: boolean) =>
+      request<any>(`/clients/${idPath(id)}/status`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
     delete: (id: EntityId) => request<any>(`/clients/${idPath(id)}`, { method: 'DELETE' }),
     importTemplate: () => masterImportTemplate('/clients/import/template'),
     importValidate: (file: File) => masterImportValidate('/clients/import/validate', file),

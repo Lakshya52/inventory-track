@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 type DivisionOption = { id: EntityId | string; name: string };
-type ImportKind = 'products' | 'clients' | 'vendors';
+type ImportKind = 'products' | 'clients' | 'vendors' | 'users';
 
 /**
  * One wizard for every master import. Products/grades are division-scoped;
@@ -38,9 +38,9 @@ export default function ImportWizard({
 }) {
   const { adminDivisionId } = useAuth();
   const showDivision = kind === 'products';
-  const entity = kind === 'products' ? 'product' : kind === 'clients' ? 'client' : 'vendor';
+  const entity = kind === 'products' ? 'product' : kind === 'clients' ? 'client' : kind === 'users' ? 'user' : 'vendor';
   const entityPlural = `${entity}s`;
-  const importer = kind === 'products' ? api.products : kind === 'clients' ? api.clients : api.vendors;
+  const importer = kind === 'products' ? api.products : kind === 'clients' ? api.clients : kind === 'users' ? api.users : api.vendors;
   const [divisions, setDivisions] = useState<DivisionOption[]>([]);
   const [divisionLoading, setDivisionLoading] = useState(true);
   // Default to the division the admin currently has selected at the top-right ('all' when none).
@@ -266,6 +266,8 @@ export default function ImportWizard({
               <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
                 <span className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-slate-600">{result.summary.total.toLocaleString()} rows</span>
                 {result.summary.valid > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-emerald-700"><CheckCircle2 size={11} />{result.summary.valid.toLocaleString()} ready</span>}
+                {kind === 'users' && (result.summary.qcCount ?? 0) > 0 && <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-blue-700">{result.summary.qcCount} QC</span>}
+                {kind === 'users' && (result.summary.dispatchCount ?? 0) > 0 && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-800">{result.summary.dispatchCount} Dispatch</span>}
                 {showDivision && result.summary.defaults > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-800"><AlertTriangle size={11} />{result.summary.defaults.toLocaleString()} using defaults</span>}
                 {showDivision && result.summary.missingUom > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-800"><AlertTriangle size={11} />{result.summary.missingUom.toLocaleString()} without UOM</span>}
                 {!showDivision && result.summary.missingCode > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-800"><AlertTriangle size={11} />{result.summary.missingCode.toLocaleString()} auto-coded</span>}
@@ -316,7 +318,7 @@ export default function ImportWizard({
                   </table>
                 </div>
               ) : (
-                <p className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700"><CheckCircle2 size={14} /> All {result.summary.total.toLocaleString()} rows ready to import{showDivision ? ' — defaults will apply where blank' : ''}.</p>
+                <p className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700"><CheckCircle2 size={14} /> All {result.summary.total.toLocaleString()} rows ready to import{kind === 'users' ? ` — ${result.summary.qcCount ?? 0} QC, ${result.summary.dispatchCount ?? 0} Dispatch` : showDivision ? ' — defaults will apply where blank' : ''}.</p>
               )}
 
               {/* All-divisions confirmation */}
@@ -361,9 +363,11 @@ export default function ImportWizard({
 
           {!applyResult && (
             <p className="text-center text-[10px] font-medium text-slate-400">
-              {showDivision
-                ? (selectedDivisionName ? `Every row imports into ${selectedDivisionName} · SKU blank = auto-generated` : 'Division blank = shared with every division · SKU blank = auto-generated')
-                : `Every row is shared across all divisions of your organisation${kind === 'vendors' ? ' · Vendor code blank = auto-generated' : ''}`}
+              {kind === 'users'
+                ? 'Only QC and DISPATCH can be imported · Division is optional (blank = no division) · passwords are stored as a hash'
+                : showDivision
+                  ? (selectedDivisionName ? `Every row imports into ${selectedDivisionName} · SKU blank = auto-generated` : 'Division blank = shared with every division · SKU blank = auto-generated')
+                  : `Every row is shared across all divisions of your organisation${kind === 'vendors' ? ' · Vendor code blank = auto-generated' : ''}`}
             </p>
           )}
         </div>

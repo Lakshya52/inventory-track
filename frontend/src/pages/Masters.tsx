@@ -8,6 +8,7 @@ import Clients from './Clients';
 import Vendors from './Vendors';
 import Products from './Products';
 import Divisions from './Divisions';
+import Users from './Users';
 import {
   Building2,
   Factory,
@@ -25,9 +26,10 @@ import {
   Scale,
   Printer,
   LayoutGrid,
+  Users as UsersIcon,
 } from 'lucide-react';
 
-type MasterTab = 'clients' | 'vendors' | 'products' | 'uoms' | 'printer-label' | 'divisions';
+type MasterTab = 'clients' | 'vendors' | 'products' | 'uoms' | 'printer-label' | 'divisions' | 'users';
 type SimpleMasterKind = 'uoms';
 type StatusFilter = 'all' | 'active' | 'inactive';
 
@@ -48,6 +50,7 @@ const TABS: { id: MasterTab; label: string; icon: any }[] = [
   { id: 'clients', label: 'Customer', icon: Building2 },
   { id: 'vendors', label: 'Vendors / Suppliers', icon: Factory },
   { id: 'divisions', label: 'Divisions', icon: LayoutGrid },
+  { id: 'users', label: 'Users', icon: UsersIcon },
 ];
 
 function normalizeTab(value: string | null): MasterTab {
@@ -431,6 +434,7 @@ export default function Masters() {
       {activeTab === 'vendors' && <Vendors embedded />}
       {activeTab === 'products' && <Products embedded />}
       {activeTab === 'divisions' && <Divisions embedded />}
+      {activeTab === 'users' && <Users embedded />}
       {activeTab === 'printer-label' && <PrinterLabelSettings />}
       {/* UOM master register */}
       {isSimpleMaster && (

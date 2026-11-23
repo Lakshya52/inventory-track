@@ -18,7 +18,6 @@ const DispatchScan = lazy(() => import('./pages/DispatchScan'));
 const Reports = lazy(() => import('./pages/Reports'));
 const Settings = lazy(() => import('./pages/Settings'));
 const ShelfLocations = lazy(() => import('./pages/ShelfLocations'));
-const Users = lazy(() => import('./pages/Users'));
 const DispatchWorkspaceOrders = lazy(() => import('./pages/DispatchWorkspaceOrders'));
 const DispatchOrdersHistory = lazy(() => import('./pages/DispatchOrdersHistory'));
 const PackingList = lazy(() => import('./pages/PackingList'));
@@ -52,7 +51,7 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute roles={['ADMIN']}><Dashboard /></ProtectedRoute>} />
 
         {/* Admin management */}
-        <Route path="/users" element={<ProtectedRoute roles={['ADMIN']}><Users /></ProtectedRoute>} />
+        <Route path="/users" element={<Navigate to="/masters?tab=users" replace />} />
         <Route path="/divisions" element={<Navigate to="/masters?tab=divisions" replace />} />
         <Route path="/shelf-locations" element={<ProtectedRoute roles={['ADMIN', 'QC']}><ShelfLocations /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute roles={['ADMIN']}><Reports /></ProtectedRoute>} />

@@ -94,6 +94,7 @@ export interface Product {
   purity: string | null;
   grade: string | null;
   bag_quantity_id?: EntityId | null;
+  division_id?: EntityId | null;
   storage_conditions: string | null;
   hazard_classification: string | null;
   physical_state: string | null;
